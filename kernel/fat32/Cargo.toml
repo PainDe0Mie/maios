@@ -1,0 +1,19 @@
+[package]
+name    = "fat32"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name        = "fat32"
+crate-type  = ["rlib"]
+
+[dependencies]
+log             = { version = "0.4", default-features = false }
+spin            = { version = "0.9", default-features = false, features = ["mutex"] }
+memory          = { path = "../memory" }
+storage_device  = { path = "../storage_device" }
+fs_node         = { path = "../fs_node" }
+io              = { path = "../io" }
+
+[features]
+default = []

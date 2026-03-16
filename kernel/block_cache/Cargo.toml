@@ -1,5 +1,5 @@
 [package]
-authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+authors = ["PainDe0Mie"]
 name = "block_cache"
 description = "A generic layer for caching block-based streams."
 version = "0.1.0"
@@ -19,6 +19,9 @@ features = ["nightly"]
 
 [dependencies.storage_device]
 path = "../storage_device"
+
+[dependencies.io]
+path = "../io"
 
 [lib]
 crate-type = ["rlib"]

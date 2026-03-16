@@ -207,7 +207,11 @@ pub fn draw_line_aa<P: Pixel>(
     let (mut x0, mut y0) = (start.x as f32, start.y as f32);
     let (mut x1, mut y1) = (end.x as f32, end.y as f32);
 
-    let steep = (y1 - y0).abs() > (x1 - x0).abs();
+    let steep = {
+        let dy = if y1 > y0 { y1 - y0 } else { y0 - y1 };
+        let dx = if x1 > x0 { x1 - x0 } else { x0 - x1 };
+        dy > dx
+    };
     if steep {
         core::mem::swap(&mut x0, &mut y0);
         core::mem::swap(&mut x1, &mut y1);
