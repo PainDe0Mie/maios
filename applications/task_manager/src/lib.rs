@@ -1,17 +1,22 @@
 //! Task Manager pour mai_os
 //!
-//! Affiche :
-//!  - Stats RAM (libre / total estimé)
-//!  - Liste des tâches avec état et CPU
-//!  - Utilisation CPU approximée (ratio runnable/total)
+//! Affiche en temps réel :
+//!   - RAM : libre / utilisée / totale (frames × 4 KiB)
+//!   - CPU : tâches actives / running / total
+//!   - Liste paginée de toutes les tâches avec état, CPU, flags
 //!
-//! Pas de GPU API disponible dans le kernel → section affichée comme N/A
+//! Contrôles :
+//!   ↑ / ↓        — navigation
+//!   K            — kill la tâche sélectionnée
+//!   R / F5       — forcer un refresh immédiat
+//!   Q / Échap    — quitter
 
 #![no_std]
 extern crate alloc;
 extern crate color;
 extern crate font;
 extern crate framebuffer;
+extern crate framebuffer_drawer;
 extern crate frame_allocator;
 extern crate shapes;
 extern crate task;
@@ -20,7 +25,7 @@ extern crate window;
 extern crate window_manager;
 extern crate scheduler;
 extern crate event_types;
-extern crate memory_swap;
+extern crate keycodes_ascii;
 extern crate cpu;
 
 #[macro_use] extern crate log;
@@ -33,58 +38,79 @@ use shapes::Coord;
 use framebuffer::{Framebuffer, AlphaPixel};
 use task_struct::RunState;
 use event_types::Event;
+use keycodes_ascii::{KeyAction, Keycode};
 
-// ================================================================
-// COULEURS (palette Tokyonight)
-// ================================================================
-const C_BG:         Color = Color::new(0x001A1B26);
-const C_PANEL:      Color = Color::new(0x0024283A);
-const C_BORDER:     Color = Color::new(0x00414868);
-const C_ACCENT:     Color = Color::new(0x007AA2F7);
-const C_GREEN:      Color = Color::new(0x009ECE6A);
-const C_YELLOW:     Color = Color::new(0x00E0AF68);
-const C_RED:        Color = Color::new(0x00F7768E);
-const C_PURPLE:     Color = Color::new(0x00BB9AF7);
-const C_CYAN:       Color = Color::new(0x007DCFFF);
-const C_FG:         Color = Color::new(0x00C0CAF5);
-const C_FG_DIM:     Color = Color::new(0x00565F89);
-const C_HEADER_BG:  Color = Color::new(0x00292E42);
+// ────────────────────────────────────────────────────────────────
+// Palette Tokyo Night
+// ────────────────────────────────────────────────────────────────
+const C_BG:       Color = Color::new(0x001A1B26);
+const C_SURFACE:  Color = Color::new(0x0024283A);
+const C_SURFACE2: Color = Color::new(0x00292E42);
+const C_BORDER:   Color = Color::new(0x00414868);
+const C_ACCENT:   Color = Color::new(0x007AA2F7);
+const C_GREEN:    Color = Color::new(0x009ECE6A);
+const C_YELLOW:   Color = Color::new(0x00E0AF68);
+const C_RED:      Color = Color::new(0x00F7768E);
+const C_PURPLE:   Color = Color::new(0x00BB9AF7);
+const C_CYAN:     Color = Color::new(0x007DCFFF);
+const C_FG:       Color = Color::new(0x00C0CAF5);
+const C_FG_DIM:   Color = Color::new(0x00565F89);
+const C_ROW_ALT:  Color = Color::new(0x001E2030);
+const C_SEL:      Color = Color::new(0x002D3F6B);
+const C_SEL_BAR:  Color = Color::new(0x007AA2F7);
 
-// ================================================================
-// LAYOUT
-// ================================================================
-const WIN_W:         usize = 760;
-const WIN_H:         usize = 520;
-const PADDING:       isize = 12;
-const ROW_H:         usize = 18;
-const COL_ID:        isize = PADDING;
-const COL_NAME:      isize = PADDING + 52;
-const COL_STATE:     isize = PADDING + 260;
-const COL_CPU:       isize = PADDING + 380;
-const COL_FLAGS:     isize = PADDING + 460;
-const HEADER_H:      usize = font::CHARACTER_HEIGHT + 8;
-const SECTION_H:     usize = 110;  // hauteur section stats
-const LIST_START_Y:  usize = SECTION_H + HEADER_H + 8;
+// ────────────────────────────────────────────────────────────────
+// Layout
+// ────────────────────────────────────────────────────────────────
+const WIN_W: usize = 800;
+const WIN_H: usize = 540;
 
-// ================================================================
-// HELPERS DE DESSIN
-// ================================================================
+const TITLE_H:   usize = 28;
+const STATS_H:   usize = 98;
+const HEADER_H:  usize = 20;
+const FOOTER_H:  usize = 20;
+const ROW_H:     usize = 18;
+const PAD:       isize = 12;
+
+/// Y de début de la liste (relatif au contenu de la fenêtre)
+fn list_top() -> usize { TITLE_H + STATS_H + HEADER_H }
+
+/// Nombre de lignes visibles dans content_h pixels
+fn visible_rows(ch: usize) -> usize {
+    ch.saturating_sub(list_top() + FOOTER_H) / ROW_H
+}
+
+// Colonnes (relatifs au bord gauche du contenu)
+const COL_ID:    isize = PAD;
+const COL_NAME:  isize = PAD + 48;
+const COL_STATE: isize = PAD + 280;
+const COL_CPU:   isize = PAD + 390;
+const COL_FLAGS: isize = PAD + 450;
+const COL_IDLE:  isize = PAD + 560;
+
+// ────────────────────────────────────────────────────────────────
+// Dessin de base
+// ────────────────────────────────────────────────────────────────
 type Fb = Framebuffer<AlphaPixel>;
 
+#[inline]
 fn fill(fb: &mut Fb, x: isize, y: isize, w: usize, h: usize, c: Color) {
+    if w == 0 || h == 0 { return; }
     framebuffer_drawer::fill_rectangle(fb, Coord::new(x, y), w, h, c.into());
 }
 
+#[inline]
 fn hline(fb: &mut Fb, x0: isize, x1: isize, y: isize, c: Color) {
-    for x in x0..x1 { fb.draw_pixel(Coord::new(x, y), c.into()); }
+    if x1 <= x0 { return; }
+    framebuffer_drawer::fill_rectangle(fb, Coord::new(x0, y), (x1 - x0) as usize, 1, c.into());
 }
 
 fn draw_char(fb: &mut Fb, x: isize, y: isize, ch: char, c: Color) {
     let idx = ch as usize;
     if idx >= 256 { return; }
-    let bitmap = &font::FONT_BASIC[idx];
+    let bm = &font::FONT_BASIC[idx];
     for row in 0..font::CHARACTER_HEIGHT {
-        let bits = bitmap[row];
+        let bits = bm[row];
         for col in 0..8usize {
             if bits & (0x80 >> col) != 0 {
                 fb.draw_pixel(Coord::new(x + col as isize, y + row as isize), c.into());
@@ -93,346 +119,442 @@ fn draw_char(fb: &mut Fb, x: isize, y: isize, ch: char, c: Color) {
     }
 }
 
-fn draw_text(fb: &mut Fb, x: isize, y: isize, text: &str, c: Color) {
+fn draw_text(fb: &mut Fb, x: isize, y: isize, s: &str, c: Color) {
     let mut cx = x;
-    for ch in text.chars() {
+    for ch in s.chars() {
         draw_char(fb, cx, y, ch, c);
         cx += font::CHARACTER_WIDTH as isize;
     }
 }
 
-/// Tronque le texte à `max_chars` et dessine
-fn draw_text_clipped(fb: &mut Fb, x: isize, y: isize, text: &str, max_chars: usize, c: Color) {
-    let truncated: String = text.chars().take(max_chars).collect();
-    draw_text(fb, x, y, &truncated, c);
+fn draw_text_clipped(fb: &mut Fb, x: isize, y: isize, s: &str, max_px: isize, c: Color) {
+    let fw = font::CHARACTER_WIDTH as isize;
+    if max_px < fw { return; }
+    let max_ch = (max_px / fw) as usize;
+    let t: String = s.chars().take(max_ch).collect();
+    draw_text(fb, x, y, &t, c);
 }
 
-/// Dessine une barre de progression (0..=100)
+/// Barre de progression (0..=100) avec fond, remplissage et bordure.
 fn draw_bar(fb: &mut Fb, x: isize, y: isize, w: usize, h: usize, pct: usize, fg: Color) {
-    fill(fb, x, y, w, h, Color::new(0x00111115));
+    fill(fb, x, y, w, h, Color::new(0x00111118));
     let filled = (w * pct.min(100)) / 100;
-    if filled > 0 {
-        fill(fb, x, y, filled, h, fg);
-    }
-    // bordure
-    for px in x..x+w as isize {
-        fb.draw_pixel(Coord::new(px, y), C_BORDER.into());
-        fb.draw_pixel(Coord::new(px, y + h as isize - 1), C_BORDER.into());
-    }
-    for py in y..y+h as isize {
-        fb.draw_pixel(Coord::new(x, py), C_BORDER.into());
-        fb.draw_pixel(Coord::new(x + w as isize - 1, py), C_BORDER.into());
-    }
+    if filled > 0 { fill(fb, x, y, filled, h, fg); }
+    // Bordure fine
+    hline(fb, x, x + w as isize, y, C_BORDER);
+    hline(fb, x, x + w as isize, y + h as isize - 1, C_BORDER);
+    framebuffer_drawer::fill_rectangle(fb, Coord::new(x, y), 1, h, C_BORDER.into());
+    framebuffer_drawer::fill_rectangle(fb, Coord::new(x + w as isize - 1, y), 1, h, C_BORDER.into());
 }
 
-// ================================================================
-// STATS RAM
-// ================================================================
+// ────────────────────────────────────────────────────────────────
+// Données système
+// ────────────────────────────────────────────────────────────────
 
-/// Compte les frames libres en itérant FREE_GENERAL_FRAMES_LIST
-fn count_free_frames() -> usize {
-    let mut total_free = 0usize;
-    let _ = frame_allocator::inspect_then_allocate_free_frames(&mut |free_frames| {
-        total_free += free_frames.size_in_frames();
+/// Nombre de frames physiques libres.
+fn free_frames() -> usize {
+    let mut total = 0usize;
+    let _ = frame_allocator::inspect_then_allocate_free_frames(&mut |chunk| {
+        total += chunk.size_in_frames();
         frame_allocator::FramesIteratorRequest::Next
     });
-    total_free
+    total
 }
 
-// ================================================================
-// DONNÉES D'UNE TÂCHE
-// ================================================================
+// ────────────────────────────────────────────────────────────────
+// Infos tâche
+// ────────────────────────────────────────────────────────────────
+
 struct TaskInfo {
-    id:       usize,
-    name:     String,
-    state:    RunState,
-    on_cpu:   Option<u32>,
-    is_idle:  bool,
-    pinned:   bool,
+    id:      usize,
+    name:    String,
+    state:   RunState,
+    on_cpu:  Option<u32>,
+    is_idle: bool,
+    pinned:  bool,
 }
 
 fn collect_tasks() -> Vec<TaskInfo> {
-    task::all_tasks()
+    let mut v: Vec<TaskInfo> = task::all_tasks()
         .into_iter()
-        .map(|(id, task_ref)| {
-            let state    = task_ref.runstate.load();
-            let on_cpu: Option<u32> = Option::<cpu::CpuId>::from(task_ref.running_on_cpu.load())
-                .map(|c| c.value());
-            let is_idle  = task_ref.is_an_idle_task;
-            let pinned: bool = Option::<cpu::CpuId>::from(task_ref.pinned_core.load()).is_some();
-            let name     = task_ref.name.clone();
-            TaskInfo { id, name, state, on_cpu, is_idle, pinned }
+        .map(|(id, tr)| TaskInfo {
+            id,
+            name:    tr.name.clone(),
+            state:   tr.runstate.load(),
+            on_cpu:  Option::<cpu::CpuId>::from(tr.running_on_cpu.load()).map(|c| c.value()),
+            is_idle: tr.is_an_idle_task,
+            pinned:  Option::<cpu::CpuId>::from(tr.pinned_core.load()).is_some(),
         })
-        .collect()
+        .collect();
+    // Tri : running d'abord, puis runnable, puis le reste, par id croissant
+    v.sort_by(|a, b| {
+        let rank = |t: &TaskInfo| match t.state {
+            RunState::Runnable if t.on_cpu.is_some() => 0,
+            RunState::Runnable                        => 1,
+            RunState::Blocked                         => 2,
+            _                                         => 3,
+        };
+        rank(a).cmp(&rank(b)).then(a.id.cmp(&b.id))
+    });
+    v
 }
 
-fn state_str(state: &RunState) -> (&'static str, Color) {
-    match state {
-        RunState::Runnable                  => ("RUNNABLE", C_GREEN),
-        RunState::Blocked                   => ("BLOCKED ",  C_YELLOW),
-        RunState::Exited(_)                 => ("EXITED  ",  C_RED),
-        _                                   => ("UNKNOWN ",  C_FG_DIM),
+fn state_label(s: &RunState) -> (&'static str, Color) {
+    match s {
+        RunState::Runnable => ("RUNNING ", C_GREEN),
+        RunState::Blocked  => ("BLOCKED ", C_YELLOW),
+        RunState::Exited(_)=> ("EXITED  ", C_RED),
+        _                  => ("UNKNOWN ", C_FG_DIM),
     }
 }
 
-// ================================================================
-// RENDU
-// ================================================================
+// ────────────────────────────────────────────────────────────────
+// État de l'application
+// ────────────────────────────────────────────────────────────────
 
-fn redraw(fb: &mut Fb, tasks: &[TaskInfo], free_frames: usize,
-          total_frames_estimate: usize, scroll: usize, win_h: usize)
-{
-    let w = fb.width() as isize;
+struct TmState {
+    tasks:          Vec<TaskInfo>,
+    free_frames:    usize,
+    /// Estimation du total physique : fixé au premier refresh.
+    total_frames:   usize,
+    scroll:         usize,
+    selected:       usize,
+    dirty:          bool,
+    refresh_ticks:  usize,
+    /// Dimensions du contenu de la fenêtre
+    off_x: isize, off_y: isize,
+    cw: usize,    ch: usize,
+}
 
-    // ── Fond général ────────────────────────────────────────────
-    fill(fb, 0, 0, fb.width(), fb.height(), C_BG);
+impl TmState {
+    fn new(win: &window::Window) -> Self {
+        let area = win.area();
+        let off_x = area.top_left.x;
+        let off_y = area.top_left.y;
+        let cw = (area.bottom_right.x - area.top_left.x) as usize;
+        let ch = (area.bottom_right.y - area.top_left.y) as usize;
+
+        let ff = free_frames();
+        // Heuristique initiale : total ≈ 2× le libre au démarrage
+        // (la majeure partie de la RAM est allouée dès le boot kernel)
+        // Une vraie valeur nécessiterait un compteur global au boot.
+        let total = ff.saturating_mul(2).max(ff + 16384); // min 16384 frames = 64 MiB
+
+        TmState {
+            tasks: collect_tasks(),
+            free_frames: ff,
+            total_frames: total,
+            scroll: 0, selected: 0,
+            dirty: true, refresh_ticks: 0,
+            off_x, off_y, cw, ch,
+        }
+    }
+
+    fn vis(&self) -> usize { visible_rows(self.ch) }
+
+    fn clamp_scroll(&mut self) {
+        let vis = self.vis();
+        let len = self.tasks.len();
+        if self.selected < self.scroll { self.scroll = self.selected; }
+        if vis > 0 && self.selected >= self.scroll + vis {
+            self.scroll = self.selected - vis + 1;
+        }
+        let max_s = len.saturating_sub(vis);
+        if self.scroll > max_s { self.scroll = max_s; }
+    }
+
+    fn refresh(&mut self) {
+        self.tasks       = collect_tasks();
+        self.free_frames = free_frames();
+        self.clamp_scroll();
+        self.dirty = true;
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Rendu
+// ────────────────────────────────────────────────────────────────
+
+fn redraw(fb: &mut Fb, s: &TmState) {
+    let ox = s.off_x;
+    let oy = s.off_y;
+    let cw = s.cw;
+    let ch = s.ch;
+    let w  = cw as isize;
+    let fw = font::CHARACTER_WIDTH as isize;
+    let fh = font::CHARACTER_HEIGHT as isize;
+
+    // ── Fond ────────────────────────────────────────────────────
+    fill(fb, ox, oy, cw, ch, C_BG);
 
     // ── Titre ───────────────────────────────────────────────────
-    fill(fb, 0, 0, fb.width(), 28, C_PANEL);
-    hline(fb, 0, w, 28, C_ACCENT);
-    draw_text(fb, PADDING, 6, "Mai Task Manager", C_ACCENT);
-    // version right-aligned
-    draw_text(fb, w - 80, 6, "v0.1.0", C_FG_DIM);
+    fill(fb, ox, oy, cw, TITLE_H, C_SURFACE);
+    hline(fb, ox, ox + w, oy + TITLE_H as isize, C_ACCENT);
+    let title_y = oy + (TITLE_H as isize - fh) / 2;
+    draw_text(fb, ox + PAD, title_y, "Mai Task Manager", C_ACCENT);
+    let task_count_str = format!("{} tasks", s.tasks.len());
+    draw_text(fb, ox + w - (task_count_str.len() as isize * fw) - PAD, title_y,
+              &task_count_str, C_FG_DIM);
 
-    // ── Section Stats ───────────────────────────────────────────
-    let sy: isize = 32;
-    fill(fb, PADDING, sy, WIN_W - 2*PADDING as usize, SECTION_H - 4, C_PANEL);
-    hline(fb, PADDING, w - PADDING, sy, C_BORDER);
-    hline(fb, PADDING, w - PADDING, sy + SECTION_H as isize - 4, C_BORDER);
+    // ── Section stats ────────────────────────────────────────────
+    let sy = oy + TITLE_H as isize;
+    fill(fb, ox, sy, cw, STATS_H, C_SURFACE);
+    hline(fb, ox, ox + w, sy + STATS_H as isize - 1, C_BORDER);
+
+    let text_y = sy + 8;
+    let bar_y  = text_y + fh + 4;
 
     // — RAM —
-    let ram_title_y = sy + 6;
-    draw_text(fb, PADDING + 6, ram_title_y, "RAM", C_ACCENT);
-
-    let free_mb  = (free_frames * 4) / 1024; // frames * 4KB / 1024 = MB
-    let total_mb = (total_frames_estimate * 4) / 1024;
+    let bar_w: usize = (cw / 2).saturating_sub(24);
+    let free_mb  = (s.free_frames * 4096) / (1024 * 1024);
+    let total_mb = (s.total_frames * 4096) / (1024 * 1024);
     let used_mb  = total_mb.saturating_sub(free_mb);
     let ram_pct  = if total_mb > 0 { (used_mb * 100) / total_mb } else { 0 };
 
-    let bar_y = ram_title_y + font::CHARACTER_HEIGHT as isize + 4;
-    draw_bar(fb, PADDING + 6, bar_y, 340, 14, ram_pct, C_ACCENT);
+    // Couleur de la barre RAM selon pression mémoire
+    let ram_bar_color = if ram_pct > 85 { C_RED }
+                        else if ram_pct > 65 { C_YELLOW }
+                        else { C_ACCENT };
 
-    let ram_str = format!("{} MB / {} MB  ({}% used)", used_mb, total_mb, ram_pct);
-    draw_text(fb, PADDING + 6, bar_y + 18, &ram_str, C_FG);
+    draw_text(fb, ox + PAD, text_y, "RAM", C_ACCENT);
+    draw_bar(fb, ox + PAD, bar_y, bar_w, 12, ram_pct, ram_bar_color);
+    let ram_str = format!("{} / {} MiB  ({}% used)", used_mb, total_mb, ram_pct);
+    draw_text(fb, ox + PAD, bar_y + 16, &ram_str, C_FG);
 
-    // — CPU (approximation : ratio tasks Running+Runnable / total) —
-    let total_tasks = tasks.len();
-    let active_tasks = tasks.iter()
-        .filter(|t| matches!(t.state, RunState::Runnable) && !t.is_idle)
-        .count();
-    let running_tasks = tasks.iter()
-        .filter(|t| t.on_cpu.is_some())
-        .count();
+    // — CPU (ratio tâches runnable non-idle / total) —
+    let cpu_x = ox + PAD + bar_w as isize + 20;
+    let running = s.tasks.iter().filter(|t| t.on_cpu.is_some()).count();
+    let runnable = s.tasks.iter()
+        .filter(|t| matches!(t.state, RunState::Runnable) && !t.is_idle).count();
+    let total = s.tasks.len().max(1);
+    let cpu_pct = (runnable * 100) / total;
+    let cpu_bar_color = if cpu_pct > 85 { C_RED }
+                        else if cpu_pct > 60 { C_YELLOW }
+                        else { C_GREEN };
 
-    let cpu_x: isize = PADDING + 380;
-    draw_text(fb, cpu_x, ram_title_y, "CPU", C_ACCENT);
+    draw_text(fb, cpu_x, text_y, "CPU", C_ACCENT);
+    draw_bar(fb, cpu_x, bar_y, bar_w, 12, cpu_pct, cpu_bar_color);
+    let cpu_str = format!("{} running  {} runnable  {} total", running, runnable, total);
+    draw_text(fb, cpu_x, bar_y + 16, &cpu_str, C_FG);
 
-    // on ne peut pas mesurer le vrai % CPU sans compteur TSC entre deux frames
-    // → on affiche le nombre de tâches actives/running
-    let cpu_str = format!("{} running / {} tasks", running_tasks, total_tasks);
-    draw_text(fb, cpu_x, bar_y, &cpu_str, C_FG);
+    // — Ligne inférieure stats —
+    let info_y = bar_y + 34;
+    let blocked = s.tasks.iter().filter(|t| matches!(t.state, RunState::Blocked)).count();
+    let exited  = s.tasks.iter().filter(|t| matches!(t.state, RunState::Exited(_))).count();
+    let info_str = format!("Blocked: {}   Exited: {}   Idle: {}",
+        blocked, exited,
+        s.tasks.iter().filter(|t| t.is_idle).count());
+    draw_text(fb, ox + PAD, info_y, &info_str, C_FG_DIM);
 
-    // Barre visuelle : proportion non-idle non-blocked
-    let cpu_pct = if total_tasks > 0 { (active_tasks * 100) / total_tasks } else { 0 };
-    draw_bar(fb, cpu_x, bar_y + 20, 340, 14, cpu_pct, C_GREEN);
-
-    // — GPU —
-    let gpu_x: isize = PADDING + 6;
-    let gpu_y = bar_y + 44;
-    draw_text(fb, gpu_x, gpu_y, "GPU", C_ACCENT);
-    draw_text(fb, gpu_x, gpu_y + font::CHARACTER_HEIGHT as isize + 2,
-              "N/A (no GPU API in kernel)", C_FG_DIM);
-
-    // — Swap —
-    let swap_x: isize = cpu_x;
-    draw_text(fb, swap_x, gpu_y, "SWAP", C_ACCENT);
-    if let Some((used, total)) = memory_swap::usage() {
-        let swap_str = format!("{} / {} pages used", used, total);
-        draw_text(fb, swap_x, gpu_y + font::CHARACTER_HEIGHT as isize + 2, &swap_str, C_CYAN);
-    } else {
-        draw_text(fb, swap_x, gpu_y + font::CHARACTER_HEIGHT as isize + 2,
-                  "not initialized", C_FG_DIM);
-    }
-
-    // ── Header liste tâches ──────────────────────────────────────
-    let header_y = (SECTION_H + 34) as isize;
-    fill(fb, 0, header_y, fb.width(), HEADER_H, C_HEADER_BG);
-    hline(fb, 0, w, header_y + HEADER_H as isize - 1, C_ACCENT);
-
-    draw_text(fb, COL_ID,    header_y + 4, "ID   ", C_FG_DIM);
-    draw_text(fb, COL_NAME,  header_y + 4, "NAME", C_FG_DIM);
-    draw_text(fb, COL_STATE, header_y + 4, "STATE   ", C_FG_DIM);
-    draw_text(fb, COL_CPU,   header_y + 4, "CPU", C_FG_DIM);
-    draw_text(fb, COL_FLAGS, header_y + 4, "FLAGS", C_FG_DIM);
+    // ── Header colonnes ──────────────────────────────────────────
+    let hdr_y = oy + (TITLE_H + STATS_H) as isize;
+    fill(fb, ox, hdr_y, cw, HEADER_H, C_SURFACE2);
+    hline(fb, ox, ox + w, hdr_y + HEADER_H as isize - 1, C_ACCENT);
+    let ht = hdr_y + (HEADER_H as isize - fh) / 2;
+    draw_text(fb, ox + COL_ID,    ht, "ID", C_FG_DIM);
+    draw_text(fb, ox + COL_NAME,  ht, "Name", C_FG_DIM);
+    draw_text(fb, ox + COL_STATE, ht, "State", C_FG_DIM);
+    draw_text(fb, ox + COL_CPU,   ht, "CPU", C_FG_DIM);
+    draw_text(fb, ox + COL_FLAGS, ht, "Flags", C_FG_DIM);
 
     // ── Liste des tâches ─────────────────────────────────────────
-    let list_y = header_y + HEADER_H as isize;
-    let visible_rows = (win_h.saturating_sub(LIST_START_Y)) / ROW_H;
+    let list_y0 = oy + (TITLE_H + STATS_H + HEADER_H) as isize;
+    let vis      = s.vis();
+    let footer_y = oy + ch as isize - FOOTER_H as isize;
 
-    let display_tasks: Vec<&TaskInfo> = tasks.iter()
-        .skip(scroll)
-        .take(visible_rows)
-        .collect();
+    for (row, task) in s.tasks.iter().skip(s.scroll).take(vis).enumerate() {
+        let abs_idx = s.scroll + row;
+        let ry      = list_y0 + (row * ROW_H) as isize;
+        let text_y  = ry + (ROW_H as isize - fh) / 2;
 
-    for (i, task) in display_tasks.iter().enumerate() {
-        let row_y = list_y + (i * ROW_H) as isize;
+        // Fond : sélection > alterné
+        let bg = if abs_idx == s.selected { C_SEL }
+                 else if row % 2 == 0     { C_BG }
+                 else                      { C_ROW_ALT };
+        fill(fb, ox, ry, cw, ROW_H, bg);
 
-        // Fond alterné
-        let bg = if i % 2 == 0 { C_BG } else { Color::new(0x001E2030) };
-        fill(fb, 0, row_y, fb.width(), ROW_H, bg);
+        // Barre de sélection gauche
+        if abs_idx == s.selected {
+            fill(fb, ox, ry, 3, ROW_H, C_SEL_BAR);
+        }
 
-        // Couleur selon état
-        let (state_s, state_c) = state_str(&task.state);
-
-        // Idle tasks en grisé
-        let name_color = if task.is_idle { C_FG_DIM } else { C_FG };
+        let (state_s, state_c) = state_label(&task.state);
+        let name_c = if task.is_idle { C_FG_DIM } else { C_FG };
 
         // ID
-        let id_str = format!("{:<4}", task.id);
-        draw_text(fb, COL_ID, row_y + 1, &id_str, C_PURPLE);
+        draw_text(fb, ox + COL_ID, text_y, &format!("{:<4}", task.id), C_PURPLE);
 
-        // Nom (tronqué à ~25 chars)
-        let max_name = (COL_STATE - COL_NAME) as usize / font::CHARACTER_WIDTH;
-        draw_text_clipped(fb, COL_NAME, row_y + 1, &task.name, max_name, name_color);
+        // Nom (tronqué)
+        let max_name = COL_STATE - COL_NAME - 4;
+        draw_text_clipped(fb, ox + COL_NAME, text_y, &task.name, max_name, name_c);
 
         // État
-        draw_text(fb, COL_STATE, row_y + 1, state_s, state_c);
+        draw_text(fb, ox + COL_STATE, text_y, state_s, state_c);
 
         // CPU
-        let cpu_str = match task.on_cpu {
-            Some(c) => format!("#{}", c),
-            None    => "-  ".to_string(),
-        };
-        draw_text(fb, COL_CPU, row_y + 1, &cpu_str, C_CYAN);
+        let cpu_s = task.on_cpu.map(|c| format!("#{}", c)).unwrap_or_else(|| "-".into());
+        draw_text(fb, ox + COL_CPU, text_y, &cpu_s, C_CYAN);
 
         // Flags
         let mut flags = String::new();
         if task.is_idle  { flags.push_str("IDLE "); }
-        if task.pinned   { flags.push_str("PIN"); }
+        if task.pinned   { flags.push_str("PIN "); }
         if flags.is_empty() { flags.push('-'); }
-        draw_text(fb, COL_FLAGS, row_y + 1, &flags, C_FG_DIM);
+        draw_text(fb, ox + COL_FLAGS, text_y, &flags, C_FG_DIM);
 
-        // Séparateur bas de ligne
-        hline(fb, 0, w, row_y + ROW_H as isize - 1, Color::new(0x00252535));
+        // Séparateur
+        hline(fb, ox + 3, ox + w, ry + ROW_H as isize - 1, Color::new(0x00202030));
+    }
+
+    // Zone vide sous les lignes
+    let last_row_y = list_y0 + (vis * ROW_H) as isize;
+    if last_row_y < footer_y {
+        fill(fb, ox, last_row_y, cw, (footer_y - last_row_y) as usize, C_BG);
     }
 
     // ── Scrollbar ────────────────────────────────────────────────
-    if tasks.len() > visible_rows {
-        let sb_x = w - 8;
-        let sb_h = (win_h - LIST_START_Y) as isize;
-        fill(fb, sb_x, list_y, 6, sb_h as usize, Color::new(0x00111115));
-
-        let thumb_h = ((visible_rows * sb_h as usize) / tasks.len()).max(20) as isize;
-        let thumb_y = (scroll * sb_h as usize / tasks.len()) as isize;
-        fill(fb, sb_x, list_y + thumb_y, 6, thumb_h as usize, C_BORDER);
+    let total_tasks = s.tasks.len();
+    let sb_area_h   = vis * ROW_H;
+    let sb_x        = ox + w - 8;
+    fill(fb, sb_x, list_y0, 6, sb_area_h, Color::new(0x00111118));
+    if total_tasks > vis && vis > 0 {
+        let thumb_h   = ((vis * sb_area_h) / total_tasks).max(16);
+        let max_off   = total_tasks - vis;
+        let thumb_y   = if max_off > 0 { (s.scroll * (sb_area_h - thumb_h)) / max_off } else { 0 };
+        fill(fb, sb_x + 1, list_y0 + thumb_y as isize, 4, thumb_h, C_BORDER);
     }
 
-    // ── Footer : raccourcis ──────────────────────────────────────
-    let footer_y = win_h as isize - ROW_H as isize - 2;
-    fill(fb, 0, footer_y, fb.width(), ROW_H + 2, C_PANEL);
-    hline(fb, 0, w, footer_y, C_BORDER);
-    draw_text(fb, PADDING, footer_y + 2,
-              "[UP/DOWN] scroll   [K] kill task   [R] refresh   [Q] quit",
+    // ── Footer ───────────────────────────────────────────────────
+    fill(fb, ox, footer_y, cw, FOOTER_H, C_SURFACE2);
+    hline(fb, ox, ox + w, footer_y, C_BORDER);
+    let ft_y = footer_y + (FOOTER_H as isize - fh) / 2;
+    draw_text(fb, ox + PAD, ft_y,
+              "UP/DOWN:nav  K:kill  R:refresh  Q:quit",
               C_FG_DIM);
+
+    // Compteur sélection
+    if total_tasks > 0 {
+        let sel_str = format!("{}/{}", s.selected + 1, total_tasks);
+        draw_text(fb, ox + w - (sel_str.len() as isize * fw) - PAD, ft_y, &sel_str, C_FG_DIM);
+    }
 }
 
-// ================================================================
-// POINT D'ENTRÉE
-// ================================================================
+// ────────────────────────────────────────────────────────────────
+// Point d'entrée
+// ────────────────────────────────────────────────────────────────
 
-pub fn main(_args: Vec<alloc::string::String>) -> isize {
-    info!("[task_manager] Starting...");
+pub fn main(_args: Vec<String>) -> isize {
+    info!("[task_manager] démarrage");
 
-    // Crée la fenêtre
     let mut win = match window::Window::with_title(
         "Task Manager".to_string(),
-        Coord::new(60, 60),
+        Coord::new(50, 40),
         WIN_W, WIN_H,
         C_BG,
     ) {
         Ok(w)  => w,
-        Err(e) => { error!("[task_manager] Window: {}", e); return -1; }
+        Err(e) => { error!("[task_manager] window: {}", e); return -1; }
     };
 
-    // Estime la RAM totale au démarrage (free + déjà alloué)
-    // On utilise le free actuel comme base min ; pour une vraie valeur
-    // il faudrait un registre de total au boot.
-    // Heuristique : on multiplie par 1.5 la première mesure
-    let initial_free = count_free_frames();
-    let total_estimate = initial_free + initial_free / 2;
-
-    let mut scroll:     usize = 0;
-    let mut selected:   usize = 0;
-    let mut refresh_tick: usize = 0;
+    let mut state = TmState::new(&win);
 
     loop {
-        refresh_tick += 1;
-        let do_refresh = refresh_tick >= 60; // refresh toutes les ~60 itérations
+        state.refresh_ticks += 1;
+        // Auto-refresh toutes les ~120 itérations (~2s)
+        if state.refresh_ticks >= 120 {
+            state.refresh_ticks = 0;
+            state.refresh();
+        }
 
         // ── Événements ──────────────────────────────────────────
         loop {
             match win.handle_event() {
+                Ok(Some(Event::ExitEvent)) => return 0,
+
                 Ok(Some(Event::KeyboardEvent(ke))) => {
-                    use keycodes_ascii::{KeyAction, Keycode};
                     if ke.key_event.action != KeyAction::Pressed { continue; }
+                    let len = state.tasks.len();
+                    let vis = state.vis();
+
                     match ke.key_event.keycode {
-                        Keycode::Q => return 0,
-                        Keycode::R => { refresh_tick = 60; }
+                        Keycode::Q | Keycode::Escape => return 0,
+
+                        Keycode::R | Keycode::F5 => {
+                            state.refresh_ticks = 120;
+                        }
+
                         Keycode::Up => {
-                            if selected > 0 { selected -= 1; }
-                            if selected < scroll { scroll = selected; }
+                            if state.selected > 0 { state.selected -= 1; }
+                            state.clamp_scroll();
+                            state.dirty = true;
                         }
                         Keycode::Down => {
-                            selected += 1;
-                            let tasks = collect_tasks();
-                            if selected >= tasks.len() {
-                                selected = tasks.len().saturating_sub(1);
-                            }
-                            let visible = (WIN_H - LIST_START_Y) / ROW_H;
-                            if selected >= scroll + visible {
-                                scroll = selected.saturating_sub(visible - 1);
-                            }
+                            if state.selected + 1 < len { state.selected += 1; }
+                            state.clamp_scroll();
+                            state.dirty = true;
                         }
+                        Keycode::Home => {
+                            state.selected = 0;
+                            state.clamp_scroll();
+                            state.dirty = true;
+                        }
+                        Keycode::End => {
+                            if len > 0 { state.selected = len - 1; }
+                            state.clamp_scroll();
+                            state.dirty = true;
+                        }
+                        Keycode::PageUp => {
+                            state.selected = state.selected.saturating_sub(vis);
+                            state.clamp_scroll();
+                            state.dirty = true;
+                        }
+                        Keycode::PageDown => {
+                            state.selected = (state.selected + vis).min(len.saturating_sub(1));
+                            state.clamp_scroll();
+                            state.dirty = true;
+                        }
+
                         Keycode::K => {
-                            let tasks = collect_tasks();
-                            if let Some(t) = tasks.get(selected) {
-                                if let Some(task_ref) = task::get_task(t.id) {
-                                    let _ = task_ref.kill(task_struct::KillReason::Requested);
-                                    info!("[task_manager] Killed task {}", t.id);
+                            if let Some(t) = state.tasks.get(state.selected) {
+                                if t.is_idle {
+                                    info!("[task_manager] cannot kill idle task");
+                                } else if let Some(tr) = task::get_task(t.id) {
+                                    let _ = tr.kill(task_struct::KillReason::Requested);
+                                    info!("[task_manager] killed task {}", t.id);
+                                    state.refresh_ticks = 120; // refresh immédiat
                                 }
                             }
-                            refresh_tick = 60;
                         }
+
                         _ => {}
                     }
                 }
-                Ok(None) => break, // plus d'events en attente
-                Ok(Some(_)) => {}  // autres events ignorés
-                Err(_) => break,
+
+                Ok(Some(Event::WindowResizeEvent(_))) => {
+                    let a = win.area();
+                    state.off_x = a.top_left.x;
+                    state.off_y = a.top_left.y;
+                    state.cw    = (a.bottom_right.x - a.top_left.x) as usize;
+                    state.ch    = (a.bottom_right.y - a.top_left.y) as usize;
+                    state.clamp_scroll();
+                    state.dirty = true;
+                }
+
+                Ok(None)    => break,
+                Ok(Some(_)) => {}
+                Err(_)      => break,
             }
         }
 
-        if do_refresh {
-            refresh_tick = 0;
-            let tasks      = collect_tasks();
-            let free_frames = count_free_frames();
-
-            // Borne scroll
-            let visible = (WIN_H - LIST_START_Y) / ROW_H;
-            if scroll + visible > tasks.len() {
-                scroll = tasks.len().saturating_sub(visible);
-            }
-
-            // Dessine dans le framebuffer de la fenêtre
+        if state.dirty {
             {
                 let mut fb = win.framebuffer_mut();
-                redraw(&mut fb, &tasks, free_frames, total_estimate, scroll, WIN_H);
+                redraw(&mut fb, &state);
             }
-
-            // Demande au WM de rafraîchir la zone de la fenêtre
             if let Err(e) = win.render(None) {
                 error!("[task_manager] render: {}", e);
             }
+            state.dirty = false;
         }
 
         scheduler::schedule();

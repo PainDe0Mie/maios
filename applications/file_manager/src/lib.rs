@@ -1,14 +1,20 @@
-//! Gestionnaire de fichiers pour mai_os
+//! Gestionnaire de fichiers — Mai OS
 //!
-//! Navigation style Windows :
-//!   "Root:/" au lieu de "/"
-//!   "Root:/apps/shell" etc.
+//! Architecture : sidebar (favoris + arbre) + panneau principal (liste détaillée)
 //!
-//! Contrôles :
-//!   UP/DOWN  — navigation dans la liste
-//!   ENTER    — ouvrir dossier / lancer fichier
-//!   BACKSPACE — dossier parent
-//!   Q        — quitter
+//! Souris :
+//!   Clic simple        — sélectionne
+//!   Double-clic        — ouvre dossier / lance fichier
+//!   Clic sidebar       — navigation rapide
+//!   Molette (PageUp/Down pour l'instant)
+//!
+//! Clavier :
+//!   ↑ / ↓             — navigation
+//!   Entrée            — ouvre / lance
+//!   Retour arrière    — dossier parent
+//!   PageUp / PageDown — défilement rapide
+//!   Home / End        — début / fin de liste
+//!   Q                 — quitter
 
 #![no_std]
 extern crate alloc;
@@ -42,51 +48,83 @@ use fs_node::{DirRef, FileOrDir};
 use event_types::Event;
 use keycodes_ascii::{KeyAction, Keycode};
 
-// ================================================================
-// COULEURS
-// ================================================================
-const C_BG:         Color = Color::new(0x001A1B26);
-const C_PANEL:      Color = Color::new(0x0024283A);
-const C_BORDER:     Color = Color::new(0x00414868);
-const C_ACCENT:     Color = Color::new(0x007AA2F7);
-const C_FG:         Color = Color::new(0x00C0CAF5);
-const C_FG_DIM:     Color = Color::new(0x00565F89);
-const C_SELECTED:   Color = Color::new(0x002D3F6B);
-const C_HOVER:      Color = Color::new(0x00252535);
-const C_DIR:        Color = Color::new(0x00E0AF68);
-const C_FILE:       Color = Color::new(0x00C0CAF5);
-const C_EXEC:       Color = Color::new(0x009ECE6A);
-const C_HEADER_BG:  Color = Color::new(0x00292E42);
-const C_PATHBAR:    Color = Color::new(0x001E2030);
+// ────────────────────────────────────────────────────────────────
+// PALETTE — Tokyo Night
+// ────────────────────────────────────────────────────────────────
+const C_BG:       Color = Color::new(0x001A1B26);
+const C_SURFACE:  Color = Color::new(0x0024283A);
+const C_SURFACE2: Color = Color::new(0x00292E42);
+const C_BORDER:   Color = Color::new(0x00414868);
+const C_ACCENT:   Color = Color::new(0x007AA2F7);
+const C_ACCENT2:  Color = Color::new(0x00BB9AF7);
+const C_FG:       Color = Color::new(0x00C0CAF5);
+const C_FG_DIM:   Color = Color::new(0x00565F89);
+const C_SEL:      Color = Color::new(0x002D3F6B);
+const C_SEL_ACT:  Color = Color::new(0x003D5480);
+const C_STRIPE:   Color = Color::new(0x001E2030);
+const C_DIR:      Color = Color::new(0x00E0AF68);
+const C_EXEC:     Color = Color::new(0x009ECE6A);
+const C_FILE:     Color = Color::new(0x00A9B1D6);
+const C_SYMLINK:  Color = Color::new(0x007DCFFF);
+const TRANSPARENT: Color = Color::new(0xFF000000);
 
-// ================================================================
-// LAYOUT
-// ================================================================
-const WIN_W:      usize = 700;
-const WIN_H:      usize = 480;
-const PAD:        isize = 10;
-const TITLEBAR_H: usize = 28;  // géré par window crate
-const PATHBAR_H:  usize = 26;
-const HEADER_H:   usize = 20;
+// ────────────────────────────────────────────────────────────────
+// DIMENSIONS FENÊTRE
+// ────────────────────────────────────────────────────────────────
+const WIN_W: usize = 780;
+const WIN_H: usize = 520;
+
+// ────────────────────────────────────────────────────────────────
+// LAYOUT INTERNE (coords relatives au contenu de la fenêtre)
+// ────────────────────────────────────────────────────────────────
+const PATHBAR_H:  usize = 28;
+const SIDEBAR_W:  usize = 160;
+const HEADER_H:   usize = 22;
 const ROW_H:      usize = 20;
-const COL_ICON:   isize = PAD;
-const COL_NAME:   isize = PAD + 18;
-const COL_TYPE:   isize = 440;
-const COL_SIZE:   isize = 560;
-const LIST_START: usize = PATHBAR_H + HEADER_H + 4;
 const FOOTER_H:   usize = 22;
+const SCROLLBAR_W: usize = 8;
 
-// ================================================================
-// HELPERS DESSIN
-// ================================================================
+/// Largeur du panneau principal (hors sidebar et scrollbar)
+fn main_w(cw: usize) -> usize {
+    cw.saturating_sub(SIDEBAR_W).saturating_sub(SCROLLBAR_W)
+}
+
+/// Y du premier pixel de la liste (relatif au contenu)
+const LIST_TOP: usize = PATHBAR_H + HEADER_H;
+
+/// Nombre de lignes visibles dans content_h pixels
+fn visible_rows(ch: usize) -> usize {
+    ch.saturating_sub(LIST_TOP + FOOTER_H) / ROW_H
+}
+
+// ────────────────────────────────────────────────────────────────
+// COLONNES dans le panneau principal
+// ────────────────────────────────────────────────────────────────
+const C_ICON: isize = 4;
+const C_NAME: isize = 20;
+// C_TYPE et C_SIZE sont calculés dynamiquement selon main_w
+
+// ────────────────────────────────────────────────────────────────
+// DESSIN DE BASE
+// ────────────────────────────────────────────────────────────────
 type Fb = Framebuffer<AlphaPixel>;
 
+#[inline]
 fn fill(fb: &mut Fb, x: isize, y: isize, w: usize, h: usize, c: Color) {
+    if w == 0 || h == 0 { return; }
     framebuffer_drawer::fill_rectangle(fb, Coord::new(x, y), w, h, c.into());
 }
 
+#[inline]
 fn hline(fb: &mut Fb, x0: isize, x1: isize, y: isize, c: Color) {
-    for x in x0..x1 { fb.draw_pixel(Coord::new(x, y), c.into()); }
+    if x1 <= x0 { return; }
+    framebuffer_drawer::fill_rectangle(fb, Coord::new(x0, y), (x1 - x0) as usize, 1, c.into());
+}
+
+#[inline]
+fn vline(fb: &mut Fb, x: isize, y0: isize, y1: isize, c: Color) {
+    if y1 <= y0 { return; }
+    framebuffer_drawer::fill_rectangle(fb, Coord::new(x, y0), 1, (y1 - y0) as usize, c.into());
 }
 
 fn draw_char(fb: &mut Fb, x: isize, y: isize, ch: char, c: Color) {
@@ -103,213 +141,580 @@ fn draw_char(fb: &mut Fb, x: isize, y: isize, ch: char, c: Color) {
     }
 }
 
-fn draw_text(fb: &mut Fb, x: isize, y: isize, text: &str, c: Color) {
+fn draw_text(fb: &mut Fb, x: isize, y: isize, s: &str, c: Color) {
     let mut cx = x;
-    for ch in text.chars() {
+    for ch in s.chars() {
         draw_char(fb, cx, y, ch, c);
         cx += font::CHARACTER_WIDTH as isize;
     }
 }
 
-fn draw_text_clipped(fb: &mut Fb, x: isize, y: isize, text: &str, max_px: isize, c: Color) {
-    let max_chars = (max_px / font::CHARACTER_WIDTH as isize) as usize;
-    let s: String = text.chars().take(max_chars).collect();
-    draw_text(fb, x, y, &s, c);
-}
-
-// ================================================================
-// CONVERSION CHEMIN : "/" → "Root:/"
-// ================================================================
-fn to_display_path(abs: &str) -> String {
-    if abs.is_empty() || abs == "/" {
-        return "Root:/".to_string();
+/// Dessine `s` en tronquant à `max_px` pixels, avec "…" si nécessaire.
+fn draw_text_clipped(fb: &mut Fb, x: isize, y: isize, s: &str, max_px: isize, c: Color) {
+    let ch_w = font::CHARACTER_WIDTH as isize;
+    if max_px < ch_w { return; }
+    let max_chars = (max_px / ch_w) as usize;
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        draw_text(fb, x, y, s, c);
+    } else {
+        // Tronque et ajoute "~" comme indicateur
+        let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        draw_text(fb, x, y, &truncated, c);
+        draw_char(fb, x + (max_chars.saturating_sub(1)) as isize * ch_w, y, '~', C_FG_DIM);
     }
-    format!("Root:{}", abs)
 }
 
-// ================================================================
-// ENTRÉE DE LISTE
-// ================================================================
+// ────────────────────────────────────────────────────────────────
+// CHEMIN AFFICHÉ
+// ────────────────────────────────────────────────────────────────
+fn display_path(dir: &DirRef) -> String {
+    let abs = dir.lock().get_absolute_path();
+    if abs.is_empty() || abs == "/" {
+        "Root:/".to_string()
+    } else {
+        format!("Root:{}", abs)
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// ENTRÉE DE RÉPERTOIRE
+// ────────────────────────────────────────────────────────────────
 #[derive(Clone)]
 struct Entry {
-    name:   String,
-    is_dir: bool,
-    /// true si le nom commence par un préfixe d'appli connu
+    name:    String,
+    is_dir:  bool,
     is_exec: bool,
 }
 
 impl Entry {
-    fn type_str(&self) -> &'static str {
-        if self.is_dir  { "Dossier" }
+    fn kind_str(&self) -> &'static str {
+        if self.is_dir      { "Dossier"     }
         else if self.is_exec { "Application" }
-        else             { "Fichier" }
+        else                 { "Fichier"     }
     }
 
     fn color(&self) -> Color {
-        if self.is_dir  { C_DIR }
-        else if self.is_exec { C_EXEC }
-        else             { C_FILE }
+        if self.is_dir      { C_DIR   }
+        else if self.is_exec { C_EXEC  }
+        else                 { C_FILE  }
     }
 
-    fn icon(&self) -> &'static str {
-        if self.is_dir { "[D]" } else if self.is_exec { "[X]" } else { "[F]" }
+    fn icon(&self) -> char {
+        if self.is_dir      { 'D' }
+        else if self.is_exec { 'X' }
+        else                 { 'F' }
     }
 }
 
 fn is_executable(name: &str) -> bool {
-    // Dans Theseus/mai_os, les apps ont un préfixe "a#" ou finissent par "-<hash>"
-    // Heuristique : contient un '-' et pas de '.'  ou finit en suffixe connu
-    (name.contains('-') && !name.contains('.'))
-    || name.ends_with(".elf")
+    (name.contains('-') && !name.contains('.')) || name.ends_with(".elf")
 }
 
-// ================================================================
+// ────────────────────────────────────────────────────────────────
 // LECTURE D'UN RÉPERTOIRE
-// ================================================================
+// ────────────────────────────────────────────────────────────────
 fn list_dir(dir: &DirRef) -> Vec<Entry> {
     let locked = dir.lock();
     let mut names = locked.list();
-    names.sort();
-
+    // Dossiers d'abord, puis tri alphabétique
+    names.sort_by(|a, b| {
+        let a_dir = locked.get(a).map_or(false, |f| f.is_dir());
+        let b_dir = locked.get(b).map_or(false, |f| f.is_dir());
+        match (a_dir, b_dir) {
+            (true, false) => core::cmp::Ordering::Less,
+            (false, true) => core::cmp::Ordering::Greater,
+            _             => a.cmp(b),
+        }
+    });
     names.into_iter().map(|name| {
-        let is_dir = locked.get(&name)
-            .map(|fod| fod.is_dir())
-            .unwrap_or(false);
+        let is_dir  = locked.get(&name).map_or(false, |f| f.is_dir());
         let is_exec = !is_dir && is_executable(&name);
         Entry { name, is_dir, is_exec }
     }).collect()
 }
 
-// ================================================================
-// RENDU
-// ================================================================
-fn redraw(
-    fb: &mut Fb,
-    ox: isize,   // offset X (border gauche)
-    oy: isize,   // offset Y (titlebar + border haut)
-    cw: usize,   // largeur contenu
-    ch: usize,   // hauteur contenu
-    entries: &[Entry],
-    current_dir: &DirRef,
-    selected: usize,
-    scroll: usize,
-) {
-    // Toutes les coordonnées sont relatives au contenu (après titlebar/border)
-    let w = cw as isize;
-    let h = ch;
-
-    // Fond contenu uniquement
-    fill(fb, ox, oy, cw, h, C_BG);
-
-    // ── Barre de chemin ─────────────────────────────────────────
-    fill(fb, ox, oy, cw, PATHBAR_H, C_PATHBAR);
-    hline(fb, ox, ox + w, oy + PATHBAR_H as isize, C_BORDER);
-
-    let abs = current_dir.lock().get_absolute_path();
-    let display = to_display_path(&abs);
-    draw_text(fb, ox + PAD, oy + 5, &display, C_ACCENT);
-
-    draw_text(fb, ox + w - 80, oy + 5, "<- Back", C_FG_DIM);
-
-    // ── Header colonnes ─────────────────────────────────────────
-    let hy = oy + PATHBAR_H as isize;
-    fill(fb, ox, hy, cw, HEADER_H, C_HEADER_BG);
-    hline(fb, ox, ox + w, hy + HEADER_H as isize - 1, C_ACCENT);
-
-    draw_text(fb, ox + COL_NAME, hy + 2, "Nom", C_FG_DIM);
-    draw_text(fb, ox + COL_TYPE, hy + 2, "Type", C_FG_DIM);
-    draw_text(fb, ox + COL_SIZE, hy + 2, "Info", C_FG_DIM);
-
-    // ── Liste ───────────────────────────────────────────────────
-    let list_y  = oy + LIST_START as isize;
-    let visible = (h.saturating_sub(LIST_START + FOOTER_H)) / ROW_H;
-
-    for (i, entry) in entries.iter().skip(scroll).take(visible).enumerate() {
-        let ry = list_y + (i * ROW_H) as isize;
-        let abs_idx = scroll + i;
-
-        // Fond ligne
-        let bg = if abs_idx == selected { C_SELECTED }
-                 else if i % 2 == 0     { C_BG }
-                 else                    { C_HOVER };
-        fill(fb, ox, ry, cw, ROW_H, bg);
-
-        // Icône
-        draw_text(fb, ox + COL_ICON, ry + 2, entry.icon(), entry.color());
-
-        // Nom (tronqué)
-        let max_name_px = COL_TYPE - COL_NAME - 8;
-        draw_text_clipped(fb, ox + COL_NAME, ry + 2, &entry.name, max_name_px, entry.color());
-
-        // Type
-        draw_text(fb, ox + COL_TYPE, ry + 2, entry.type_str(), C_FG_DIM);
-
-        // Info
-        let info = if entry.is_dir { "-".to_string() } else { "".to_string() };
-        draw_text(fb, ox + COL_SIZE, ry + 2, &info, C_FG_DIM);
-
-        // Séparateur
-        hline(fb, ox, ox + w, ry + ROW_H as isize - 1, Color::new(0x00252535));
-    }
-
-    // ── Scrollbar ────────────────────────────────────────────────
-    if entries.len() > visible && visible > 0 {
-        let sb_x  = ox + w - 7;
-        fill(fb, sb_x, list_y, 5, visible * ROW_H, Color::new(0x00111115));
-        let thumb_h = ((visible * ROW_H * visible) / entries.len().max(1)).max(12) as isize;
-        let thumb_y = if entries.len() > visible {
-            (scroll * visible * ROW_H / (entries.len() - visible + 1)) as isize
-        } else { 0 };
-        fill(fb, sb_x, list_y + thumb_y, 5, thumb_h as usize, C_BORDER);
-    }
-
-    // ── Footer ───────────────────────────────────────────────────
-    let fy = oy + h as isize - FOOTER_H as isize;
-    fill(fb, ox, fy, cw, FOOTER_H, C_PANEL);
-    hline(fb, ox, ox + w, fy, C_BORDER);
-
-    let count_str = format!("{} element(s)", entries.len());
-    draw_text(fb, ox + PAD, fy + 3, &count_str, C_FG_DIM);
-    draw_text(fb, ox + w / 2 - 120, fy + 3,
-        "ENTER:ouvrir  BACK:parent  Q:quitter", C_FG_DIM);
+// ────────────────────────────────────────────────────────────────
+// FAVORIS (sidebar)
+// ────────────────────────────────────────────────────────────────
+struct Bookmark {
+    label: &'static str,
+    path:  &'static str,
 }
 
-// ================================================================
-// LANCER UNE APPLICATION
-// ================================================================
+const BOOKMARKS: &[Bookmark] = &[
+    Bookmark { label: "Root",  path: "/"      },
+    Bookmark { label: "Apps",  path: "/apps"  },
+    Bookmark { label: "Libs",  path: "/libs"  },
+    Bookmark { label: "Boot",  path: "/boot"  },
+];
+
+// ────────────────────────────────────────────────────────────────
+// LANCEMENT D'APPLICATION
+// ────────────────────────────────────────────────────────────────
 fn try_launch(name: &str) {
-    // Cherche le fichier dans le namespace de la tâche courante
     let ns = match task::with_current_task(|t| t.namespace.clone()) {
         Ok(ns) => ns,
-        Err(_) => { error!("[files] no current task namespace"); return; }
+        Err(_) => { error!("[files] no namespace"); return; }
     };
-
     if let Some(file) = ns.dir().get_file_starting_with(name) {
-        let abs = file.lock().get_absolute_path();
-        let p   = path::Path::new(&abs);
+        let abs   = file.lock().get_absolute_path();
+        let p     = path::Path::new(&abs);
         match mod_mgmt::create_application_namespace(None) {
             Ok(new_ns) => {
                 match spawn::new_application_task_builder(p, Some(new_ns)) {
                     Ok(b) => { let _ = b.name(name.to_string()).spawn(); }
-                    Err(e) => error!("[files] spawn builder: {}", e),
+                    Err(e) => error!("[files] spawn: {}", e),
                 }
             }
-            Err(e) => error!("[files] namespace: {}", e),
+            Err(e) => error!("[files] ns: {}", e),
         }
     } else {
-        info!("[files] '{}' not launchable (not found in namespace)", name);
+        info!("[files] '{}' not found in namespace", name);
     }
 }
 
-// ================================================================
+// ────────────────────────────────────────────────────────────────
+// NAVIGATION VIA UN CHEMIN ABSOLU
+// ────────────────────────────────────────────────────────────────
+fn navigate_to(path_str: &str) -> Option<DirRef> {
+    let root_dir = root::get_root().clone();
+    if path_str == "/" {
+        return Some(root_dir);
+    }
+    let mut cur = root_dir;
+    for segment in path_str.split('/').filter(|s| !s.is_empty()) {
+        let next = cur.lock().get(segment)
+            .and_then(|fod| if let FileOrDir::Dir(d) = fod { Some(d) } else { None })?;
+        cur = next;
+    }
+    Some(cur)
+}
+
+// ────────────────────────────────────────────────────────────────
+// DOUBLE-CLIC : détecte deux clics rapides sur la même ligne
+// ────────────────────────────────────────────────────────────────
+struct ClickTracker {
+    last_idx:   usize,
+    /// Nombre d'itérations de boucle depuis le dernier clic
+    /// (pas de timer réel disponible, on approxime)
+    last_ticks: usize,
+    /// Tick courant de la boucle principale
+    tick: usize,
+}
+
+impl ClickTracker {
+    const fn new() -> Self {
+        Self { last_idx: usize::MAX, last_ticks: 0, tick: 0 }
+    }
+
+    /// Appeler à chaque itération de la boucle principale.
+    fn advance(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
+    }
+
+    /// Retourne `true` si c'est un double-clic.
+    fn click(&mut self, idx: usize) -> bool {
+        let double = idx == self.last_idx
+            && self.tick.wrapping_sub(self.last_ticks) < 30; // ~30 itérations ≈ dbl-clic
+        self.last_idx   = idx;
+        self.last_ticks = self.tick;
+        double
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// RENDU COMPLET
+// ────────────────────────────────────────────────────────────────
+#[allow(clippy::too_many_arguments)]
+fn redraw(
+    fb:       &mut Fb,
+    ox: isize, oy: isize,   // offset du contenu dans le framebuffer (titlebar + border)
+    cw: usize, ch: usize,   // dimensions du contenu
+    entries:  &[Entry],
+    cur_dir:  &DirRef,
+    selected: usize,
+    scroll:   usize,
+    status:   &str,         // message dans le footer
+) {
+    let mw  = main_w(cw);
+    let vis = visible_rows(ch);
+    let fw  = font::CHARACTER_WIDTH as isize;
+    let fh  = font::CHARACTER_HEIGHT as isize;
+
+    // ── Fond général ────────────────────────────────────────────
+    fill(fb, ox, oy, cw, ch, C_BG);
+
+    // ══════════════════════════════════════════════════════════
+    // SIDEBAR
+    // ══════════════════════════════════════════════════════════
+    let sb_x = ox;
+    let sb_y = oy;
+    fill(fb, sb_x, sb_y, SIDEBAR_W, ch, C_SURFACE);
+    vline(fb, sb_x + SIDEBAR_W as isize - 1, sb_y, sb_y + ch as isize, C_BORDER);
+
+    // Titre sidebar
+    fill(fb, sb_x, sb_y, SIDEBAR_W, PATHBAR_H, C_SURFACE2);
+    draw_text(fb, sb_x + 8, sb_y + (PATHBAR_H as isize - fh) / 2, "FAVORIS", C_ACCENT);
+    hline(fb, sb_x, sb_x + SIDEBAR_W as isize, sb_y + PATHBAR_H as isize, C_BORDER);
+
+    // Favoris
+    for (i, bm) in BOOKMARKS.iter().enumerate() {
+        let ry = sb_y + PATHBAR_H as isize + (i * ROW_H) as isize;
+        let text_y = ry + (ROW_H as isize - fh) / 2;
+        draw_char(fb, sb_x + 6, text_y, '>', C_ACCENT);
+        draw_text_clipped(fb, sb_x + 18, text_y, bm.label,
+            (SIDEBAR_W as isize - 24).max(0), C_FG);
+    }
+
+    // Séparateur entre favoris et arborescence courante
+    let sep_y = sb_y + PATHBAR_H as isize + (BOOKMARKS.len() * ROW_H) as isize + 4;
+    hline(fb, sb_x + 8, sb_x + SIDEBAR_W as isize - 8, sep_y, C_BORDER);
+
+    // Chemin décomposé (mini arbre)
+    let abs = cur_dir.lock().get_absolute_path();
+    let segments: Vec<&str> = abs.split('/').filter(|s| !s.is_empty()).collect();
+    let mut tree_y = sep_y + 6;
+    draw_text_clipped(fb, sb_x + 8, tree_y, "Root:/", (SIDEBAR_W as isize - 16).max(0), C_ACCENT2);
+    tree_y += ROW_H as isize;
+    for (depth, seg) in segments.iter().enumerate() {
+        let indent = sb_x + 8 + (depth as isize + 1) * 6;
+        let avail = (SIDEBAR_W as isize - (indent - sb_x) - 4).max(0);
+        draw_char(fb, indent, tree_y, '+', C_FG_DIM);
+        draw_text_clipped(fb, indent + fw, tree_y, seg, avail, C_FG);
+        tree_y += ROW_H as isize;
+        if tree_y > sb_y + ch as isize - FOOTER_H as isize { break; }
+    }
+
+    // ══════════════════════════════════════════════════════════
+    // PANNEAU PRINCIPAL
+    // ══════════════════════════════════════════════════════════
+    let mx = ox + SIDEBAR_W as isize;  // X du panneau principal dans le fb
+
+    // ── Barre de chemin ─────────────────────────────────────────
+    fill(fb, mx, oy, mw + SCROLLBAR_W, PATHBAR_H, C_SURFACE2);
+    hline(fb, mx, mx + (mw + SCROLLBAR_W) as isize, oy + PATHBAR_H as isize, C_ACCENT);
+
+    // Icône "maison" + chemin complet
+    let path_str = display_path(cur_dir);
+    let text_y_path = oy + (PATHBAR_H as isize - fh) / 2;
+    draw_char(fb, mx + 6, text_y_path, '~', C_ACCENT);
+    draw_text_clipped(fb, mx + 18, text_y_path, &path_str,
+        (mw as isize - 90).max(0), C_FG);
+
+    // Bouton "↑ Parent" à droite
+    let btn_x = mx + mw as isize - 70;
+    fill(fb, btn_x, oy + 4, 62, PATHBAR_H - 8, C_SURFACE);
+    framebuffer_drawer::draw_rectangle(fb,
+        Coord::new(btn_x, oy + 4), 62, PATHBAR_H - 8, C_BORDER.into());
+    draw_text(fb, btn_x + 4, text_y_path, "^ Parent", C_FG_DIM);
+
+    // ── Header colonnes ─────────────────────────────────────────
+    let hdr_y  = oy + PATHBAR_H as isize;
+    let col_type_x  = mx + mw as isize - 120;
+    fill(fb, mx, hdr_y, mw + SCROLLBAR_W, HEADER_H, C_SURFACE2);
+    hline(fb, mx, mx + mw as isize, hdr_y + HEADER_H as isize - 1, C_ACCENT);
+
+    let hdr_text_y = hdr_y + (HEADER_H as isize - fh) / 2;
+    draw_text(fb, mx + C_NAME + fw, hdr_text_y, "Nom", C_FG_DIM);
+    draw_text(fb, col_type_x,       hdr_text_y, "Type", C_FG_DIM);
+
+    // ── Lignes ──────────────────────────────────────────────────
+    let list_y0 = oy + LIST_TOP as isize;
+
+    for (row, entry) in entries.iter().skip(scroll).take(vis).enumerate() {
+        let abs_idx = scroll + row;
+        let ry      = list_y0 + (row * ROW_H) as isize;
+        let text_y  = ry + (ROW_H as isize - fh) / 2;
+
+        // Fond de ligne
+        let bg = if abs_idx == selected {
+            C_SEL_ACT
+        } else if row % 2 == 0 {
+            C_BG
+        } else {
+            C_STRIPE
+        };
+        fill(fb, mx, ry, mw, ROW_H, bg);
+
+        // Indicateur de sélection (barre latérale gauche)
+        if abs_idx == selected {
+            fill(fb, mx, ry, 3, ROW_H, C_ACCENT);
+        }
+
+        // Icône
+        let icon_color = if abs_idx == selected { C_FG } else { entry.color() };
+        draw_char(fb, mx + C_ICON, text_y, entry.icon(), icon_color);
+
+        // Nom
+        let max_name = col_type_x - (mx + C_NAME + fw) - 8;
+        draw_text_clipped(fb, mx + C_NAME + fw, text_y, &entry.name,
+            max_name, entry.color());
+
+        // Type
+        draw_text(fb, col_type_x, text_y, entry.kind_str(), C_FG_DIM);
+
+        // Séparateur horizontal (très subtil)
+        hline(fb, mx + 3, mx + mw as isize, ry + ROW_H as isize - 1,
+            Color::new(0x00202030));
+    }
+
+    // Zone vide en dessous des lignes
+    let last_row_y = list_y0 + (vis * ROW_H) as isize;
+    let footer_y   = oy + ch as isize - FOOTER_H as isize;
+    if last_row_y < footer_y {
+        fill(fb, mx, last_row_y, mw, (footer_y - last_row_y) as usize, C_BG);
+    }
+
+    // ── Scrollbar ────────────────────────────────────────────────
+    let sb_area_x = mx + mw as isize;
+    let sb_area_h = vis * ROW_H;
+    fill(fb, sb_area_x, list_y0, SCROLLBAR_W, sb_area_h, Color::new(0x00111118));
+    vline(fb, sb_area_x, list_y0, list_y0 + sb_area_h as isize, C_BORDER);
+
+    if entries.len() > vis && vis > 0 {
+        let total     = entries.len();
+        let thumb_h   = ((vis * sb_area_h) / total).max(16);
+        let max_off   = total - vis;
+        let thumb_y   = if max_off > 0 {
+            (scroll * (sb_area_h - thumb_h)) / max_off
+        } else { 0 };
+        fill(fb, sb_area_x + 1, list_y0 + thumb_y as isize,
+            SCROLLBAR_W - 2, thumb_h, C_BORDER);
+    }
+
+    // ── Footer ───────────────────────────────────────────────────
+    fill(fb, mx, footer_y, mw + SCROLLBAR_W, FOOTER_H, C_SURFACE2);
+    hline(fb, mx, mx + (mw + SCROLLBAR_W) as isize, footer_y, C_BORDER);
+
+    let ft_text_y = footer_y + (FOOTER_H as isize - fh) / 2;
+    let count_str = if entries.is_empty() {
+        "Dossier vide".to_string()
+    } else {
+        format!("{} elements  |  sel: {}", entries.len(), selected + 1)
+    };
+    draw_text(fb, mx + 8, ft_text_y, &count_str, C_FG_DIM);
+
+    // Status / raccourcis au centre
+    let hint = if status.is_empty() {
+        "Entree:ouvrir  BackSp:parent  Q:quitter"
+    } else {
+        status
+    };
+    let hint_x = mx + mw as isize / 2 - (hint.len() as isize * fw) / 2;
+    if hint_x > mx + 120 {
+        draw_text_clipped(fb, hint_x, ft_text_y, hint,
+            (mw as isize - 130).max(0), C_FG_DIM);
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// ÉTAT DE L'APPLICATION
+// ────────────────────────────────────────────────────────────────
+struct FileManager {
+    current_dir: DirRef,
+    entries:     Vec<Entry>,
+    selected:    usize,
+    scroll:      usize,
+    dirty:       bool,
+    status:      String,
+    clicker:     ClickTracker,
+
+    /// Dimensions du contenu de la fenêtre (calculées une fois)
+    off_x: isize,
+    off_y: isize,
+    cw:    usize,
+    ch:    usize,
+}
+
+impl FileManager {
+    fn new(win: &window::Window) -> Self {
+        let area = win.area();
+        let off_x = area.top_left.x;
+        let off_y = area.top_left.y;
+        let cw = (area.bottom_right.x - area.top_left.x) as usize;
+        let ch = (area.bottom_right.y - area.top_left.y) as usize;
+        let root_dir = root::get_root().clone();
+        let entries  = list_dir(&root_dir);
+        Self {
+            current_dir: root_dir,
+            entries,
+            selected: 0,
+            scroll: 0,
+            dirty: true,
+            status: String::new(),
+            clicker: ClickTracker::new(),
+            off_x, off_y, cw, ch,
+        }
+    }
+
+    fn vis(&self) -> usize { visible_rows(self.ch) }
+
+    /// Clamp scroll so selected is always visible.
+    fn clamp_scroll(&mut self) {
+        let vis = self.vis();
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if vis > 0 && self.selected >= self.scroll + vis {
+            self.scroll = self.selected - vis + 1;
+        }
+        let max_scroll = self.entries.len().saturating_sub(vis);
+        if self.scroll > max_scroll { self.scroll = max_scroll; }
+    }
+
+    fn navigate_into(&mut self, dir: DirRef) {
+        self.current_dir = dir;
+        self.entries = list_dir(&self.current_dir);
+        self.selected = 0;
+        self.scroll   = 0;
+        self.dirty    = true;
+    }
+
+    fn navigate_parent(&mut self) {
+        let parent = self.current_dir.lock().get_parent_dir();
+        if let Some(p) = parent {
+            self.navigate_into(p);
+        }
+    }
+
+    fn open_selected(&mut self) {
+        if let Some(entry) = self.entries.get(self.selected).cloned() {
+            if entry.is_dir {
+                let sub = self.current_dir.lock()
+                    .get(&entry.name)
+                    .and_then(|fod| if let FileOrDir::Dir(d) = fod { Some(d) } else { None });
+                if let Some(d) = sub {
+                    self.navigate_into(d);
+                }
+            } else if entry.is_exec {
+                self.status = format!("Lancement: {}", entry.name);
+                self.dirty  = true;
+                try_launch(&entry.name);
+            } else {
+                self.status = format!("Fichier: {}", entry.name);
+                self.dirty  = true;
+            }
+        }
+    }
+
+    // ── Gestion clavier ──────────────────────────────────────────
+    fn on_key(&mut self, kc: Keycode) -> bool /* quitter? */ {
+        let vis = self.vis();
+        let len = self.entries.len();
+        match kc {
+            Keycode::Q => return true,
+
+            Keycode::Up => {
+                if self.selected > 0 { self.selected -= 1; }
+                self.clamp_scroll();
+                self.dirty = true;
+            }
+            Keycode::Down => {
+                if self.selected + 1 < len { self.selected += 1; }
+                self.clamp_scroll();
+                self.dirty = true;
+            }
+            Keycode::Home => {
+                self.selected = 0;
+                self.clamp_scroll();
+                self.dirty = true;
+            }
+            Keycode::End => {
+                if len > 0 { self.selected = len - 1; }
+                self.clamp_scroll();
+                self.dirty = true;
+            }
+            Keycode::PageUp => {
+                self.selected = self.selected.saturating_sub(vis);
+                self.clamp_scroll();
+                self.dirty = true;
+            }
+            Keycode::PageDown => {
+                self.selected = (self.selected + vis).min(len.saturating_sub(1));
+                self.clamp_scroll();
+                self.dirty = true;
+            }
+            Keycode::Enter => {
+                self.open_selected();
+            }
+            Keycode::Backspace => {
+                self.navigate_parent();
+            }
+            _ => {}
+        }
+        false
+    }
+
+    // ── Gestion souris ───────────────────────────────────────────
+    /// Retourne `true` si l'app doit quitter.
+    ///
+    /// `coord` est la coordonnée de la souris **relative au contenu** de la fenêtre
+    /// (ce que `MousePositionEvent::coordinate` fournit — relatif à la zone interne).
+    fn on_mouse_click(&mut self, coord: Coord, was_left: bool, is_left: bool) -> bool {
+        if !was_left && !is_left { return false; } // pas de changement de bouton
+        if !is_left { return false; }              // relâchement ignoré ici
+
+        let x = coord.x;
+        let y = coord.y;
+
+        // ── Clic sidebar (x < SIDEBAR_W) ─────────────────────────
+        if x < SIDEBAR_W as isize {
+            let bm_y_start = PATHBAR_H as isize;
+            if y >= bm_y_start {
+                let idx = ((y - bm_y_start) / ROW_H as isize) as usize;
+                if let Some(bm) = BOOKMARKS.get(idx) {
+                    if let Some(dir) = navigate_to(bm.path) {
+                        self.navigate_into(dir);
+                    }
+                }
+            }
+            return false;
+        }
+
+        // ── Clic bouton "Parent" ─────────────────────────────────
+        let mw   = main_w(self.cw);
+        let btn_x_start = SIDEBAR_W as isize + mw as isize - 70;
+        let btn_x_end   = btn_x_start + 62;
+        if y >= 4 && y < PATHBAR_H as isize - 4
+            && x >= btn_x_start && x < btn_x_end
+        {
+            self.navigate_parent();
+            return false;
+        }
+
+        // ── Clic dans la liste ───────────────────────────────────
+        if y >= LIST_TOP as isize {
+            let row_rel = y - LIST_TOP as isize;
+            let vis     = self.vis();
+            // S'assurer qu'on est bien dans la zone de liste (pas le footer)
+            let list_px_h = vis * ROW_H;
+            if row_rel >= 0 && (row_rel as usize) < list_px_h {
+                let row = (row_rel / ROW_H as isize) as usize;
+                let idx = self.scroll + row;
+                if idx < self.entries.len() {
+                    let double = self.clicker.click(idx);
+                    self.selected = idx;
+                    self.dirty    = true;
+                    if double {
+                        self.open_selected();
+                    }
+                }
+            }
+        }
+
+        false
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
 // POINT D'ENTRÉE
-// ================================================================
-pub fn main(_args: Vec<String>) -> isize {
-    info!("[file_manager] Starting...");
+// ────────────────────────────────────────────────────────────────
+pub fn main(_args: alloc::vec::Vec<String>) -> isize {
+    info!("[file_manager] starting");
 
     let mut win = match window::Window::with_title(
         "Gestionnaire de fichiers".to_string(),
-        Coord::new(80, 50),
+        Coord::new(60, 40),
         WIN_W, WIN_H,
         C_BG,
     ) {
@@ -317,140 +722,69 @@ pub fn main(_args: Vec<String>) -> isize {
         Err(e) => { error!("[file_manager] window: {}", e); return -1; }
     };
 
-    // Récupère l'offset du contenu (après titlebar + bordure)
-    // win.area() retourne un Rectangle relatif au coin haut-gauche de la fenêtre
-    let content_area = win.area();
-    let off_x = content_area.top_left.x;
-    let off_y = content_area.top_left.y;
-    let content_w = (content_area.bottom_right.x - content_area.top_left.x) as usize;
-    let content_h = (content_area.bottom_right.y - content_area.top_left.y) as usize;
-
-    // Démarre à la racine
-    let mut current_dir: DirRef = root::get_root().clone();
-    let mut entries  = list_dir(&current_dir);
-    let mut selected = 0usize;
-    let mut scroll   = 0usize;
-    let mut dirty    = true;
+    let mut fm = FileManager::new(&win);
+    let mut last_left = false;
 
     loop {
-        // ── Événements ──────────────────────────────────────────
+        fm.clicker.advance();
+
+        // ── Drainer tous les événements disponibles ──────────────
         loop {
             match win.handle_event() {
+                Ok(Some(Event::ExitEvent)) => return 0,
+
                 Ok(Some(Event::KeyboardEvent(ke))) => {
                     if ke.key_event.action != KeyAction::Pressed { continue; }
-                    let visible = (WIN_H - LIST_START - FOOTER_H) / ROW_H;
-
-                    match ke.key_event.keycode {
-                        // Quitter
-                        Keycode::Q => return 0,
-
-                        // Navigation
-                        Keycode::Up => {
-                            if selected > 0 { selected -= 1; }
-                            if selected < scroll { scroll = selected; }
-                            dirty = true;
-                        }
-                        Keycode::Down => {
-                            if selected + 1 < entries.len() { selected += 1; }
-                            if selected >= scroll + visible {
-                                scroll = selected.saturating_sub(visible - 1);
-                            }
-                            dirty = true;
-                        }
-
-                        // Ouvrir dossier ou lancer fichier
-                        Keycode::Enter => {
-                            if let Some(entry) = entries.get(selected) {
-                                if entry.is_dir {
-                                    // Navigue dans le sous-dossier
-                                    let locked = current_dir.lock();
-                                    if let Some(FileOrDir::Dir(sub)) = locked.get(&entry.name) {
-                                        drop(locked);
-                                        current_dir = sub;
-                                        entries  = list_dir(&current_dir);
-                                        selected = 0;
-                                        scroll   = 0;
-                                        dirty    = true;
-                                    }
-                                } else if entry.is_exec {
-                                    try_launch(&entry.name);
-                                }
-                            }
-                        }
-
-                        // Dossier parent
-                        Keycode::Backspace => {
-                            let parent = current_dir.lock().get_parent_dir();
-                            if let Some(p) = parent {
-                                current_dir = p;
-                                entries  = list_dir(&current_dir);
-                                selected = 0;
-                                scroll   = 0;
-                                dirty    = true;
-                            }
-                        }
-
-                        // Page Up / Page Down
-                        Keycode::PageUp => {
-                            selected = selected.saturating_sub(visible);
-                            scroll   = scroll.saturating_sub(visible);
-                            dirty    = true;
-                        }
-                        Keycode::PageDown => {
-                            selected = (selected + visible).min(entries.len().saturating_sub(1));
-                            if selected >= scroll + visible {
-                                scroll = selected.saturating_sub(visible - 1);
-                            }
-                            dirty = true;
-                        }
-
-                        _ => {}
-                    }
+                    if fm.on_key(ke.key_event.keycode) { return 0; }
                 }
+
                 Ok(Some(Event::MousePositionEvent(me))) => {
-                    // Clic gauche sur une ligne
-                    if me.left_button_hold {
-                        // Les coords souris sont relatives au contenu de la fenêtre
-                        let click_y = me.coordinate.y;
-                        let list_top = LIST_START as isize;
-                        if click_y >= list_top {
-                            let idx = ((click_y - list_top) / ROW_H as isize) as usize + scroll;
-                            if idx < entries.len() {
-                                selected = idx;
-                                dirty    = true;
-                            }
-                        }
-                        // Clic sur "Back"
-                        let w = content_w as isize;
-                        if me.coordinate.x >= w - 80 && me.coordinate.y < PATHBAR_H as isize {
-                            let parent = current_dir.lock().get_parent_dir();
-                            if let Some(p) = parent {
-                                current_dir = p;
-                                entries  = list_dir(&current_dir);
-                                selected = 0;
-                                scroll   = 0;
-                                dirty    = true;
-                            }
-                        }
-                    }
+                    let quit = fm.on_mouse_click(
+                        me.coordinate,
+                        last_left,
+                        me.left_button_hold,
+                    );
+                    last_left = me.left_button_hold;
+                    if quit { return 0; }
                 }
+
+                Ok(Some(Event::WindowResizeEvent(_area))) => {
+                    // Recalcule les dimensions du contenu
+                    let a = win.area();
+                    fm.off_x = a.top_left.x;
+                    fm.off_y = a.top_left.y;
+                    fm.cw    = (a.bottom_right.x - a.top_left.x) as usize;
+                    fm.ch    = (a.bottom_right.y - a.top_left.y) as usize;
+                    fm.clamp_scroll();
+                    fm.dirty = true;
+                }
+
                 Ok(None) => break,
                 Ok(Some(_)) => {}
                 Err(_) => break,
             }
         }
 
-        // ── Redraw ──────────────────────────────────────────────
-        if dirty {
+        // ── Redraw si nécessaire ────────────────────────────────
+        if fm.dirty {
             {
                 let mut fb = win.framebuffer_mut();
-                redraw(&mut fb, off_x, off_y, content_w, content_h,
-                       &entries, &current_dir, selected, scroll);
+                redraw(
+                    &mut fb,
+                    fm.off_x, fm.off_y,
+                    fm.cw,    fm.ch,
+                    &fm.entries,
+                    &fm.current_dir,
+                    fm.selected,
+                    fm.scroll,
+                    &fm.status,
+                );
             }
             if let Err(e) = win.render(None) {
                 error!("[file_manager] render: {}", e);
             }
-            dirty = false;
+            fm.dirty  = false;
+            fm.status.clear();
         }
 
         scheduler::schedule();
