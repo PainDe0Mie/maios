@@ -1,0 +1,21 @@
+[package]
+name = "taskbar"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "taskbar"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+window = { path = "../../kernel/window" }
+window_manager = { path = "../../kernel/window_manager" }
+color = { path = "../../kernel/color" }
+shapes = { path = "../../kernel/shapes" }
+spawn = { path = "../../kernel/spawn" }
+task = { path = "../../kernel/task" }
+scheduler = { path = "../../kernel/scheduler" }
+
+[dependencies.event_types]
+path = "../../kernel/event_types"

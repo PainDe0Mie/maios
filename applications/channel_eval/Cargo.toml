@@ -1,0 +1,26 @@
+[package]
+name = "channel_eval"
+version = "0.1.0"
+description = "Used for evaluating live evolution between sync/async channels in Theseus"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+
+[dependencies]
+getopts = "0.2.21"
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.unified_channel]
+path = "../../kernel/unified_channel"
+
+[dependencies.task]
+path = "../../kernel/task"
+
+[dependencies.spawn]
+path = "../../kernel/spawn"
+
+[dependencies.cpu]
+path = "../../kernel/cpu"

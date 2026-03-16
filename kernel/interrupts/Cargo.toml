@@ -1,0 +1,33 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>", "Nathan Royer <nathan.royer.pro@gmail.com>"]
+name = "interrupts"
+description = "Interrupt configuration and handlers for Theseus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+
+interrupt_controller = { path = "../interrupt_controller" }
+memory = { path = "../memory" }
+cpu = { path = "../cpu" }
+spin = "0.9.4"
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+sync_irq = { path = "../../libs/sync_irq" }
+arm_boards = { path = "../arm_boards" }
+kernel_config = { path = "../kernel_config" }
+generic_timer_aarch64 = { path = "../generic_timer_aarch64" }
+gic = { path = "../gic" }
+tock-registers = "0.7.0"
+cortex-a = "7.5.0"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+exceptions_early = { path = "../exceptions_early" }
+early_printer = { path = "../early_printer" }
+apic = { path = "../apic" }
+gdt = { path = "../gdt" }
+pic = { path = "../pic" }
+tss = { path = "../tss" }
+x86_64 = "0.14.8"
+locked_idt = { path = "../../libs/locked_idt" }

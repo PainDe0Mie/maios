@@ -1,0 +1,62 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "exceptions_full"
+description = "Exception handlers that are fully-featured, i.e., aware of the apic/task subsystems, and kill tasks on an exception"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+x86_64 = "0.14.8"
+log = "0.4.8"
+locked_idt = { path = "../../libs/locked_idt" }
+
+[dependencies.early_printer]
+path = "../early_printer"
+
+[dependencies.app_io]
+path = "../app_io"
+
+[dependencies.cpu]
+path = "../cpu"
+
+[dependencies.tlb_shootdown]
+path = "../tlb_shootdown"
+
+[dependencies.task]
+path = "../task"
+
+[dependencies.memory_swap]
+path = "../memory_swap"
+
+[dependencies.memory_x86_64]
+path = "../memory_x86_64"
+
+[dependencies.task_struct]
+path = "../task_struct"
+
+[dependencies.fault_log]
+path = "../fault_log"
+
+[dependencies.pmu_x86]
+path = "../pmu_x86"
+
+[dependencies.unwind]
+path = "../unwind"
+
+[dependencies.memory]
+path = "../memory"
+
+[dependencies.stack_trace]
+path = "../stack_trace"
+
+[dependencies.tss]
+path = "../tss"
+
+[dependencies.debug_info]
+path = "../debug_info"
+
+[dependencies.signal_handler]
+path = "../signal_handler"
+
+[lib]
+crate-type = ["rlib"]

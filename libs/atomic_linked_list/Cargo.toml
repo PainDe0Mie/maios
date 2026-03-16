@@ -1,0 +1,15 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "atomic_linked_list"
+version = "0.1.0"
+
+[dependencies]
+# debugit = "0.1.2"
+
+# [build]
+# rustflags = ["-C", "prefer-dynamic", "-C", "panic=abort"]
+
+# [bin]
+
+[lib]
+crate-type = ["rlib"]

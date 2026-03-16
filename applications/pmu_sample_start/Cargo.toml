@@ -1,0 +1,17 @@
+[package]
+name = "pmu_sample_start"
+version = "0.1.0"
+description = "A basic application that retrieves samples."
+authors = ["Aryan Sefidi <aryansefidi@gmail.com>"]
+
+[dependencies]
+getopts = "0.2.21"
+
+[dependencies.pmu_x86]
+path = "../../kernel/pmu_x86"
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.spawn]
+path = "../../kernel/spawn"

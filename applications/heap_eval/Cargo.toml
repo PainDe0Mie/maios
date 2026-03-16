@@ -1,0 +1,38 @@
+[package]
+name = "heap_eval"
+version = "0.1.0"
+description = "Benchmarks to evaluate Theseus's heap design"
+authors = ["Ramla Ijaz <ijazramla@gmail.com>"]
+
+[dependencies]
+qp-trie = "0.8.1"
+getopts = "0.2.21"
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.hpet]
+path = "../../kernel/acpi/hpet"
+
+[dependencies.apic]
+path = "../../kernel/apic"
+
+[dependencies.cpu]
+path = "../../kernel/cpu"
+
+[dependencies.hashbrown]
+version = "0.11.2"
+features = ["nightly"]
+
+[dependencies.libtest]
+path = "../../kernel/libtest"
+
+[dependencies.spawn]
+path = "../../kernel/spawn"
+
+[dependencies.heap]
+path = "../../kernel/heap"
+

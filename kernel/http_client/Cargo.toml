@@ -1,0 +1,13 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "http_client"
+description = "Functions for creating and sending HTTP requests and receiving responses"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+httparse = { version = "1.3.3", default-features = false }
+log = "0.4.8"
+net = { path = "../net" }
+percent-encoding = { path = "../../libs/percent_encoding" }
+time = { path = "../time" }

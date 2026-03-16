@@ -1,0 +1,178 @@
+#![no_std]
+
+use log::debug;
+use spin::Mutex;
+use volatile::{Volatile, WriteOnly};
+use zerocopy::FromBytes;
+use memory::{PageTable, PhysicalAddress, PteFlags, allocate_pages, allocate_frames_at, BorrowedMappedPages, Mutable};
+use atomic_linked_list::atomic_map::{AtomicMap, AtomicMapIter};
+use apic::ApicId;
+
+
+/// The system-wide list of all `IoApic`s, of which there is usually one, 
+/// but larger systems can have multiple IoApic chips.
+static IOAPICS: AtomicMap<u8, Mutex<IoApic>> = AtomicMap::new();
+
+
+/// Returns an iterator over the list of `IoApic`s.
+pub fn get_ioapics() -> AtomicMapIter<'static, u8, Mutex<IoApic>> {
+	IOAPICS.iter()
+}
+
+/// If an `IoApic` with the given `id` exists, then lock it (acquire its Mutex)
+/// and return the locked `IoApic`.
+pub fn get_ioapic(ioapic_id: u8) -> Option<&'static Mutex<IoApic>> {
+	IOAPICS.get(&ioapic_id)
+}
+
+
+#[derive(FromBytes)]
+#[repr(C)]
+struct IoApicRegisters {
+    /// Chooses which IoApic register the following access will write to or read from.
+    register_index:       WriteOnly<u32>,
+    _padding0:            [u32; 3],
+    /// The register containing the actual data that we want to read or write.
+    register_data:        Volatile<u32>,
+    _padding1:            [u32; 3],    
+}
+
+
+/// Each IoApic handles a maximum of 24 interrupt redirection entries. 
+const INTERRUPT_ENTRIES_PER_IOAPIC: u32 = 24; 
+
+
+/// A representation of an IoApic (x86-specific interrupt chip for I/O devices).
+pub struct IoApic {
+    regs: BorrowedMappedPages<IoApicRegisters, Mutable>,
+    /// The ID of this IoApic.
+    pub id: u8,
+    /// not yet used.
+    _phys_addr: PhysicalAddress,
+    /// The first global interrupt number handled by this IoApic.
+    /// Each IoApic only handles 24 interrupts, 
+    /// so the last interrupt number supported by thie IoApic is `gsi_base + 23`.
+    gsi_base: u32,
+}
+
+impl IoApic {
+    /// Creates a new IoApic struct from the given `id`, `PhysicalAddress`, and `gsi_base`,
+    /// and then adds it to the system-wide list of all IOAPICs.
+    pub fn create(page_table: &mut PageTable, id: u8, phys_addr: PhysicalAddress, gsi_base: u32) -> Result<(), &'static str> {
+        let new_page = allocate_pages(1).ok_or("IoApic::new(): couldn't allocate_pages!")?;
+        let frame = allocate_frames_at(phys_addr, 1).map_err(|_e| "Couldn't allocate physical frame for IOAPIC")?;
+        let ioapic_mapped_page = page_table.map_allocated_pages_to(
+            new_page,
+            frame, 
+            PteFlags::new().valid(true).writable(true).device_memory(true),
+        )?;
+
+        let ioapic_regs = ioapic_mapped_page.into_borrowed_mut(0).map_err(|(_mp, err)| err)?;
+        let ioapic = IoApic {
+            regs: ioapic_regs,
+			id,
+            _phys_addr: phys_addr,
+            gsi_base,
+		};
+
+        debug!("Created new IoApic, id: {}, gsi_base: {}, phys_addr: {:#X}", id, gsi_base, phys_addr);
+        IOAPICS.insert(id, Mutex::new(ioapic));
+        Ok(())
+    }
+
+    /// Returns whether this IoApic handles the given `irq_num`, i.e.,
+    /// whether it's within the range of IRQs handled by this `IoApic`.
+    pub fn handles_irq(&self, irq_num: u32) -> bool {
+        (irq_num >= self.gsi_base) && 
+        (irq_num < (self.gsi_base + INTERRUPT_ENTRIES_PER_IOAPIC))
+    }
+
+    fn read_reg(&mut self, register_index: u32) -> u32 {
+        // to read from an IoApic reg, we first write which register we want to read from,
+        // then we read the value from it in the next register
+        self.regs.register_index.write(register_index);
+        self.regs.register_data.read()
+    }
+
+    fn write_reg(&mut self, register_index: u32, value: u32) {
+        // to write to an IoApic reg, we first write which register we want to write to,
+        // then we write the value to it in the next register
+        self.regs.register_index.write(register_index);
+        self.regs.register_data.write(value);
+    }
+
+    /// gets this IoApic's id.
+    pub fn id(&mut self) -> u32 {
+        self.read_reg(0x0)
+    }
+
+    /// gets this IoApic's version.
+    pub fn version(&mut self) -> u32 {
+        self.read_reg(0x1)
+    }
+
+    /// gets this IoApic's arbitration id.
+    pub fn arbitration_id(&mut self) -> u32 {
+        self.read_reg(0x2)
+    }
+
+    /// Masks (disables) the given IRQ line. 
+    /// NOTE: this function is UNTESTED!
+    pub fn mask_irq(&mut self, irq: u8) {
+        let irq_reg: u32 = 0x10 + (2 * irq as u32);
+        let direction = self.read_reg(irq_reg);
+        self.write_reg(irq_reg, direction | (1 << 16));
+    }
+
+    /// Set IRQ to an interrupt vector.
+    ///
+    /// # Arguments
+    /// * `ioapic_irq`: the IRQ number that this interrupt will trigger on this IoApic.
+    /// * `apic_id`: the ID of the Local APIC, i.e., the CPU, that should handle this interrupt.
+    /// * `irq_vector`: the system-wide IRQ vector number,
+    ///    which after remapping is from 0x20 to 0x2F 
+    ///    (see [`interrupts::IRQ_BASE_OFFSET`](../interrupts/constant.IRQ_BASE_OFFSET.html)).
+    ///    For example, 0x20 is the PIT timer, 0x21 is the PS2 keyboard, etc.
+    ///
+    /// # Return
+    /// * Returns `Ok` upon success
+    /// * Returns `Err` if the given `ApicId` value exceeds the bounds of `u8`, i.e.,
+    ///   if it is larger than 255.
+    ///   This is because the IOAPIC only supports redirecting interrupts to APICs
+    ///   with IDs that fit within 8-bit values.
+    pub fn set_irq(
+        &mut self,
+        ioapic_irq: u8,
+        apic_id: ApicId,
+        irq_vector: u8,
+    ) -> Result<(), &'static str> {
+        if apic_id.value() > u8::MAX as u32 {
+            log::error!("Cannot set IOAPIC redirection table {} -> {} for APIC ID {} larger than 255",
+                ioapic_irq, irq_vector, apic_id.value(),
+            );
+            return Err("Cannot set IOAPIC redirection table entry for APIC ID larger than 255")
+        }
+
+        let low_index: u32 = 0x10 + ((ioapic_irq as u32) * 2);
+        let high_index: u32 = low_index + 1;
+
+        let mut high = self.read_reg(high_index);
+        high &= !0xff000000;
+        high |= apic_id.value() << 24;
+        self.write_reg(high_index, high);
+
+        let mut low = self.read_reg(low_index);
+        // Clear mask, enabling this interrupt
+        low &= !(1<<16);
+        // Use physical destination mode, not logical destination mode
+        low &= !(1<<11);
+        // Set the delivery mode to Fixed
+        low &= !0x700;
+        // Set the lowest 8 bits, which correspond to the IRQ vector.
+        low &= !0xff;
+        low |= irq_vector as u32;
+        self.write_reg(low_index, low);
+
+        Ok(())
+    }
+}

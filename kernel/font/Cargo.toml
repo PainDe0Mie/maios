@@ -1,0 +1,11 @@
+[package]
+name = "font"
+version = "0.1.0"
+authors = ["Wenqiu Yu <yuwenqiuj@gmail.com>"]
+description = "define and initialize the bitmaps of ASCII characters"
+
+[dependencies]
+spin = "0.9.4"
+
+[lib]
+crate-type = ["rlib"]

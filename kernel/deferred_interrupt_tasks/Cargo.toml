@@ -1,0 +1,18 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "deferred_interrupt_tasks"
+description = "Abstractions for deferred interrupt handler tasks"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+
+task = { path = "../task" }
+scheduler = { path = "../scheduler" }
+spawn = { path = "../spawn" }
+interrupts = { path = "../interrupts" }
+debugit = { path = "../../libs/debugit" }
+
+[lib]
+crate-type = ["rlib"]

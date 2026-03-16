@@ -1,0 +1,32 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "syscall"
+description = "Initializes the system call support, and provides basic handling and dispatching of syscalls in Theseus"
+version = "0.1.0"
+
+[dependencies]
+spin = "0.9.4"
+x86_64 = "0.14.8"
+
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.gdt]
+path = "../gdt"
+
+[dependencies.memory]
+path = "../memory"
+
+[dependencies.cpu]
+path = "../cpu"
+
+[dependencies.task]
+path = "../task"
+
+[dependencies.dbus]
+path = "../dbus"
+
+
+[lib]
+crate-type = ["rlib"]

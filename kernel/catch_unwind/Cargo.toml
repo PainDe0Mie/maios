@@ -1,0 +1,17 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "catch_unwind"
+description = "Support for catching unwinding after a panic, like `std::panic::catch_unwind`"
+version = "0.1.0"
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.unwind]
+path = "../unwind"
+
+[dependencies.task]
+path = "../task"
+
+[lib]
+crate-type = ["rlib"]

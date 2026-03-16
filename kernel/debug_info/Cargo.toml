@@ -1,0 +1,40 @@
+[package]
+name = "debug_info"
+version = "0.1.0"
+description = "Support for processing and using DWARF debug information from ELF files"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+
+[dependencies]
+xmas-elf = { version = "0.6.2", git = "https://github.com/theseus-os/xmas-elf.git" }
+by_address = "1.0.4"
+rustc-demangle = "0.1.19"
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.gimli]
+version = "0.25.0"
+default-features = false
+features = [ "read" ]
+
+### used for linker relocation typedefs
+[dependencies.goblin]
+version = "0.0.19"
+default-features = false
+features = ["elf64"]
+
+[dependencies.hashbrown]
+version = "0.11.2"
+features = ["nightly"]
+
+[dependencies.memory]
+path = "../memory"
+
+[dependencies.fs_node]
+path = "../fs_node"
+
+[dependencies.mod_mgmt]
+path = "../mod_mgmt"
+
+[dependencies.crate_metadata]
+path = "../crate_metadata"

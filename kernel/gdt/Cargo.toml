@@ -1,0 +1,25 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "gdt"
+description = "GDT (Global Descriptor Table) support (x86 only) for Theseus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spin = "0.9.4"
+x86_64 = "0.14.8"
+bit_field = "0.7.0"
+bitflags = "2.4.1"
+log = "0.4.8"
+
+[dependencies.atomic_linked_list]
+path = "../../libs/atomic_linked_list"
+
+[dependencies.memory]
+path = "../memory"
+
+[dependencies.tss]
+path = "../tss"
+
+[dependencies.cpu]
+path = "../cpu"

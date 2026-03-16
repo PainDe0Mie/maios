@@ -1,0 +1,136 @@
+[workspace]
+resolver = "2"
+
+
+## Here, we specify that all subdirectories in the kernel/ and applications/ directories should be built, 
+## except for those starting with a "." So, we build all kernel and application crates except hidden directories.
+##
+## The `members` field of this workspace is used to specify all of the crates that are built
+## when the entire workspace is built, e.g., with `cargo build --workspace` or `cargo build --all`.
+##
+## Note that a full workspace build will *not* include crates that are explicitly excluded below.
+members = [
+	"theseus_features",  ## Must be included to realize global Cargo features across Theseus.
+	"kernel/[!.]*/",
+	"applications/[!.]*/",
+]
+
+
+## Default members are the crates built by default if no specific packages (crates)
+## are specified when invoking `cargo build`.
+## Currently, this is only relevant when overriding the Makefile's default `FEATURES`,
+## which has the default value of `--workspace`, ensuring that all `members` above 
+## are built even when `FEATURES` is explicitly set when invoking `make`.
+##
+## So far, this includes only the minimum crates required to allow Theseus to boot.
+default-members = [
+	"theseus_features",  ## Must be included to realize global Cargo features across Theseus.
+	"kernel/nano_core",
+]
+
+
+exclude = [
+	## Exclude the build directories
+	"build",
+	"target",
+
+	## Exclude configuration, tools, scripts, etc
+	"cfg",
+	"compiler_plugins",
+	"scripts",
+	"tools",
+
+	## Exclude old components
+	"old_crates",
+
+	## Exclude third-party libs and ports for now.
+	## This allows Theseus crates that *are* included in a build to pull these
+	## third-party crates in only when needed to fulfill their dependencies.
+	"libs",
+	"ports",
+
+	## Exclude tlibc and libtheseus, which are currently built separately.
+	"tlibc",
+	"libtheseus",
+
+	########################################################################################
+	## Below, we exclude things that should NEVER be considered part of Theseus's workspace.
+	########################################################################################
+	##
+	## Note that if you simply need to exclude something from a custom build of Theseus,
+	## it's best to add that crate as an optional dependency and then create a feature
+	## to enable it in a non-workspace build (i.e., when not calling `cargo build --all`).
+
+	## Exclude kernel crates that exist purely for testing or benchmarking purposes.
+	"kernel/libtest",
+	"kernel/test_thread_local",
+	"kernel/unified_channel",
+
+	## Exclude benchmark-related crates in all builds; they must be explicitly included via features.
+	## TODO: move these to a specific "benches" folder so we can exclude that entire folder.
+	"applications/bm",
+	"applications/channel_eval",
+	"applications/heap_eval",
+	"applications/rq_eval",
+	"applications/scheduler_eval",
+
+	## Exclude application crates used for testing specific Theseus functionality.
+	## TODO: move these to a specific "tests" folder so we can exclude that entire folder.
+	"applications/test_aligned_page_allocation",
+	"applications/test_async",
+	"applications/test_backtrace",
+	"applications/test_block_io",
+	"applications/test_channel",
+	"applications/test_filerw",
+	"applications/test_identity_mapping",
+	"applications/test_ixgbe",
+	"applications/test_libc",
+	"applications/test_mlx5",
+	"applications/test_panic",
+	"applications/test_preemption_counter",
+	"applications/test_restartable",
+	"applications/test_scheduler",
+	"applications/test_std_fs",
+	"applications/test_sync_block",
+	"applications/test_task_cancel",
+	"applications/test_tls",
+	"applications/test_wait_queue",
+	"applications/test_wasmtime",
+	"applications/unwind_test",
+]
+
+
+[patch.crates-io]
+### use our own version of volatile which supports zerocopy
+volatile = { git = "https://github.com/theseus-os/volatile" }
+### use our own no_std-compatilbe getopts
+getopts = { git = "https://github.com/theseus-os/getopts" }
+
+### Patch `libc` so we can use libc-specific types when using `cfg(target_os = "theseus")`.
+libc = { git = "https://github.com/theseus-os/libc", branch = "theseus" }
+### Patch `core2` with newer functions from `std::io`, e.g., additional `Seek` trait functions
+core2 = { path = "libs/core2" }
+### Patch `bincode` because the version on crates.io doesn't handle no_std features correctly.
+bincode = { git = "https://github.com/bincode-org/bincode" }
+
+##############################################################################################
+#################### Below are patches for wasmtime-related crates. ##########################
+##############################################################################################
+wasmparser = { git = "https://github.com/theseus-os/wasm-tools", branch = "no-std-wasmparser" }
+backtrace = { path = "ports/backtrace" }
+region = { path = "ports/region" }
+noline = { git = "https://github.com/theseus-os/noline", branch = "history-dedup" }
+target-lexicon = { git = "https://github.com/theseus-os/target-lexicon", branch = "theseus" }
+
+### These profiles fix the new rustc behavior of splitting one crate into many object files. 
+### That messes up our module loading, which is bad!
+### See this link about profiles: https://doc.rust-lang.org/cargo/reference/manifest.html
+# workaround rust-lang/rust#47074
+[profile.dev]
+codegen-units = 1
+incremental = false
+
+# workaround rust-lang/rust#47074
+[profile.release]
+codegen-units = 1
+incremental = false

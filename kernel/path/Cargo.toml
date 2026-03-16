@@ -1,0 +1,10 @@
+[package]
+name = "path"
+version = "0.1.0"
+authors = ["Andrew Pham <apham727@gmail.com>, Christine Wang <chrissywang54@gmail.com", "Klim Tsoutsman <klim@tsoutsman.com>"]
+description = "File system path manipulation"
+edition = "2021"
+
+[dependencies]
+fs_node = { path = "../fs_node" }
+root = { path = "../root" }

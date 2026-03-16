@@ -1,0 +1,60 @@
+[package]
+name = "wasmtime-jit"
+version = "0.30.0"
+authors = ["The Wasmtime Project Developers"]
+description = "JIT-style execution for WebAsssembly code in Cranelift"
+documentation = "https://docs.rs/wasmtime-jit"
+license = "Apache-2.0 WITH LLVM-exception"
+categories = ["wasm"]
+keywords = ["webassembly", "wasm"]
+repository = "https://github.com/bytecodealliance/wasmtime"
+edition = "2018"
+
+[dependencies]
+wasmtime-environ = { path = "../environ", version = "0.30.0", default-features = false }
+wasmtime-runtime = { path = "../runtime", version = "0.30.0", default-features = false }
+region = "3.0.0"
+target-lexicon = { version = "0.12.0", default-features = false }
+wasmparser = { version = "0.81", default-features = false }
+more-asserts = "0.2.2"
+anyhow = { version = "1.0", default-features = false }
+cfg-if = "1.0"
+log = "0.4"
+gimli = { version = "0.25.0", default-features = false, features = ["read"] }
+object = { version = "0.28", default-features = false, features = ["read_core", "write_core", "elf"] }
+serde = { version = "1.0.94", default-features = false, features = ["derive", "alloc"] }
+addr2line = { version = "0.16.0", default-features = false }
+ittapi-rs = { version = "0.1.5", optional = true  }
+### Use the newest version of `bincode` from GitHub because it supports no_std
+bincode = { version = "2.0.0-rc.1", default-features = false, features = ["alloc", "serde", "derive"] }
+###
+### NOTE: we *should* be able to include these dependencies here for non-Theseus builds
+###       but I can't get cargo to build it with the correct features if these are here.
+###       This is likely a bug in cargo's target-specific feature resolution. (?)
+###       Thus, I've made them optional, but included them in the `std` feature below.
+###       Note that this is a hack -- they are not actually optional, they're required.
+###       As such, non-Theseus builds may not work any more on this branch.
+###
+[target.'cfg(not(target_os = "theseus"))'.dependencies]
+thiserror = { version = "1.0.4", optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3.8", features = ["winnt", "impl-default"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rsix = { version = "0.23.0", optional = true }
+
+[target.'cfg(target_os = "theseus")'.dependencies]
+core2 = { version = "0.4.0", default-features = false, features = ["alloc", "nightly"] }
+thiserror_core2 = { version = "2.0.1", default-features = false }
+theseus_external_unwind_info = { path = "../../../../kernel/external_unwind_info", package = "external_unwind_info" }
+theseus_std = { path = "../../../../ports/theseus_std" }
+
+[features]
+default = ["std"]
+std = ["thiserror", "wasmtime-environ/std", "wasmtime-runtime/std", "wasmparser/std", "anyhow/std", "gimli/std", "serde/std", "bincode/std"]
+jitdump = ['rsix']
+vtune = ['ittapi-rs']
+
+[badges]
+maintenance = { status = "actively-developed" }

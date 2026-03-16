@@ -1,0 +1,15 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "pic"
+description = "PIC (Programmable Interrupt Controller), support for a legacy device that isn't used much"
+version = "0.1.0"
+
+[dependencies]
+log = "0.4.8"
+
+[dependencies.port_io]
+path = "../../libs/port_io"
+
+
+[lib]
+crate-type = ["rlib"]

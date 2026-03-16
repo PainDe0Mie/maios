@@ -1,0 +1,20 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "serial_port_basic"
+description = "Standalone, basic driver for serial ports (e.g., COM1, COM) with minimal dependencies"
+edition = "2021"
+version = "0.1.0"
+
+[dependencies]
+sync_irq = { path = "../../libs/sync_irq" }
+spin = "0.9.4"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+port_io = { path = "../../libs/port_io" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+uart_pl011 = { path = "../uart_pl011" }
+arm_boards = { path = "../arm_boards" }
+
+[lib]
+crate-type = ["rlib"]

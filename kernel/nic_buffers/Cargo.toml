@@ -1,0 +1,18 @@
+[package]
+name = "nic_buffers"
+description = "Structs for network transmit and receive buffers"
+version = "0.1.0"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+
+[dependencies]
+mpmc = "0.1.6"
+
+[dependencies.memory]
+path = "../memory"
+
+[dependencies.log]
+version = "0.4.8"
+
+
+[lib]
+crate-type = ["rlib"]

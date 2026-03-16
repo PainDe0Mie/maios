@@ -1,0 +1,30 @@
+[package]
+name = "console"
+version = "0.1.0"
+authors = ["Kevin Boos <kevinaboos@gmail.com>", "Klim Tsoutsman <klim@tsoutsman.com>"]
+description = "Creation and management of virtual consoles/terminals"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+core2 = { version = "0.4.0", default-features = false, features = ["alloc", "nightly"] }
+
+app_io = { path = "../app_io" }
+sync_channel = { path = "../sync_channel" }
+io = { path = "../io" }
+mod_mgmt = { path = "../mod_mgmt" }
+path = { path = "../path" }
+serial_port = { path = "../serial_port" }
+spawn = { path = "../spawn" }
+sync_irq = { path = "../../libs/sync_irq" }
+task = { path = "../task" }
+tty = { path = "../tty" }
+
+## In general, Theseus kernel crates *cannot* depend on application crates.
+## However, this crate loads and runs the `hull` shell application,
+## so it's best to ensure that the `hull` crate is always included in the build
+## by specifying it as a direct dependency here.
+##
+## Note that this does NOT result in a direct runtime dependency
+## from this crate to the `hull` crate; it merely guarantees it gets built.
+hull = { path = "../../applications/hull" }

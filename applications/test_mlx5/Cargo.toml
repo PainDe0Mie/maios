@@ -1,0 +1,18 @@
+[package]
+name = "test_mlx5"
+version = "0.1.0"
+authors = ["Ramla Ijaz <ijazramla@gmail.com>"]
+
+[dependencies]
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.ixgbe]
+path = "../../kernel/ixgbe"
+
+[dependencies.mlx5]
+path = "../../kernel/mlx5"

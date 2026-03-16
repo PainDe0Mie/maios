@@ -1,0 +1,31 @@
+[package]
+name = "deps"
+version = "0.1.0"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+description = "Allows a developer to explore dependencies in Theseus's crate management"
+
+[dependencies]
+getopts = "0.2.21"
+spin = "0.9.4"
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.itertools]
+version = "0.7.9"
+default-features = false
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.crate_name_utils]
+path = "../../kernel/crate_name_utils"
+
+[dependencies.mod_mgmt]
+path = "../../kernel/mod_mgmt"
+
+[dependencies.memory]
+path = "../../kernel/memory"
+
+[dependencies.task]
+path = "../../kernel/task"

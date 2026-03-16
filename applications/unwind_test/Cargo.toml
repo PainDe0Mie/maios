@@ -1,0 +1,21 @@
+[package]
+name = "unwind_test"
+version = "0.1.0"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+description = "a simple app for testing whether unwinding works"
+
+[dependencies]
+
+
+[dependencies.log]
+version = "0.4.8"
+
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.task]
+path = "../../kernel/task"
+
+[dependencies.catch_unwind]
+path = "../../kernel/catch_unwind"

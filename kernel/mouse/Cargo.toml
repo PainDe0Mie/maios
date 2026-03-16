@@ -1,0 +1,27 @@
+[package]
+authors = ["Bowen Liu <liubowenbob@hotmail.com>", "Kevin Boos <kevinaboos@gmail.com>", "Hecatia Elegua"]
+name = "mouse"
+description = "A basic driver for a mouse connected to the legacy PS/2 port"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spin = "0.9.4"
+mpmc = "0.1.6"
+log = "0.4.8"
+x86_64 = "0.14.8"
+
+[dependencies.mouse_data]
+path = "../../libs/mouse_data"
+
+[dependencies.interrupts]
+path = "../interrupts"
+
+[dependencies.ps2]
+path = "../ps2"
+
+[dependencies.event_types]
+path = "../event_types"
+
+[lib]
+crate-type = ["rlib"]

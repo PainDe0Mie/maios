@@ -1,0 +1,19 @@
+[package]
+authors = ["Wenqiu Yu <yuwenqiuj@gmail.com>"]
+name = "dbus"
+description = "Simple dbus-like IPC support"
+version = "0.1.0"
+
+[dependencies]
+spin = "0.9.4"
+
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.irq_safety]
+git = "https://github.com/theseus-os/irq_safety"
+
+
+[lib]
+crate-type = ["rlib"]

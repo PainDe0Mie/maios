@@ -1,0 +1,41 @@
+[package]
+name = "crate_swap"
+version = "0.1.0"
+description = "Handles crate swapping for live evolution and fault recovery purposes"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+
+
+[dependencies]
+spin = "0.9.4"
+qp-trie = "0.8.1"
+by_address = "1.0.4"
+
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.lazy_static]
+features = ["spin_no_std"]
+version = "1.4.0"
+
+[dependencies.hashbrown]
+version = "0.11.2"
+features = ["nightly"]
+
+[dependencies.memory]
+path = "../memory"
+
+[dependencies.fs_node]
+path = "../fs_node"
+
+[dependencies.path]
+path = "../path"
+
+[dependencies.mod_mgmt]
+path = "../mod_mgmt"
+
+[dependencies.hpet]
+path = "../acpi/hpet"
+
+[lib]
+crate-type = ["rlib"]

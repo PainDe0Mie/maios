@@ -1,0 +1,23 @@
+[package]
+name = "mkdir"
+version = "0.1.0"
+authors = ["Christine Wang <chrissywang54@gmail.com>"]
+
+[dependencies]
+getopts = "0.2.21"
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.task]
+path = "../../kernel/task"
+
+[dependencies.fs_node]
+path = "../../kernel/fs_node"
+
+[dependencies.vfs_node]
+path = "../../kernel/vfs_node"
+
+
+# [dependencies.application_main_fn]
+# path = "../../compiler_plugins"

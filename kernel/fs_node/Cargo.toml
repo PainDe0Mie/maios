@@ -1,0 +1,25 @@
+[package]
+name = "fs_node"
+version = "0.1.0"
+authors = ["Andrew Pham <apham727@gmail.com>, Christine Wang <chrissywang54@gmail.com"]
+description = "defines the traits for File and Directory. These files and directories mimic that of a standard unix virtual filesystem"
+
+
+[dependencies]
+spin = "0.9.4"
+
+[dependencies.lazy_static]
+features = ["spin_no_std"]
+version = "1.4.0"
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.memory]
+path = "../memory"
+
+[dependencies.io]
+path = "../io"
+
+[lib]
+crate-type = ["rlib"]

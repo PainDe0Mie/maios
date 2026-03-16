@@ -1,0 +1,59 @@
+[package]
+authors = ["Ramla Ijaz <ijazramla@gmail.com>"]
+name = "e1000"
+description = "Support for the e1000 NIC and driver"
+version = "0.1.0"
+
+[dependencies]
+spin = "0.9.4"
+volatile = "0.2.7"
+x86_64 = "0.14.8"
+zerocopy = "0.5.0"
+mpmc = "0.1.6"
+
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.lazy_static]
+features = ["spin_no_std"]
+version = "1.4.0"
+
+[dependencies.sync_irq]
+path = "../../libs/sync_irq"
+
+[dependencies.kernel_config]
+path = "../kernel_config"
+
+[dependencies.memory]
+path = "../memory"
+
+[dependencies.pci]
+path = "../pci"
+
+[dependencies.interrupts]
+path = "../interrupts"
+
+[dependencies.intel_ethernet]
+path = "../intel_ethernet" 
+
+[dependencies.nic_buffers]
+path = "../nic_buffers"
+
+[dependencies.nic_queues]
+path = "../nic_queues"
+
+[dependencies.nic_initialization]
+path = "../nic_initialization"
+
+[dependencies.net]
+path = "../net"
+
+[dependencies.deferred_interrupt_tasks]
+path = "../deferred_interrupt_tasks"
+
+[dependencies.task]
+path = "../task"
+
+[lib]
+crate-type = ["rlib"]

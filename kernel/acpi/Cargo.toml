@@ -1,0 +1,49 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "acpi"
+description = "ACPI (Advanced Configuration and Power Interface) support for Theseus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spin = "0.9.4"
+log = "0.4.8"
+
+[dependencies.memory]
+path = "../memory"
+
+[dependencies.acpi_table]
+path = "acpi_table"
+
+[dependencies.acpi_table_handler]
+path = "acpi_table_handler"
+
+[dependencies.rsdp]
+path = "rsdp"
+
+[dependencies.rsdt]
+path = "rsdt"
+
+[dependencies.fadt]
+path = "fadt"
+
+[dependencies.waet]
+path = "waet"
+
+[dependencies.madt]
+path = "madt"
+
+[dependencies.hpet]
+path = "hpet"
+
+[dependencies.dmar]
+path = "dmar"
+
+[dependencies.iommu]
+path = "../iommu"
+
+[dependencies.time]
+path = "../time"
+
+[lib]
+crate-type = ["rlib"]

@@ -1,0 +1,41 @@
+[package]
+name = "explorer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "explorer"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+window = { path = "../../kernel/window" }
+color = { path = "../../kernel/color" }
+shapes = { path = "../../kernel/shapes" }
+spawn = { path = "../../kernel/spawn" }
+task = { path = "../../kernel/task" }
+mod_mgmt = { path = "../../kernel/mod_mgmt" }
+path = { path = "../../kernel/path" }
+fs_node = { path = "../../kernel/fs_node" }
+framebuffer = { path = "../../kernel/framebuffer" }
+framebuffer_drawer = { path = "../../kernel/framebuffer_drawer" }
+framebuffer_printer = { path = "../../kernel/framebuffer_printer" }
+window_inner = { path = "../../kernel/window_inner" }
+font = { path = "../../kernel/font" }
+root = { path = "../../kernel/root" }
+io = { path = "../../kernel/io" }
+memfs = { path = "../../kernel/memfs" }
+vfs_node = { path = "../../kernel/vfs_node" }
+
+core2 = { version = "0.4.0", default-features = false, features = ["alloc", "nightly"] }
+spin = "0.9.4"
+log = "0.4"
+
+[dependencies.event_types]
+path = "../../kernel/event_types"
+
+[dependencies.window_manager]
+path = "../../kernel/window_manager"
+
+[dependencies.scheduler]
+path = "../../kernel/scheduler"

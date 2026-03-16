@@ -1,0 +1,20 @@
+[package]
+authors = ["Ramla Ijaz <ijazramla@gmail.com>"]
+name = "memory_initialization"
+description = "Initialization routine for the virtual memory subsystem."
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+
+boot_info = { path = "../boot_info" }
+early_printer = { path = "../early_printer" }
+memory = { path = "../memory" }
+stack = { path = "../stack" }
+no_drop = { path = "../no_drop" }
+kernel_config = { path = "../kernel_config" }
+bootloader_modules = { path = "../bootloader_modules" }
+heap = { path = "../heap" }
+
+irq_safety = { git = "https://github.com/theseus-os/irq_safety" }

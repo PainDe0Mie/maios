@@ -1,0 +1,31 @@
+[package]
+name = "app_io"
+version = "0.1.0"
+authors = ["Zhiyao Ma <zm16@pku.edu.cn>"]
+description = "Offers applications the ability to read from or print to the terminal."
+edition = "2021"
+
+
+[dependencies]
+hashbrown = "0.11"
+core2 = { version = "0.4.0", default-features = false, features = ["alloc", "nightly"] }
+logger = { path = "../logger" }
+
+[dependencies.task]
+path = "../../kernel/task"
+
+[dependencies.stdio]
+path = "../../libs/stdio"
+
+[dependencies.sync_block]
+path = "../../kernel/sync_block"
+
+[dependencies.tty]
+path = "../../kernel/tty"
+
+[dependencies.lazy_static]
+features = ["spin_no_std"]
+version = "1.4.0"
+
+[lib]
+crate-type = ["rlib"]

@@ -1,0 +1,89 @@
+[package]
+name = "wasmtime-runtime"
+version = "0.30.0"
+authors = ["The Wasmtime Project Developers"]
+description = "Runtime library support for Wasmtime"
+documentation = "https://docs.rs/wasmtime-runtime"
+license = "Apache-2.0 WITH LLVM-exception"
+categories = ["wasm"]
+keywords = ["webassembly", "wasm"]
+repository = "https://github.com/bytecodealliance/wasmtime"
+edition = "2018"
+
+[dependencies]
+wasmtime-environ = { path = "../environ", version = "0.30.0", default-features = false }
+wasmtime-fiber = { path = "../fiber", version = "0.30.0", optional = true }
+region = "3.0.0"
+libc = { version = "0.2", default-features = false }
+log = "0.4.8"
+memoffset = "0.6.0"
+indexmap = "1.0.2"
+more-asserts = "0.2.2"
+cfg-if = "1.0"
+backtrace = { version = "0.3.61", default-features = false }
+anyhow = { version = "1.0.38", default-features = false }
+
+###
+### NOTE: we *should* be able to include these dependencies here for non-Theseus builds
+###       but I can't get cargo to build it with the correct features if these are here.
+###       This is likely a bug in cargo's target-specific feature resolution. (?)
+###       Thus, I've made them optional, but included them in the `std` feature below.
+###       Note that this is a hack -- they are not actually optional, they're required.
+###       As such, non-Theseus builds may not work any more on this branch.
+###
+[target.'cfg(not(target_os = "theseus"))'.dependencies]
+thiserror = { version = "1.0.2", optional = true }
+lazy_static = { version = "1.4.0", optional = true }
+rand = { version = "0.8.3", optional = true }
+
+
+[target.'cfg(target_os = "theseus")'.dependencies]
+hashbrown = { version = "0.11.2", features = ["ahash"], default-features = false }
+thiserror_core2 = { version = "2.0.1", default-features = false }
+lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
+rand = { version = "0.8.3", default-features = false, features = ["alloc", "small_rng"] }
+core2 = { version = "0.4.0", default-features = false, features = ["alloc", "nightly"] }
+theseus_catch_unwind = { path = "../../../../kernel/catch_unwind", package = "catch_unwind" }
+thread_local_macro = { path = "../../../../kernel/thread_local_macro" }
+theseus_std = { path = "../../../../ports/theseus_std" }
+theseus_memory = { path = "../../../../kernel/memory", package = "memory" }
+theseus_task = { path = "../../../../kernel/task", package = "task" }
+theseus_signal_handler = { path = "../../../../kernel/signal_handler", package = "signal_handler" }
+spin = "0.9.4"
+sync_block = { path = "../../../../kernel/sync_block", features = ["std-api"] }
+
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mach = "0.3.2"
+
+# [target.'cfg(all(not(target_os = "theseus"), unix))'.dependencies]
+# rsix = "0.23.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3.7", features = ["winbase", "memoryapi", "errhandlingapi", "handleapi"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+userfaultfd = { version = "0.4.1", optional = true }
+
+[build-dependencies]
+cc = "1.0"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[features]
+default = ["std"]
+std = [
+    "thiserror", "lazy_static", "rand", 
+    "anyhow/std", "backtrace/std", "wasmtime-environ/std",
+]
+
+async = ["wasmtime-fiber"]
+
+# Enables support for userfaultfd in the pooling allocator when building on Linux
+uffd = ["userfaultfd"]
+
+# Enables trap handling using POSIX signals instead of Mach exceptions on MacOS.
+# It is useful for applications that do not bind their own exception ports and
+# need portable signal handling.
+posix-signals-on-macos = []

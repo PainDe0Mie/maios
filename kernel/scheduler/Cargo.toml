@@ -1,0 +1,23 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "scheduler"
+description = "Provides basic scheduling functionality for preemptive task switching."
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+log = "0.4.8"
+cfg-if = "1.0.0"
+
+cpu = { path = "../cpu" }
+interrupts = { path = "../interrupts" }
+sleep = { path = "../sleep" }
+task = { path = "../task" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86_64 = "0.14.8"
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+generic_timer_aarch64 = { path = "../generic_timer_aarch64" }
+kernel_config = { path = "../kernel_config" }
+spin = "0.9.4"

@@ -1,0 +1,17 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "page_table_entry"
+description = "Defines the structure of page table entries on x86_64"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+zerocopy = "0.5.0"
+
+frame_allocator = { path = "../frame_allocator" }
+memory_structs = { path = "../memory_structs" }
+kernel_config = { path = "../kernel_config" }
+pte_flags = { path = "../pte_flags" }
+
+[lib]
+crate-type = ["rlib"]

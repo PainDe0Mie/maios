@@ -1,0 +1,31 @@
+[package]
+name = "hull"
+version = "0.1.0"
+authors = ["Klim Tsoutsman <klim@tsoutsman.com>"]
+description = "A command line shell"
+edition = "2021"
+
+[dependencies]
+app_io = { path = "../../kernel/app_io" }
+embedded-hal = "0.2.7"
+hashbrown = "0.11"
+mod_mgmt = { path = "../../kernel/mod_mgmt" }
+nb = "1.0"
+path = { path = "../../kernel/path" }
+root = { path = "../../kernel/root" }
+scheduler = { path = "../../kernel/scheduler" }
+spawn = { path = "../../kernel/spawn" }
+stdio = { path = "../../libs/stdio" }
+sync_block = { path = "../../kernel/sync_block" }
+task = { path = "../../kernel/task" }
+tty = { path = "../../kernel/tty" }
+log = "0.4.8"
+
+[dependencies.core2]
+version = "0.4.0"
+default-features = false
+features = ["alloc", "nightly"]
+
+[dependencies.noline]
+version = "0.2.0"
+features = ["alloc", "embedded"]

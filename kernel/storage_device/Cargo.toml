@@ -1,0 +1,22 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "storage_device"
+description = "Traits for storage devices and storage controllers"
+version = "0.1.0"
+
+[dependencies]
+spin = "0.9.4"
+downcast-rs = { version = "1.2.0", default-features = false }
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.lazy_static]
+features = ["spin_no_std"]
+version = "1.4.0"
+
+[dependencies.io]
+path = "../io"
+
+[lib]
+crate-type = ["rlib"]

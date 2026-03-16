@@ -1,0 +1,13 @@
+[package]
+name = "mgi"
+version = "0.1.0"
+authors = ["PainDe0Mie"]
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+color = { path = "../color" }
+shapes = { path = "../shapes" }
+framebuffer = { path = "../framebuffer" }
+framebuffer_drawer = { path = "../framebuffer_drawer" }
+spin = "0.9.2"

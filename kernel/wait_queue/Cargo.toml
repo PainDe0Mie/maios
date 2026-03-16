@@ -1,0 +1,14 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "wait_queue"
+description = "The WaitQueue type that can block/sleep and wake up tasks"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mpmc_queue = { path = "../../libs/mpmc_queue" }
+preemption = { path = "../preemption" }
+scheduler = { path = "../scheduler" }
+sync = { path = "../../libs/sync" }
+sync_spin = { path = "../../libs/sync_spin" }
+task = { path = "../task" }

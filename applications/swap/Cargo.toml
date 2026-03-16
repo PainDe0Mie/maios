@@ -1,0 +1,35 @@
+[package]
+name = "swap"
+version = "0.1.0"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+
+[dependencies]
+getopts = "0.2.21"
+
+[dependencies.itertools]
+version = "0.7.9"
+default-features = false
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.mod_mgmt]
+path = "../../kernel/mod_mgmt"
+
+[dependencies.crate_swap]
+path = "../../kernel/crate_swap"
+
+[dependencies.memory]
+path = "../../kernel/memory"
+
+[dependencies.task]
+path = "../../kernel/task"
+
+[dependencies.hpet]
+path = "../../kernel/acpi/hpet"
+
+[dependencies.fs_node]
+path = "../../kernel/fs_node"
+
+[dependencies.path]
+path = "../../kernel/path"

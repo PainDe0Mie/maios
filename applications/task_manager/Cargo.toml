@@ -1,0 +1,27 @@
+[package]
+name = "task_manager"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "task_manager"
+crate-type = ["rlib"]
+
+[dependencies]
+log             = "0.4.8"
+spin            = "0.9.4"
+font            = { path = "../../kernel/font"            }
+color           = { path = "../../kernel/color"           }
+shapes          = { path = "../../kernel/shapes"          }
+framebuffer     = { path = "../../kernel/framebuffer"     }
+framebuffer_drawer = { path = "../../kernel/framebuffer_drawer" }
+task            = { path = "../../kernel/task"            }
+task_struct     = { path = "../../kernel/task_struct"     }
+window          = { path = "../../kernel/window"          }
+window_manager  = { path = "../../kernel/window_manager"  }
+frame_allocator = { path = "../../kernel/frame_allocator" }
+scheduler       = { path = "../../kernel/scheduler"       }
+event_types     = { path = "../../kernel/event_types"     }
+keycodes_ascii  = { path = "../../libs/keycodes_ascii"    }
+memory_swap     = { path = "../../kernel/memory_swap"     }
+cpu             = { path = "../../kernel/cpu"             }

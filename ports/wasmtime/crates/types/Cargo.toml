@@ -1,0 +1,21 @@
+[package]
+name = "wasmtime-types"
+version = "0.30.0"
+authors = ["The Wasmtime Project Developers"]
+description = "WebAssembly type definitions for Cranelift"
+license = "Apache-2.0 WITH LLVM-exception"
+repository = "https://github.com/bytecodealliance/wasmtime"
+documentation = "https://docs.rs/wasmtime-types"
+edition = "2018"
+
+[dependencies]
+cranelift-entity = { path = "../../cranelift/entity", version = "0.77.0", features = ['enable-serde'] }
+serde = { version = "1.0.94", default-features = false, features = ["derive"] }
+thiserror = { version = "1.0.4", optional = true }
+thiserror_core2 = { version = "2.0.1", default-features = false }
+core2 = { version = "0.4.0", default-features = false, features = ["alloc", "nightly"] }
+wasmparser = { version = "0.81", default-features = false }
+
+[features]
+default = ["std"]
+std = ["wasmparser/std", "thiserror", "thiserror_core2/std"]

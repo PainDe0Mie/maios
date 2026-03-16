@@ -1,0 +1,21 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "pit_clock"
+description = "PIT (Programmable Interval Timer) support for Theseus, x86 only."
+version = "0.1.0"
+
+[dependencies]
+log = "0.4.8"
+x86_64 = "0.14.8"
+
+[dependencies.pit_clock_basic]
+path = "../pit_clock_basic"
+
+[dependencies.interrupts]
+path = "../interrupts"
+
+[dependencies.port_io]
+path = "../../libs/port_io"
+
+[lib]
+crate-type = ["rlib"]
