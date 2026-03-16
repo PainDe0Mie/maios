@@ -58,7 +58,7 @@ impl ByteReader for HeapFile {
         }
         // read from the offset until the end of the file, but not more than the buffer length
         let read_bytes = core::cmp::min(self.vec.len() - offset, buffer.len());
-        buffer[..read_bytes].copy_from_slice(&self.vec[offset..read_bytes]); 
+        buffer[..read_bytes].copy_from_slice(&self.vec[offset..offset + read_bytes]);
         Ok(read_bytes) 
     }
 }
@@ -72,7 +72,7 @@ impl ByteWriter for HeapFile {
         }
 
         // Now, `self.vec` is long enough to accommodate the entire `buffer`.
-        self.vec[offset..].copy_from_slice(buffer);
+        self.vec[offset..offset + buffer.len()].copy_from_slice(buffer);
         
         Ok(buffer.len())
     }

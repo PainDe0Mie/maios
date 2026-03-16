@@ -19,9 +19,8 @@
 #![no_std]
 extern crate alloc;
 extern crate color;
-extern crate font;
 extern crate framebuffer;
-extern crate framebuffer_drawer;
+extern crate mai_ui;
 extern crate fs_node;
 extern crate root;
 extern crate path;
@@ -40,33 +39,21 @@ extern crate mod_mgmt;
 use alloc::vec::Vec;
 use alloc::string::{String, ToString};
 use alloc::format;
-use alloc::sync::Arc;
 use color::Color;
 use shapes::Coord;
 use framebuffer::{Framebuffer, AlphaPixel};
+use mai_ui::draw::DrawContext;
+use mai_ui::theme;
 use fs_node::{DirRef, FileOrDir};
 use event_types::Event;
 use keycodes_ascii::{KeyAction, Keycode};
 
 // ────────────────────────────────────────────────────────────────
-// PALETTE — Tokyo Night
+// APP-SPECIFIC COLORS (not in theme)
 // ────────────────────────────────────────────────────────────────
-const C_BG:       Color = Color::new(0x001A1B26);
-const C_SURFACE:  Color = Color::new(0x0024283A);
-const C_SURFACE2: Color = Color::new(0x00292E42);
-const C_BORDER:   Color = Color::new(0x00414868);
-const C_ACCENT:   Color = Color::new(0x007AA2F7);
-const C_ACCENT2:  Color = Color::new(0x00BB9AF7);
-const C_FG:       Color = Color::new(0x00C0CAF5);
-const C_FG_DIM:   Color = Color::new(0x00565F89);
-const C_SEL:      Color = Color::new(0x002D3F6B);
 const C_SEL_ACT:  Color = Color::new(0x003D5480);
 const C_STRIPE:   Color = Color::new(0x001E2030);
-const C_DIR:      Color = Color::new(0x00E0AF68);
-const C_EXEC:     Color = Color::new(0x009ECE6A);
 const C_FILE:     Color = Color::new(0x00A9B1D6);
-const C_SYMLINK:  Color = Color::new(0x007DCFFF);
-const TRANSPARENT: Color = Color::new(0xFF000000);
 
 // ────────────────────────────────────────────────────────────────
 // DIMENSIONS FENÊTRE
@@ -105,67 +92,6 @@ const C_NAME: isize = 20;
 // C_TYPE et C_SIZE sont calculés dynamiquement selon main_w
 
 // ────────────────────────────────────────────────────────────────
-// DESSIN DE BASE
-// ────────────────────────────────────────────────────────────────
-type Fb = Framebuffer<AlphaPixel>;
-
-#[inline]
-fn fill(fb: &mut Fb, x: isize, y: isize, w: usize, h: usize, c: Color) {
-    if w == 0 || h == 0 { return; }
-    framebuffer_drawer::fill_rectangle(fb, Coord::new(x, y), w, h, c.into());
-}
-
-#[inline]
-fn hline(fb: &mut Fb, x0: isize, x1: isize, y: isize, c: Color) {
-    if x1 <= x0 { return; }
-    framebuffer_drawer::fill_rectangle(fb, Coord::new(x0, y), (x1 - x0) as usize, 1, c.into());
-}
-
-#[inline]
-fn vline(fb: &mut Fb, x: isize, y0: isize, y1: isize, c: Color) {
-    if y1 <= y0 { return; }
-    framebuffer_drawer::fill_rectangle(fb, Coord::new(x, y0), 1, (y1 - y0) as usize, c.into());
-}
-
-fn draw_char(fb: &mut Fb, x: isize, y: isize, ch: char, c: Color) {
-    let idx = ch as usize;
-    if idx >= 256 { return; }
-    let bitmap = &font::FONT_BASIC[idx];
-    for row in 0..font::CHARACTER_HEIGHT {
-        let bits = bitmap[row];
-        for col in 0..8usize {
-            if bits & (0x80 >> col) != 0 {
-                fb.draw_pixel(Coord::new(x + col as isize, y + row as isize), c.into());
-            }
-        }
-    }
-}
-
-fn draw_text(fb: &mut Fb, x: isize, y: isize, s: &str, c: Color) {
-    let mut cx = x;
-    for ch in s.chars() {
-        draw_char(fb, cx, y, ch, c);
-        cx += font::CHARACTER_WIDTH as isize;
-    }
-}
-
-/// Dessine `s` en tronquant à `max_px` pixels, avec "…" si nécessaire.
-fn draw_text_clipped(fb: &mut Fb, x: isize, y: isize, s: &str, max_px: isize, c: Color) {
-    let ch_w = font::CHARACTER_WIDTH as isize;
-    if max_px < ch_w { return; }
-    let max_chars = (max_px / ch_w) as usize;
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
-        draw_text(fb, x, y, s, c);
-    } else {
-        // Tronque et ajoute "~" comme indicateur
-        let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
-        draw_text(fb, x, y, &truncated, c);
-        draw_char(fb, x + (max_chars.saturating_sub(1)) as isize * ch_w, y, '~', C_FG_DIM);
-    }
-}
-
-// ────────────────────────────────────────────────────────────────
 // CHEMIN AFFICHÉ
 // ────────────────────────────────────────────────────────────────
 fn display_path(dir: &DirRef) -> String {
@@ -195,9 +121,9 @@ impl Entry {
     }
 
     fn color(&self) -> Color {
-        if self.is_dir      { C_DIR   }
-        else if self.is_exec { C_EXEC  }
-        else                 { C_FILE  }
+        if self.is_dir      { theme::C_YELLOW }
+        else if self.is_exec { theme::C_GREEN  }
+        else                 { C_FILE          }
     }
 
     fn icon(&self) -> char {
@@ -328,7 +254,7 @@ impl ClickTracker {
 // ────────────────────────────────────────────────────────────────
 #[allow(clippy::too_many_arguments)]
 fn redraw(
-    fb:       &mut Fb,
+    fb:       &mut Framebuffer<AlphaPixel>,
     ox: isize, oy: isize,   // offset du contenu dans le framebuffer (titlebar + border)
     cw: usize, ch: usize,   // dimensions du contenu
     entries:  &[Entry],
@@ -337,51 +263,53 @@ fn redraw(
     scroll:   usize,
     status:   &str,         // message dans le footer
 ) {
+    let mut ctx = DrawContext::new(fb);
     let mw  = main_w(cw);
     let vis = visible_rows(ch);
-    let fw  = font::CHARACTER_WIDTH as isize;
-    let fh  = font::CHARACTER_HEIGHT as isize;
+    let fw  = theme::CHAR_W as isize;
+    let fh  = theme::CHAR_H as isize;
 
     // ── Fond général ────────────────────────────────────────────
-    fill(fb, ox, oy, cw, ch, C_BG);
+    ctx.fill_rect(ox, oy, cw, ch, theme::C_BG);
 
     // ══════════════════════════════════════════════════════════
     // SIDEBAR
     // ══════════════════════════════════════════════════════════
     let sb_x = ox;
     let sb_y = oy;
-    fill(fb, sb_x, sb_y, SIDEBAR_W, ch, C_SURFACE);
-    vline(fb, sb_x + SIDEBAR_W as isize - 1, sb_y, sb_y + ch as isize, C_BORDER);
+    ctx.fill_rect(sb_x, sb_y, SIDEBAR_W, ch, theme::C_PANEL);
+    ctx.vline(sb_x + SIDEBAR_W as isize - 1, sb_y, sb_y + ch as isize, theme::C_BORDER);
 
     // Titre sidebar
-    fill(fb, sb_x, sb_y, SIDEBAR_W, PATHBAR_H, C_SURFACE2);
-    draw_text(fb, sb_x + 8, sb_y + (PATHBAR_H as isize - fh) / 2, "FAVORIS", C_ACCENT);
-    hline(fb, sb_x, sb_x + SIDEBAR_W as isize, sb_y + PATHBAR_H as isize, C_BORDER);
+    ctx.fill_rect(sb_x, sb_y, SIDEBAR_W, PATHBAR_H, theme::C_HEADER);
+    ctx.text(sb_x + 8, sb_y + (PATHBAR_H as isize - fh) / 2, "FAVORIS", theme::C_ACCENT);
+    ctx.hline(sb_x, sb_x + SIDEBAR_W as isize, sb_y + PATHBAR_H as isize, theme::C_BORDER);
 
     // Favoris
     for (i, bm) in BOOKMARKS.iter().enumerate() {
         let ry = sb_y + PATHBAR_H as isize + (i * ROW_H) as isize;
         let text_y = ry + (ROW_H as isize - fh) / 2;
-        draw_char(fb, sb_x + 6, text_y, '>', C_ACCENT);
-        draw_text_clipped(fb, sb_x + 18, text_y, bm.label,
-            (SIDEBAR_W as isize - 24).max(0), C_FG);
+        ctx.draw_char(sb_x + 6, text_y, '>', theme::C_ACCENT);
+        let max_chars = ((SIDEBAR_W as isize - 24).max(0) as usize) / theme::CHAR_W;
+        ctx.text_clipped(sb_x + 18, text_y, bm.label, max_chars, theme::C_FG);
     }
 
     // Séparateur entre favoris et arborescence courante
     let sep_y = sb_y + PATHBAR_H as isize + (BOOKMARKS.len() * ROW_H) as isize + 4;
-    hline(fb, sb_x + 8, sb_x + SIDEBAR_W as isize - 8, sep_y, C_BORDER);
+    ctx.hline(sb_x + 8, sb_x + SIDEBAR_W as isize - 8, sep_y, theme::C_BORDER);
 
     // Chemin décomposé (mini arbre)
     let abs = cur_dir.lock().get_absolute_path();
     let segments: Vec<&str> = abs.split('/').filter(|s| !s.is_empty()).collect();
     let mut tree_y = sep_y + 6;
-    draw_text_clipped(fb, sb_x + 8, tree_y, "Root:/", (SIDEBAR_W as isize - 16).max(0), C_ACCENT2);
+    let max_chars_tree = ((SIDEBAR_W as isize - 16).max(0) as usize) / theme::CHAR_W;
+    ctx.text_clipped(sb_x + 8, tree_y, "Root:/", max_chars_tree, theme::C_PURPLE);
     tree_y += ROW_H as isize;
     for (depth, seg) in segments.iter().enumerate() {
         let indent = sb_x + 8 + (depth as isize + 1) * 6;
-        let avail = (SIDEBAR_W as isize - (indent - sb_x) - 4).max(0);
-        draw_char(fb, indent, tree_y, '+', C_FG_DIM);
-        draw_text_clipped(fb, indent + fw, tree_y, seg, avail, C_FG);
+        let avail = ((SIDEBAR_W as isize - (indent - sb_x) - 4).max(0) as usize) / theme::CHAR_W;
+        ctx.draw_char(indent, tree_y, '+', theme::C_FG_DIM);
+        ctx.text_clipped(indent + fw, tree_y, seg, avail, theme::C_FG);
         tree_y += ROW_H as isize;
         if tree_y > sb_y + ch as isize - FOOTER_H as isize { break; }
     }
@@ -392,32 +320,31 @@ fn redraw(
     let mx = ox + SIDEBAR_W as isize;  // X du panneau principal dans le fb
 
     // ── Barre de chemin ─────────────────────────────────────────
-    fill(fb, mx, oy, mw + SCROLLBAR_W, PATHBAR_H, C_SURFACE2);
-    hline(fb, mx, mx + (mw + SCROLLBAR_W) as isize, oy + PATHBAR_H as isize, C_ACCENT);
+    ctx.fill_rect(mx, oy, mw + SCROLLBAR_W, PATHBAR_H, theme::C_HEADER);
+    ctx.hline(mx, mx + (mw + SCROLLBAR_W) as isize, oy + PATHBAR_H as isize, theme::C_ACCENT);
 
     // Icône "maison" + chemin complet
     let path_str = display_path(cur_dir);
     let text_y_path = oy + (PATHBAR_H as isize - fh) / 2;
-    draw_char(fb, mx + 6, text_y_path, '~', C_ACCENT);
-    draw_text_clipped(fb, mx + 18, text_y_path, &path_str,
-        (mw as isize - 90).max(0), C_FG);
+    ctx.draw_char(mx + 6, text_y_path, '~', theme::C_ACCENT);
+    let max_chars_path = ((mw as isize - 90).max(0) as usize) / theme::CHAR_W;
+    ctx.text_clipped(mx + 18, text_y_path, &path_str, max_chars_path, theme::C_FG);
 
     // Bouton "↑ Parent" à droite
     let btn_x = mx + mw as isize - 70;
-    fill(fb, btn_x, oy + 4, 62, PATHBAR_H - 8, C_SURFACE);
-    framebuffer_drawer::draw_rectangle(fb,
-        Coord::new(btn_x, oy + 4), 62, PATHBAR_H - 8, C_BORDER.into());
-    draw_text(fb, btn_x + 4, text_y_path, "^ Parent", C_FG_DIM);
+    ctx.fill_rect(btn_x, oy + 4, 62, PATHBAR_H - 8, theme::C_PANEL);
+    ctx.border_rect(btn_x, oy + 4, 62, PATHBAR_H - 8, theme::C_BORDER);
+    ctx.text(btn_x + 4, text_y_path, "^ Parent", theme::C_FG_DIM);
 
     // ── Header colonnes ─────────────────────────────────────────
     let hdr_y  = oy + PATHBAR_H as isize;
     let col_type_x  = mx + mw as isize - 120;
-    fill(fb, mx, hdr_y, mw + SCROLLBAR_W, HEADER_H, C_SURFACE2);
-    hline(fb, mx, mx + mw as isize, hdr_y + HEADER_H as isize - 1, C_ACCENT);
+    ctx.fill_rect(mx, hdr_y, mw + SCROLLBAR_W, HEADER_H, theme::C_HEADER);
+    ctx.hline(mx, mx + mw as isize, hdr_y + HEADER_H as isize - 1, theme::C_ACCENT);
 
     let hdr_text_y = hdr_y + (HEADER_H as isize - fh) / 2;
-    draw_text(fb, mx + C_NAME + fw, hdr_text_y, "Nom", C_FG_DIM);
-    draw_text(fb, col_type_x,       hdr_text_y, "Type", C_FG_DIM);
+    ctx.text(mx + C_NAME + fw, hdr_text_y, "Nom", theme::C_FG_DIM);
+    ctx.text(col_type_x,       hdr_text_y, "Type", theme::C_FG_DIM);
 
     // ── Lignes ──────────────────────────────────────────────────
     let list_y0 = oy + LIST_TOP as isize;
@@ -431,31 +358,31 @@ fn redraw(
         let bg = if abs_idx == selected {
             C_SEL_ACT
         } else if row % 2 == 0 {
-            C_BG
+            theme::C_BG
         } else {
             C_STRIPE
         };
-        fill(fb, mx, ry, mw, ROW_H, bg);
+        ctx.fill_rect(mx, ry, mw, ROW_H, bg);
 
         // Indicateur de sélection (barre latérale gauche)
         if abs_idx == selected {
-            fill(fb, mx, ry, 3, ROW_H, C_ACCENT);
+            ctx.fill_rect(mx, ry, 3, ROW_H, theme::C_ACCENT);
         }
 
         // Icône
-        let icon_color = if abs_idx == selected { C_FG } else { entry.color() };
-        draw_char(fb, mx + C_ICON, text_y, entry.icon(), icon_color);
+        let icon_color = if abs_idx == selected { theme::C_FG } else { entry.color() };
+        ctx.draw_char(mx + C_ICON, text_y, entry.icon(), icon_color);
 
         // Nom
-        let max_name = col_type_x - (mx + C_NAME + fw) - 8;
-        draw_text_clipped(fb, mx + C_NAME + fw, text_y, &entry.name,
-            max_name, entry.color());
+        let max_name_px = col_type_x - (mx + C_NAME + fw) - 8;
+        let max_name_chars = (max_name_px.max(0) as usize) / theme::CHAR_W;
+        ctx.text_clipped(mx + C_NAME + fw, text_y, &entry.name, max_name_chars, entry.color());
 
         // Type
-        draw_text(fb, col_type_x, text_y, entry.kind_str(), C_FG_DIM);
+        ctx.text(col_type_x, text_y, entry.kind_str(), theme::C_FG_DIM);
 
         // Séparateur horizontal (très subtil)
-        hline(fb, mx + 3, mx + mw as isize, ry + ROW_H as isize - 1,
+        ctx.hline(mx + 3, mx + mw as isize, ry + ROW_H as isize - 1,
             Color::new(0x00202030));
     }
 
@@ -463,14 +390,14 @@ fn redraw(
     let last_row_y = list_y0 + (vis * ROW_H) as isize;
     let footer_y   = oy + ch as isize - FOOTER_H as isize;
     if last_row_y < footer_y {
-        fill(fb, mx, last_row_y, mw, (footer_y - last_row_y) as usize, C_BG);
+        ctx.fill_rect(mx, last_row_y, mw, (footer_y - last_row_y) as usize, theme::C_BG);
     }
 
     // ── Scrollbar ────────────────────────────────────────────────
     let sb_area_x = mx + mw as isize;
     let sb_area_h = vis * ROW_H;
-    fill(fb, sb_area_x, list_y0, SCROLLBAR_W, sb_area_h, Color::new(0x00111118));
-    vline(fb, sb_area_x, list_y0, list_y0 + sb_area_h as isize, C_BORDER);
+    ctx.fill_rect(sb_area_x, list_y0, SCROLLBAR_W, sb_area_h, Color::new(0x00111118));
+    ctx.vline(sb_area_x, list_y0, list_y0 + sb_area_h as isize, theme::C_BORDER);
 
     if entries.len() > vis && vis > 0 {
         let total     = entries.len();
@@ -479,13 +406,13 @@ fn redraw(
         let thumb_y   = if max_off > 0 {
             (scroll * (sb_area_h - thumb_h)) / max_off
         } else { 0 };
-        fill(fb, sb_area_x + 1, list_y0 + thumb_y as isize,
-            SCROLLBAR_W - 2, thumb_h, C_BORDER);
+        ctx.fill_rect(sb_area_x + 1, list_y0 + thumb_y as isize,
+            SCROLLBAR_W - 2, thumb_h, theme::C_BORDER);
     }
 
     // ── Footer ───────────────────────────────────────────────────
-    fill(fb, mx, footer_y, mw + SCROLLBAR_W, FOOTER_H, C_SURFACE2);
-    hline(fb, mx, mx + (mw + SCROLLBAR_W) as isize, footer_y, C_BORDER);
+    ctx.fill_rect(mx, footer_y, mw + SCROLLBAR_W, FOOTER_H, theme::C_HEADER);
+    ctx.hline(mx, mx + (mw + SCROLLBAR_W) as isize, footer_y, theme::C_BORDER);
 
     let ft_text_y = footer_y + (FOOTER_H as isize - fh) / 2;
     let count_str = if entries.is_empty() {
@@ -493,7 +420,7 @@ fn redraw(
     } else {
         format!("{} elements  |  sel: {}", entries.len(), selected + 1)
     };
-    draw_text(fb, mx + 8, ft_text_y, &count_str, C_FG_DIM);
+    ctx.text(mx + 8, ft_text_y, &count_str, theme::C_FG_DIM);
 
     // Status / raccourcis au centre
     let hint = if status.is_empty() {
@@ -503,8 +430,8 @@ fn redraw(
     };
     let hint_x = mx + mw as isize / 2 - (hint.len() as isize * fw) / 2;
     if hint_x > mx + 120 {
-        draw_text_clipped(fb, hint_x, ft_text_y, hint,
-            (mw as isize - 130).max(0), C_FG_DIM);
+        let max_hint_chars = ((mw as isize - 130).max(0) as usize) / theme::CHAR_W;
+        ctx.text_clipped(hint_x, ft_text_y, hint, max_hint_chars, theme::C_FG_DIM);
     }
 }
 
@@ -716,7 +643,7 @@ pub fn main(_args: alloc::vec::Vec<String>) -> isize {
         "Gestionnaire de fichiers".to_string(),
         Coord::new(60, 40),
         WIN_W, WIN_H,
-        C_BG,
+        theme::C_BG,
     ) {
         Ok(w)  => w,
         Err(e) => { error!("[file_manager] window: {}", e); return -1; }
