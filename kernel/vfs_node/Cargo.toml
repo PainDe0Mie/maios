@@ -7,6 +7,7 @@ description = "contains the structs VFSDirectory and VFSFile, which are the most
 
 [dependencies]
 spin = "0.9.4"
+hashbrown = { version = "0.14", default-features = false }
 
 [dependencies.log]
 version = "0.4.8"
