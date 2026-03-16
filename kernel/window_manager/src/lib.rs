@@ -153,7 +153,7 @@ impl WindowManager {
 
             // Demote the current active to show_list (guard against duplicates).
             if self.index_in_show(&current).is_none() {
-                self.show_list.push_front(Arc::downgrade(&current));
+                self.show_list.push_back(Arc::downgrade(&current));
             }
         }
 
@@ -649,8 +649,8 @@ impl WindowManager {
             }
         }
 
-        // 2. Check show_list from front (topmost below active) to back.
-        for weak in &self.show_list {
+        // 2. Check show_list in reverse (topmost = most recently demoted first).
+        for weak in self.show_list.iter().rev() {
             if let Some(w) = weak.upgrade() {
                 let win = w.lock();
                 if !win.visible { continue; }

@@ -16,8 +16,7 @@
 #![no_std]
 extern crate alloc;
 extern crate color;
-extern crate framebuffer;
-extern crate framebuffer_drawer;
+extern crate mai_ui;
 extern crate shapes;
 extern crate spawn;
 extern crate task;
@@ -26,7 +25,6 @@ extern crate scheduler;
 extern crate path;
 extern crate mod_mgmt;
 extern crate window_inner;
-extern crate font;
 extern crate root;
 extern crate fs_node;
 extern crate memfs;
@@ -42,6 +40,8 @@ use color::Color;
 use shapes::{Coord, Rectangle};
 use window_inner::WindowInner;
 use fs_node::{FileOrDir, DirRef};
+use mai_ui::draw::DrawContext;
+use mai_ui::theme;
 
 // ================================================================
 // CONFIG
@@ -59,18 +59,10 @@ const TASKBAR_BTN_H:   usize = 34;
 const TASKBAR_BTN_GAP: usize = 4;
 const TASKBAR_BTN_X0:  usize = 58;
 
-const C_BG:           Color = Color::new(0x001A1B26);
+// Colors kept as local consts (not in mai_ui theme)
 const C_TASKBAR:      Color = Color::new(0x0013141F);
-const C_TASKBAR_LINE: Color = Color::new(0x007AA2F7);
-const C_BTN_NORMAL:   Color = Color::new(0x00252535);
 const C_BTN_ACTIVE:   Color = Color::new(0x003D59A1);
-const C_BTN_HOVER:    Color = Color::new(0x002D3F6B);
-const C_ICON_BG:      Color = Color::new(0x001F2335);
-const C_ICON_BORDER:  Color = Color::new(0x00414868);
 const C_ICON_HOVER:   Color = Color::new(0x002A2F4C);
-const C_MAI:          Color = Color::new(0x007AA2F7);
-const C_WHITE:        Color = Color::new(0x00C0CAF5);
-const C_DIM:          Color = Color::new(0x00565F89);
 
 // ================================================================
 // FORMAT DES RACCOURCIS .desk
@@ -279,114 +271,57 @@ impl RunningApp {
 // ================================================================
 // DESSIN
 // ================================================================
-type Fb = framebuffer::Framebuffer<framebuffer::AlphaPixel>;
-
-fn fill(fb: &mut Fb, x: isize, y: isize, w: usize, h: usize, c: Color) {
-    framebuffer_drawer::fill_rectangle(fb, Coord::new(x, y), w, h, c.into());
-}
-fn rect(fb: &mut Fb, x: isize, y: isize, w: usize, h: usize, c: Color) {
-    framebuffer_drawer::draw_rectangle(fb, Coord::new(x, y), w, h, c.into());
-}
-fn hline(fb: &mut Fb, x0: isize, x1: isize, y: isize, c: Color) {
-    for x in x0..x1 { fb.draw_pixel(Coord::new(x, y), c.into()); }
-}
-fn vline(fb: &mut Fb, x: isize, y0: isize, y1: isize, c: Color) {
-    for y in y0..y1 { fb.draw_pixel(Coord::new(x, y), c.into()); }
-}
-
-fn rounded_rect(fb: &mut Fb, x: isize, y: isize, w: usize, h: usize, r: usize, c: Color) {
-    let r = r as isize;
-    let w = w as isize;
-    let h = h as isize;
-    fill(fb, x+r,   y,   (w-2*r) as usize, h as usize, c);
-    fill(fb, x,     y+r, r as usize, (h-2*r) as usize, c);
-    fill(fb, x+w-r, y+r, r as usize, (h-2*r) as usize, c);
-    for dy in 0..r {
-        for dx in 0..r {
-            if (r-1-dx)*(r-1-dx)+(r-1-dy)*(r-1-dy) <= r*r {
-                fb.draw_pixel(Coord::new(x+dx,     y+dy    ), c.into());
-                fb.draw_pixel(Coord::new(x+w-1-dx, y+dy    ), c.into());
-                fb.draw_pixel(Coord::new(x+dx,     y+h-1-dy), c.into());
-                fb.draw_pixel(Coord::new(x+w-1-dx, y+h-1-dy), c.into());
-            }
-        }
-    }
-}
-
-fn draw_char(fb: &mut Fb, x: isize, y: isize, c: char, color: Color) {
-    let idx = c as usize;
-    if idx >= 256 { return; }
-    let bitmap = &font::FONT_BASIC[idx];
-    for row in 0..font::CHARACTER_HEIGHT {
-        let bits = bitmap[row];
-        for col in 0..8usize {
-            if bits & (0x80 >> col) != 0 {
-                fb.draw_pixel(Coord::new(x + col as isize, y + row as isize), color.into());
-            }
-        }
-    }
-}
-
-fn draw_text(fb: &mut Fb, x: isize, y: isize, text: &str, color: Color) {
-    let mut cx = x;
-    for c in text.chars() { draw_char(fb, cx, y, c, color); cx += font::CHARACTER_WIDTH as isize; }
-}
-
-fn draw_text_centered(fb: &mut Fb, cx: isize, y: isize, w: usize, text: &str, color: Color) {
-    let max_chars = w / font::CHARACTER_WIDTH;
-    let s: &str = if text.len() > max_chars { &text[..max_chars] } else { text };
-    let text_w = s.len() * font::CHARACTER_WIDTH;
-    let tx = cx + (w as isize - text_w as isize) / 2;
-    draw_text(fb, tx, y, s, color);
-}
 
 fn redraw(sw: usize, sh: usize, icons: &[Icon], apps: &[RunningApp]) {
     let wm_ref = match window_manager::WINDOW_MANAGER.get() { Some(r) => r, None => return };
     let mut wm = wm_ref.lock();
     let fb = wm.get_bottom_framebuffer_mut();
+    let mut ctx = DrawContext::new(fb);
 
     // Fond dégradé subtil
-    fb.fill(C_BG.into());
+    ctx.fill_rect(0, 0, sw, sh, theme::C_BG);
     for y in 0..180isize {
         let e = ((180-y)/10) as u32;
-        hline(fb, 0, sw as isize, y, Color::new(0x001A1B26u32.saturating_add(e)));
+        ctx.hline(0, sw as isize, y, Color::new(0x001A1B26u32.saturating_add(e)));
     }
 
-    // ── Icônes ──────────────────────────────────────────────────
+    // -- Icônes --
     for icon in icons {
-        let bg = if icon.hovered { C_ICON_HOVER } else { C_ICON_BG };
+        let bg = if icon.hovered { C_ICON_HOVER } else { theme::C_PANEL };
         // Ombre légère
-        fill(fb, icon.x+3, icon.y+3, ICON_W, ICON_H, Color::new(0x000D0E17));
-        rounded_rect(fb, icon.x, icon.y, ICON_W, ICON_H, 8, bg);
-        rect(fb, icon.x, icon.y, ICON_W, ICON_H, C_ICON_BORDER);
+        ctx.fill_rect(icon.x+3, icon.y+3, ICON_W, ICON_H, Color::new(0x000D0E17));
+        ctx.rounded_rect(icon.x, icon.y, ICON_W, ICON_H, 8, bg);
+        ctx.border_rect(icon.x, icon.y, ICON_W, ICON_H, theme::C_BORDER);
         // Carré coloré centré
         let ix = icon.x + ((ICON_W - ICON_INNER) / 2) as isize;
         let iy = icon.y + ((ICON_H - ICON_INNER) / 2) as isize - 4;
-        rounded_rect(fb, ix, iy, ICON_INNER, ICON_INNER, 6, icon.color);
+        ctx.rounded_rect(ix, iy, ICON_INNER, ICON_INNER, 6, icon.color);
         // Highlight si hover
         if icon.hovered {
-            hline(fb, icon.x+4, icon.x+ICON_W as isize-4, icon.y+1, Color::new(0x40FFFFFF));
+            ctx.hline(icon.x+4, icon.x+ICON_W as isize-4, icon.y+1, Color::new(0x40FFFFFF));
         }
-        // Label sous l'icône
-        draw_text_centered(fb, icon.x, icon.y + ICON_H as isize - 14,
-                           ICON_W, &icon.name, C_WHITE);
+        // Label sous l'icône — truncate to fit icon width
+        let max_chars = ICON_W / theme::CHAR_W;
+        let label = if icon.name.len() > max_chars { &icon.name[..max_chars] } else { &icon.name };
+        ctx.text_centered(icon.x, icon.y + ICON_H as isize - 14,
+                          ICON_W, label, theme::C_FG);
     }
 
-    // ── Taskbar ─────────────────────────────────────────────────
+    // -- Taskbar --
     let ty = (sh - TASKBAR_H) as isize;
-    fill(fb,  0, ty, sw, TASKBAR_H, C_TASKBAR);
-    hline(fb, 0, sw as isize, ty,   C_TASKBAR_LINE);
-    hline(fb, 0, sw as isize, ty+1, Color::new(0x004A72C4));
+    ctx.fill_rect(0, ty, sw, TASKBAR_H, C_TASKBAR);
+    ctx.hline(0, sw as isize, ty,   theme::C_ACCENT);
+    ctx.hline(0, sw as isize, ty+1, Color::new(0x004A72C4));
 
     // Bouton Mai (logo M)
     let btn_y = ty + ((TASKBAR_H as isize - 34) / 2);
     let dk = Color::new(0x001A1B26);
-    rounded_rect(fb, 10, btn_y, 36, 34, 6, C_MAI);
-    vline(fb, 14, btn_y+8, btn_y+26, dk);
-    vline(fb, 30, btn_y+8, btn_y+26, dk);
+    ctx.rounded_rect(10, btn_y, 36, 34, 6, theme::C_ACCENT);
+    ctx.vline(14, btn_y+8, btn_y+26, dk);
+    ctx.vline(30, btn_y+8, btn_y+26, dk);
     for d in 0..4isize {
-        fb.draw_pixel(Coord::new(15+d, btn_y+9+d),  dk.into());
-        fb.draw_pixel(Coord::new(29-d, btn_y+9+d),  dk.into());
+        ctx.pixel(15+d, btn_y+9+d,  dk);
+        ctx.pixel(29-d, btn_y+9+d,  dk);
     }
 
     // Boutons apps dans la taskbar
@@ -394,34 +329,35 @@ fn redraw(sw: usize, sh: usize, icons: &[Icon], apps: &[RunningApp]) {
         let r   = app.btn_rect(sh, i);
         let bx  = r.top_left.x;
         let by  = r.top_left.y;
-        let bg  = if app.btn_hov        { C_BTN_HOVER  }
-                  else if app.is_minimized() { C_BTN_NORMAL }
-                  else                   { C_BTN_ACTIVE };
+        let bg  = if app.btn_hov             { theme::C_BTN_HOVER }
+                  else if app.is_minimized() { theme::C_BTN       }
+                  else                       { C_BTN_ACTIVE        };
 
-        rounded_rect(fb, bx, by, TASKBAR_BTN_W, TASKBAR_BTN_H, 5, bg);
-        rect(fb, bx, by, TASKBAR_BTN_W, TASKBAR_BTN_H, C_TASKBAR_LINE);
-        rounded_rect(fb, bx+7, by+(TASKBAR_BTN_H as isize-12)/2, 12, 12, 3, app.color);
+        ctx.rounded_rect(bx, by, TASKBAR_BTN_W, TASKBAR_BTN_H, 5, bg);
+        ctx.border_rect(bx, by, TASKBAR_BTN_W, TASKBAR_BTN_H, theme::C_ACCENT);
+        ctx.rounded_rect(bx+7, by+(TASKBAR_BTN_H as isize-12)/2, 12, 12, 3, app.color);
 
         let lx = bx + 24;
-        let ly = by + (TASKBAR_BTN_H as isize - font::CHARACTER_HEIGHT as isize) / 2;
-        let max_chars = (TASKBAR_BTN_W - 28) / font::CHARACTER_WIDTH;
+        let ly = by + (TASKBAR_BTN_H as isize - theme::CHAR_H as isize) / 2;
+        let max_chars = (TASKBAR_BTN_W - 28) / theme::CHAR_W;
         let label = if app.name.len() > max_chars { &app.name[..max_chars] } else { &app.name };
-        draw_text(fb, lx, ly, label, C_WHITE);
+        ctx.text(lx, ly, label, theme::C_FG);
 
         if !app.is_minimized() {
-            hline(fb, bx+6, bx+TASKBAR_BTN_W as isize-6, by+TASKBAR_BTN_H as isize-3, C_TASKBAR_LINE);
-            hline(fb, bx+6, bx+TASKBAR_BTN_W as isize-6, by+TASKBAR_BTN_H as isize-2, C_TASKBAR_LINE);
+            ctx.hline(bx+6, bx+TASKBAR_BTN_W as isize-6, by+TASKBAR_BTN_H as isize-3, theme::C_ACCENT);
+            ctx.hline(bx+6, bx+TASKBAR_BTN_W as isize-6, by+TASKBAR_BTN_H as isize-2, theme::C_ACCENT);
         } else {
             let mid_y = by + TASKBAR_BTN_H as isize / 2;
             let mid_x = bx + TASKBAR_BTN_W as isize / 2;
-            hline(fb, mid_x-10, mid_x+10, mid_y,   C_WHITE);
-            hline(fb, mid_x-10, mid_x+10, mid_y+1, C_WHITE);
+            ctx.hline(mid_x-10, mid_x+10, mid_y,   theme::C_FG);
+            ctx.hline(mid_x-10, mid_x+10, mid_y+1, theme::C_FG);
         }
     }
 
     // Heure fictive en haut à droite (placeholder)
-    draw_text(fb, sw as isize - 70, ty + 8, "mai_os", C_DIM);
+    ctx.text(sw as isize - 70, ty + 8, "mai_os", theme::C_FG_DIM);
 
+    drop(ctx);
     drop(wm);
 
     if let Some(wm) = window_manager::WINDOW_MANAGER.get() {
@@ -519,14 +455,14 @@ pub fn main(_args: Vec<String>) -> isize {
         None => { error!("[explorer] No WM"); return -1; }
     };
 
-    // ── Init bureau (crée /desktop si besoin) ───────────────────
+    // -- Init bureau (crée /desktop si besoin) --
     init_desktop();
 
-    // ── Charge les raccourcis depuis /desktop ────────────────────
+    // -- Charge les raccourcis depuis /desktop --
     let shortcuts = load_shortcuts();
     info!("[explorer] {} raccourci(s) trouvé(s) dans /desktop", shortcuts.len());
 
-    // ── Construit les icônes ─────────────────────────────────────
+    // -- Construit les icônes --
     let mut icons = build_icons(&shortcuts);
     info!("[explorer] {} icône(s) affichée(s)", icons.len());
 
