@@ -4,13 +4,24 @@
 
 #![no_std]
 
-extern crate alloc;
 extern crate framebuffer;
 extern crate shapes;
 
-use alloc::vec::Vec;
 use framebuffer::{Framebuffer, Pixel};
 use shapes::Coord;
+
+/// Integer square root: returns the largest `x` such that `x*x <= n`.
+#[inline]
+fn isqrt(n: isize) -> isize {
+    if n <= 0 { return 0; }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
 
 /// Draws a line using Bresenham's algorithm. Pixels outside the framebuffer are skipped.
 #[inline]
@@ -147,7 +158,7 @@ pub fn draw_circle<P: Pixel>(
 
 /// Fills a circle with a solid color using optimized horizontal scanlines.
 /// `center` is the center, `r` is the radius in pixels.
-/// This version is much faster than pixel-by-pixel drawing.
+/// Zero-allocation: writes directly into the framebuffer buffer.
 #[inline]
 pub fn fill_circle<P: Pixel>(
     framebuffer: &mut Framebuffer<P>,
@@ -161,45 +172,88 @@ pub fn fill_circle<P: Pixel>(
     }
     let (buf_w, buf_h) = framebuffer.get_size();
     let r_i = r as isize;
-    let r2 = (r_i * r_i) as isize;
+    let r2 = r_i * r_i;
     let (cx, cy) = (center.x, center.y);
-    
-    // Pour chaque ligne horizontale, calculer la largeur à remplir
+
+    let buf = framebuffer.buffer_mut();
     for dy in -r_i..=r_i {
         let y = cy + dy;
         if y < 0 || y >= buf_h as isize {
             continue;
         }
-        
-        // Calculer h = r² - dy² pour cette ligne
         let h = r2 - dy * dy;
-        if h < 0 {
-            continue;
+        if h < 0 { continue; }
+
+        // Integer sqrt via binary search (fast, no alloc)
+        let half_w = isqrt(h);
+        let x_start = core::cmp::max(cx - half_w, 0) as usize;
+        let x_end = core::cmp::min(cx + half_w + 1, buf_w as isize) as usize;
+        if x_start >= x_end { continue; }
+
+        let row_start = (y as usize) * buf_w + x_start;
+        buf[row_start..row_start + (x_end - x_start)].fill(pixel);
+    }
+}
+
+/// Draws an anti-aliased line using Xiaolin Wu's algorithm.
+/// Produces smoother lines by blending edge pixels with the background.
+#[inline]
+pub fn draw_line_aa<P: Pixel>(
+    framebuffer: &mut Framebuffer<P>,
+    start: Coord,
+    end: Coord,
+    pixel: P,
+) {
+    let (mut x0, mut y0) = (start.x as f32, start.y as f32);
+    let (mut x1, mut y1) = (end.x as f32, end.y as f32);
+
+    let steep = (y1 - y0).abs() > (x1 - x0).abs();
+    if steep {
+        core::mem::swap(&mut x0, &mut y0);
+        core::mem::swap(&mut x1, &mut y1);
+    }
+    if x0 > x1 {
+        core::mem::swap(&mut x0, &mut x1);
+        core::mem::swap(&mut y0, &mut y1);
+    }
+
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let gradient = if dx < 0.001 { 1.0 } else { dy / dx };
+
+    // First endpoint
+    let xend = (x0 + 0.5) as isize;
+    let yend = y0 + gradient * (xend as f32 - x0);
+    let xpxl1 = xend;
+    let mut intery = yend + gradient;
+
+    // Second endpoint
+    let xend2 = (x1 + 0.5) as isize;
+    let xpxl2 = xend2;
+
+    // Main loop
+    for x in (xpxl1 + 1)..xpxl2 {
+        let y = intery as isize;
+        let fpart = intery - (y as f32);
+
+        // Plot two pixels per column with appropriate weights
+        let c1 = Coord::new(if steep { y } else { x }, if steep { x } else { y });
+        let c2 = Coord::new(if steep { y + 1 } else { x }, if steep { x } else { y + 1 });
+
+        if framebuffer.contains(c1) {
+            if let Some(bg) = framebuffer.get_pixel(c1) {
+                let blended = P::weight_blend(pixel, bg, 1.0 - fpart);
+                framebuffer.draw_pixel(c1, blended);
+            }
         }
-        
-        // Approximation de sqrt(h) par recherche binaire simple
-        // On cherche le plus grand x tel que x² <= h
-        let mut x_approx = 0isize;
-        while x_approx * x_approx <= h && x_approx <= r_i {
-            x_approx += 1;
+        if framebuffer.contains(c2) {
+            if let Some(bg) = framebuffer.get_pixel(c2) {
+                let blended = P::weight_blend(pixel, bg, fpart);
+                framebuffer.draw_pixel(c2, blended);
+            }
         }
-        let half_w = x_approx - 1;
-        
-        if half_w < 0 {
-            continue;
-        }
-        
-        // Calculer les limites x pour cette ligne
-        let x_start = core::cmp::max(cx - half_w, 0);
-        let x_end = core::cmp::min(cx + half_w + 1, buf_w as isize);
-        
-        if x_start < x_end {
-            let len = (x_end - x_start) as usize;
-            let mut row = Vec::with_capacity(len);
-            row.resize(len, pixel);
-            let idx = (y as usize) * buf_w + (x_start as usize);
-            framebuffer.composite_buffer(&row, idx);
-        }
+
+        intery += gradient;
     }
 }
 
@@ -305,6 +359,7 @@ pub fn draw_ellipse<P: Pixel>(
 }
 
 /// Fills an ellipse with a solid color using horizontal scanlines.
+/// Zero-allocation: writes directly into the framebuffer buffer.
 #[inline]
 pub fn fill_ellipse<P: Pixel>(
     framebuffer: &mut Framebuffer<P>,
@@ -316,50 +371,30 @@ pub fn fill_ellipse<P: Pixel>(
     if radius_x == 0 || radius_y == 0 {
         return;
     }
-    
+
     let (buf_w, buf_h) = framebuffer.get_size();
     let rx = radius_x as isize;
     let ry = radius_y as isize;
     let rx2 = rx * rx;
     let ry2 = ry * ry;
     let (cx, cy) = (center.x, center.y);
-    
-    // For each horizontal line, calculate width to fill
+
+    let buf = framebuffer.buffer_mut();
     for dy in -ry..=ry {
         let y = cy + dy;
         if y < 0 || y >= buf_h as isize {
             continue;
         }
-        
-        // Calculate h = ry² - dy² for this line
         let h = ry2 - dy * dy;
-        if h < 0 {
-            continue;
-        }
-        
-        // Calculate half width: sqrt(rx² * h / ry²)
-        // Simplified: we need sqrt(rx² * h / ry²) = rx * sqrt(h) / ry
-        // Approximate sqrt(h) by binary search
-        let mut x_approx = 0isize;
+        if h < 0 { continue; }
+
         let h_scaled = (rx2 * h) / ry2;
-        while x_approx * x_approx <= h_scaled && x_approx <= rx {
-            x_approx += 1;
-        }
-        let half_w = x_approx - 1;
-        
-        if half_w < 0 {
-            continue;
-        }
-        
-        let x_start = core::cmp::max(cx - half_w, 0);
-        let x_end = core::cmp::min(cx + half_w + 1, buf_w as isize);
-        
-        if x_start < x_end {
-            let len = (x_end - x_start) as usize;
-            let mut row = Vec::with_capacity(len);
-            row.resize(len, pixel);
-            let idx = (y as usize) * buf_w + (x_start as usize);
-            framebuffer.composite_buffer(&row, idx);
-        }
+        let half_w = isqrt(h_scaled);
+        let x_start = core::cmp::max(cx - half_w, 0) as usize;
+        let x_end = core::cmp::min(cx + half_w + 1, buf_w as isize) as usize;
+        if x_start >= x_end { continue; }
+
+        let row_start = (y as usize) * buf_w + x_start;
+        buf[row_start..row_start + (x_end - x_start)].fill(pixel);
     }
 }

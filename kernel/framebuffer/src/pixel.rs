@@ -75,19 +75,29 @@ impl From<Color> for RGBPixel {
 }
 
 impl Pixel for AlphaPixel {
+    /// Composites src onto dest with alpha blending.
+    /// alpha == 0 means fully opaque (overwrite), alpha == 255 means fully transparent (skip).
+    /// Optimized: scans for contiguous opaque runs and bulk-copies them.
     #[inline]
     fn composite_buffer(src: &[Self], dest: &mut [Self]) {
-        let all_opaque = src.iter().all(|p| p.alpha == 0);
-        if all_opaque {
-            dest.copy_from_slice(src);
-            return;
-        }
-        // Sinon pixel par pixel
-        for (s, d) in src.iter().zip(dest.iter_mut()) {
-            if s.alpha == 0 {
-                *d = *s; 
-            } else if s.alpha != 255 {
-                *d = s.blend(*d);
+        let len = src.len().min(dest.len());
+        let mut i = 0;
+        while i < len {
+            if src[i].alpha == 0 {
+                // Find the length of the contiguous opaque run
+                let run_start = i;
+                while i < len && src[i].alpha == 0 {
+                    i += 1;
+                }
+                // Bulk copy the entire opaque run
+                dest[run_start..i].copy_from_slice(&src[run_start..i]);
+            } else if src[i].alpha == 255 {
+                // Fully transparent — skip
+                i += 1;
+            } else {
+                // Semi-transparent — blend
+                dest[i] = src[i].blend(dest[i]);
+                i += 1;
             }
         }
     }

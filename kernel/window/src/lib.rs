@@ -133,14 +133,12 @@ impl Window {
         height: usize,
         initial_background: Color,
     ) -> Result<Window, &'static str> {
-        info!("Window::with_title: creating window at {:?} size {}x{}", coordinate, width, height);
+        debug!("Window::with_title: creating window at {:?} size {}x{}", coordinate, width, height);
         let wm_ref = window_manager::WINDOW_MANAGER.get().ok_or("The window manager is not initialized")?;
-        info!("Got WM ref");
 
         // Create a new virtual framebuffer to hold this window's contents only,
         // and fill it with the initial background color.
         let mut framebuffer = Framebuffer::new(width, height, None)?;
-        info!("Framebuffer created, size {}x{}", framebuffer.width(), framebuffer.height());
         framebuffer.fill(initial_background.into());
         let (width, height) = framebuffer.get_size();
 
@@ -176,23 +174,11 @@ impl Window {
             window.show_button(TopButton::Hide, 1, &mut inner);
         }
 
-        info!("WindowInner created");
         let mut wm = wm_ref.lock();
-        info!("Calling set_active");
-        match wm.set_active(&window.inner, false) {
-            Ok(first) => info!("set_active ok, first_active={}", first),
-            Err(e) => {
-                error!("set_active failed: {}", e);
-                return Err(e);
-            }
-        }
+        wm.set_active(&window.inner, false)?;
 
-        // Currently, refresh the whole screen instead of just the new window's bounds
-        // wm.refresh_bottom_windows(Some(window_bounding_box), true)?;
-        info!("Calling refresh_bottom_windows");
         let area = window.inner.lock().get_envelope();
         wm.refresh_bottom_windows(Some(area), true)?;
-        info!("refresh_bottom_windows done");
         
         Ok(window)
     }
