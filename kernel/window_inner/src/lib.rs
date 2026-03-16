@@ -1,17 +1,11 @@
-//! The `WindowInner` struct is the internal representation of a `Window` used by the window manager. 
-//! 
+//! The `WindowInner` struct is the internal representation of a `Window` used by the window manager.
+//!
 //! In comparison, the `Window` struct is application-facing, meaning it is used by (owned by)
-//! and exposed directly to applications or tasks that wish to display content. 
-//! 
-//! The `WindowInner` in the window_manager-facing version of the `Window`, 
-//! and each `Window` contains a reference to its `WindowInner`. 
-//! 
+//! and exposed directly to applications or tasks that wish to display content.
+//!
 //! The window manager typically holds `Weak` references to a `WindowInner` struct,
-//! which allows it to control the window itself and handle non-application-related components of the window,
-//! such as the title bar, border, etc. 
-//! 
-//! It also allows the window manager to control the window, e.g., move, hide, show, or resize it
-//! in a way that applications may not be able to do.
+//! which allows it to control the window itself and handle non-application-related
+//! components of the window, such as the title bar, border, etc.
 
 #![no_std]
 
@@ -19,192 +13,198 @@ extern crate mpmc;
 extern crate event_types;
 extern crate framebuffer;
 extern crate shapes;
+extern crate alloc;
 
+use alloc::string::String;
 use mpmc::Queue;
-use event_types::{Event};
+use event_types::Event;
 use framebuffer::{Framebuffer, AlphaPixel};
 use shapes::{Coord, Rectangle};
 
+/// Height of the title bar in pixels.
+pub const DEFAULT_TITLE_BAR_HEIGHT: usize = 28;
+/// Width of the left, right, and bottom borders in pixels.
+pub const DEFAULT_BORDER_SIZE: usize = 1;
 
-// The title bar height, in number of pixels
-pub const DEFAULT_TITLE_BAR_HEIGHT: usize = 16;
-// left, right, bottom border size, in number of pixels
-pub const DEFAULT_BORDER_SIZE: usize = 2;
+/// Minimum window dimensions to ensure decorations are always visible.
+pub const MIN_WINDOW_WIDTH:  usize = 120;
+pub const MIN_WINDOW_HEIGHT: usize = DEFAULT_TITLE_BAR_HEIGHT + DEFAULT_BORDER_SIZE + 40;
 
 /// The edge being dragged during a resize operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResizeEdge {
     Top, Bottom, Left, Right,
-    TopLeft, TopRight, BottomLeft, BottomRight
+    TopLeft, TopRight, BottomLeft, BottomRight,
 }
 
-/// Whether a window is moving (being dragged by the mouse).
+/// Whether a window is currently being manipulated by the user.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowMovingStatus {
     /// The window is not in motion.
     Stationary,
-    /// The window is currently in motion. 
-    /// The enclosed `Coord` represents the initial position of the window before it started moving.
+    /// The window is being dragged; the `Coord` is the mouse position when dragging started.
     Moving(Coord),
-    /// The window is being resized.
+    /// The window is being resized; the `Coord` is the mouse anchor, `ResizeEdge` is which edge.
     Resizing(Coord, ResizeEdge),
 }
 
-/// The `WindowInner` struct is the internal system-facing representation of a window. 
-/// Its members and functions describe the size, state, and events related to window handling,
-/// including elements like:
-/// * The underlying virtual framebuffer to which the window is rendered,
-/// * THe location and dimensions of the window in the final screen, 
-/// * The window's title bar, buttons, and borders, 
-/// * Queues for events that have been received by this window, and more. 
-/// 
-/// The window manager directly interacts with instances of `WindowInner` rather than `Window`,
-/// and the application tasks should not have direct access to this struct for correctness reasons.
-/// See the crate-level documentation for more details about how to use this
-/// and how it differs from `Window`.
+/// The system-facing internal representation of a window.
+///
+/// The window manager interacts with this directly; application code must use
+/// the `Window` wrapper instead.
 pub struct WindowInner {
-    /// The position of the top-left corner of the window,
-    /// expressed relative to the top-left corner of the screen.
+    /// Top-left corner of the window, relative to the screen.
     coordinate: Coord,
-    /// The width of the border in pixels.
-    /// By default, there is a border on the left, right, and bottom edges of the window.
+    /// Left/right/bottom border thickness in pixels.
     pub border_size: usize,
-    /// The height of title bar in pixels.
-    /// By default, there is one title bar at the top edge of the window.
+    /// Title bar height in pixels.
     pub title_bar_height: usize,
-
+    /// The task that owns this window, used to route events.
     pub task_id: Option<usize>,
-    /// The producer side of this window's event queue. 
-    /// Entities that want to send events to this window (or the application that owns this window) 
-    /// should push events onto this queue.
-    /// 
-    /// The corresponding consumer for this event queue is found in the `Window` struct
-    /// that created and owns this `WindowInner` instance.
-    event_producer: Queue<Event>, // event output used by window manager
-    /// The virtual framebuffer that is used exclusively for rendering only this window.
+    /// Whether this window is currently visible (not hidden).
+    pub visible: bool,
+    /// Producer end of this window's event queue.
+    /// The window manager pushes events here; `Window` pops them.
+    event_producer: Queue<Event>,
+    /// Virtual framebuffer for this window's pixels.
     framebuffer: Framebuffer<AlphaPixel>,
-    /// Whether a window is moving or stationary.
-    /// 
-    /// TODO: FIXME (kevinaboos): this should be private, and window moving logic should be moved into this crate.
+    /// Current drag/resize state.
     pub moving: WindowMovingStatus,
 }
 
 impl WindowInner {
-    /// Creates a new `WindowInner` object backed by the given `framebuffer`
-    /// and that will be rendered at the given `coordinate` relative to the screen.
+    /// Creates a new `WindowInner` backed by the given `framebuffer`.
     pub fn new(
-        coordinate: Coord, 
-        framebuffer: Framebuffer<AlphaPixel>, 
+        coordinate: Coord,
+        framebuffer: Framebuffer<AlphaPixel>,
         event_producer: Queue<Event>,
-        task_id: Option<usize>, 
+        task_id: Option<usize>,
     ) -> WindowInner {
         WindowInner {
             coordinate,
             border_size: DEFAULT_BORDER_SIZE,
             title_bar_height: DEFAULT_TITLE_BAR_HEIGHT,
+            task_id,
+            visible: true,
             event_producer,
             framebuffer,
             moving: WindowMovingStatus::Stationary,
-            task_id,
         }
     }
 
-    /// Returns `true` if the given `coordinate` (relative to the top-left corner of this window)
-    /// is within the bounds of this window.
+    /// Returns `true` if `coordinate` (relative to this window's top-left) is within bounds.
+    #[inline]
     pub fn contains(&self, coordinate: Coord) -> bool {
         self.framebuffer.contains(coordinate)
     }
 
-    /// Gets the size of a window in pixels
+    /// Returns `(width, height)` of this window in pixels.
+    #[inline]
     pub fn get_size(&self) -> (usize, usize) {
         self.framebuffer.get_size()
     }
 
-    /// Gets the top-left position of the window relative to the top-left of the screen
+    /// Returns the top-left position of this window, relative to the screen.
+    #[inline]
     pub fn get_position(&self) -> Coord {
         self.coordinate
     }
 
-    /// Sets the top-left position of the window relative to the top-left of the screen
+    /// Sets the top-left position of this window, relative to the screen.
+    #[inline]
     pub fn set_position(&mut self, coordinate: Coord) {
         self.coordinate = coordinate;
     }
 
-    /// Returns the full rectangle of the window including borders and title bar
+    /// Returns the full bounding rectangle of this window (including decorations).
+    #[inline]
     pub fn get_envelope(&self) -> Rectangle {
         let (w, h) = self.get_size();
         let pos = self.get_position();
-        Rectangle { top_left: pos, bottom_right: pos + (w as isize, h as isize) }
+        Rectangle {
+            top_left:     pos,
+            bottom_right: pos + (w as isize, h as isize),
+        }
     }
 
-    /// Returns an immutable reference to this window's virtual Framebuffer. 
+    /// Immutable reference to this window's framebuffer.
+    #[inline]
     pub fn framebuffer(&self) -> &Framebuffer<AlphaPixel> {
         &self.framebuffer
     }
 
-    /// Returns a mutable reference to this window's virtual Framebuffer. 
+    /// Mutable reference to this window's framebuffer.
+    #[inline]
     pub fn framebuffer_mut(&mut self) -> &mut Framebuffer<AlphaPixel> {
         &mut self.framebuffer
     }
 
-    /// Returns the pixel value at the given `coordinate`,
-    /// if the `coordinate` is within the window's bounds.
+    /// Returns the pixel at `coordinate`, or `None` if out of bounds.
+    #[inline]
     pub fn get_pixel(&self, coordinate: Coord) -> Option<AlphaPixel> {
         self.framebuffer.get_pixel(coordinate)
     }
 
-    /// Returns the size of the Window border in pixels. 
-    /// There is a border drawn on the left, right, and bottom edges.
-    pub fn get_border_size(&self) -> usize {
-        self.border_size
-    }
+    /// Border thickness in pixels (left, right, bottom).
+    #[inline]
+    pub fn get_border_size(&self) -> usize { self.border_size }
 
-    /// Returns the size of the Window title bar in pixels. 
-    /// There is a title bar drawn on the top edge of the Window.
-    pub fn get_title_bar_height(&self) -> usize {
-        self.title_bar_height
-    }
+    /// Title bar height in pixels.
+    #[inline]
+    pub fn get_title_bar_height(&self) -> usize { self.title_bar_height }
 
-    /// Returns the position and dimensions of the Window's content region,
-    /// i.e., the area within the window excluding the title bar and border.
-    /// 
-    /// The returned `Rectangle` is expressed relative to this Window's position.
+    /// The content area: the region inside the window excluding decorations.
+    ///
+    /// Coordinates are relative to this window's top-left corner.
     pub fn content_area(&self) -> Rectangle {
-        let (window_width, window_height) = self.get_size();
-        // There is one title bar on top, and a border on the left, right, and bottom
-        let top_left = Coord::new(self.border_size as isize, self.title_bar_height as isize);
-        let bottom_right = Coord::new((window_width - self.border_size) as isize, (window_height - self.border_size) as isize);
-        Rectangle { top_left, bottom_right }
+        let (w, h) = self.get_size();
+        Rectangle {
+            top_left:     Coord::new(self.border_size as isize, self.title_bar_height as isize),
+            bottom_right: Coord::new(
+                (w - self.border_size)  as isize,
+                (h - self.border_size) as isize,
+            ),
+        }
     }
 
-    /// Resizes and moves this window to fit the given `Rectangle` that describes its new position. 
-    pub fn resize(&mut self, new_position: Rectangle) -> Result<(), &'static str> {
-        // First, perform the actual resize of the inner window
-        self.coordinate = new_position.top_left;
-        self.framebuffer = Framebuffer::new(new_position.width(), new_position.height(), None)?;
-        
-        // Fill the new framebuffer with opaque black pixels to avoid graphical artifacts.
-        // In Mai OS color model, alpha 0 is opaque.
-        self.framebuffer.fill(AlphaPixel {
-            alpha: 0,
-            ..Default::default()
-        });
+    /// Returns `true` if `coordinate` (screen-relative) falls inside the title bar.
+    pub fn is_in_title_bar(&self, coord_relative_to_window: Coord) -> bool {
+        let (w, _) = self.get_size();
+        coord_relative_to_window.y >= 0
+            && (coord_relative_to_window.y as usize) < self.title_bar_height
+            && coord_relative_to_window.x >= 0
+            && (coord_relative_to_window.x as usize) < w
+    }
 
-        // Second, send a resize event to that application window (the `Window` object) 
-        // so it knows to refresh its display.
-        // Rather than send the total size of the whole window, 
-        // we instead send the size and position of the inner content area of the window. 
-        // This prevents the application from thinking it can render over the area
-        // that contains this window's title bar or border.
+    /// Resizes and repositions this window to fit `new_position`.
+    ///
+    /// Clamps to minimum dimensions, then sends a resize event to the owning `Window`.
+    pub fn resize(&mut self, mut new_position: Rectangle) -> Result<(), &'static str> {
+        // Enforce minimum size
+        if new_position.width()  < MIN_WINDOW_WIDTH  {
+            new_position.bottom_right.x = new_position.top_left.x + MIN_WINDOW_WIDTH as isize;
+        }
+        if new_position.height() < MIN_WINDOW_HEIGHT {
+            new_position.bottom_right.y = new_position.top_left.y + MIN_WINDOW_HEIGHT as isize;
+        }
+
+        self.coordinate  = new_position.top_left;
+        self.framebuffer = Framebuffer::new(new_position.width(), new_position.height(), None)?;
+
+        // Fill with opaque black to avoid graphical artifacts until the app redraws.
+        self.framebuffer.fill(AlphaPixel { alpha: 0, ..Default::default() });
+
+        // Notify the owning Window so it can redraw its content.
         self.send_event(Event::new_window_resize_event(self.content_area()))
-            .map_err(|_e| "Failed to enqueue the resize event; window event queue was full.")?;
+            .map_err(|_| "Failed to enqueue resize event; window event queue was full.")?;
 
         Ok(())
     }
 
-    /// Sends the given `event` to this window.
-    /// 
-    /// If the event queue was full, `Err(event)` is returned.
+    /// Sends `event` to this window.
+    ///
+    /// Returns `Err(event)` if the queue was full.
+    #[inline]
     pub fn send_event(&self, event: Event) -> Result<(), Event> {
         self.event_producer.push(event)
     }
