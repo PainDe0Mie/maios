@@ -240,7 +240,7 @@ impl GraphicsProvider for SoftwareGraphicsProvider {
                     let start_x = core::cmp::max(0, start_x) as usize;
                     let end_x   = core::cmp::min(fb_width as isize, end_x as isize) as usize;
 
-                    if start_x >= end_x || start_y >= end_y { continue; } // 'continue' dans le match → utilise return ou skip
+                    if start_x >= end_x || start_y >= end_y { continue; } // skip to next DrawCommand
 
                     for y in start_y..end_y {
                         let row_in_src = y as isize - dest_top_left.y;
@@ -259,7 +259,7 @@ impl GraphicsProvider for SoftwareGraphicsProvider {
     }
 
     fn present(&mut self) {
-        info!("MGI present: {} dirty rects", self.dirty_rects.len());
+        trace!("MGI present: {} dirty rects", self.dirty_rects.len());
         if self.dirty_rects.is_empty() {
             return;
         }
