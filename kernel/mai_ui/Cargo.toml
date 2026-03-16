@@ -1,0 +1,27 @@
+[package]
+name = "mai_ui"
+version = "0.1.0"
+authors = ["MaiOS Contributors"]
+description = "MaiOS UI widget toolkit — reusable components for desktop applications"
+edition = "2021"
+
+[dependencies.color]
+path = "../color"
+
+[dependencies.shapes]
+path = "../shapes"
+
+[dependencies.font]
+path = "../font"
+
+[dependencies.framebuffer]
+path = "../framebuffer"
+
+[dependencies.framebuffer_drawer]
+path = "../framebuffer_drawer"
+
+[dependencies.event_types]
+path = "../event_types"
+
+[dependencies.keycodes_ascii]
+path = "../../libs/keycodes_ascii"

@@ -9,7 +9,7 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-window = { path = "../../kernel/window" }
+mai_ui = { path = "../../kernel/mai_ui" }
 color = { path = "../../kernel/color" }
 shapes = { path = "../../kernel/shapes" }
 spawn = { path = "../../kernel/spawn" }
@@ -17,11 +17,7 @@ task = { path = "../../kernel/task" }
 mod_mgmt = { path = "../../kernel/mod_mgmt" }
 path = { path = "../../kernel/path" }
 fs_node = { path = "../../kernel/fs_node" }
-framebuffer = { path = "../../kernel/framebuffer" }
-framebuffer_drawer = { path = "../../kernel/framebuffer_drawer" }
-framebuffer_printer = { path = "../../kernel/framebuffer_printer" }
 window_inner = { path = "../../kernel/window_inner" }
-font = { path = "../../kernel/font" }
 root = { path = "../../kernel/root" }
 io = { path = "../../kernel/io" }
 memfs = { path = "../../kernel/memfs" }

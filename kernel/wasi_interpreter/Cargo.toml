@@ -30,7 +30,7 @@ path = "../../kernel/root"
 path = "../../kernel/task"
 
 [dependencies.vfs_node]
-path = "../../kernel/vfs_node
+path = "../../kernel/vfs_node"
 
 [dependencies.scheduler]
-path = "../../kernel/scheduler
+path = "../../kernel/scheduler"
