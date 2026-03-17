@@ -24,6 +24,9 @@ path = "../ps2"
 [dependencies.interrupts]
 path = "../interrupts"
 
+[dependencies.port_io]
+path = "../../libs/port_io"
+
 
 [lib]
 crate-type = ["rlib"]

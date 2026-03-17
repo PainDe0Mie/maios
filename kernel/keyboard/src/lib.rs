@@ -3,7 +3,7 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use keycodes_ascii::{Keycode, KeyboardModifiers, KEY_RELEASED_OFFSET, KeyAction, KeyEvent};
 use log::{error, warn, debug};
 use once_cell::unsync::Lazy;
@@ -12,6 +12,7 @@ use mpmc::Queue;
 use event_types::Event;
 use ps2::{PS2Keyboard, KeyboardType, LEDState, ScancodeSet};
 use x86_64::structures::idt::InterruptStackFrame;
+extern crate port_io;
 
 /// The first PS/2 port for the keyboard is connected directly to IRQ 1.
 /// Because we perform the typical PIC remapping, the remapped IRQ vector number is 0x21.
@@ -21,6 +22,10 @@ const PS2_KEYBOARD_IRQ: u8 = interrupts::IRQ_BASE_OFFSET + 0x1;
 static mut KBD_MODIFIERS: Lazy<KeyboardModifiers> = Lazy::new(KeyboardModifiers::new);
 
 static KEYBOARD: Once<KeyboardInterruptParams> = Once::new();
+
+/// Flag set by the interrupt handler when a Lock key is toggled,
+/// so that LED updates can be performed outside interrupt context.
+static PENDING_LED_UPDATE: AtomicU8 = AtomicU8::new(0);
 
 struct KeyboardInterruptParams {
     keyboard: PS2Keyboard<'static>,
@@ -102,9 +107,13 @@ extern "x86-interrupt" fn ps2_keyboard_handler(_stack_frame: InterruptStackFrame
             }
         }
     } else {
+        // IMPORTANT: Even if KEYBOARD isn't initialized, we MUST read port 0x60 to
+        // clear the PS/2 output buffer. Otherwise the IRQ stays asserted (level-triggered)
+        // and we get an infinite interrupt storm.
+        unsafe { port_io::inb(0x60) };
         warn!("ps2_keyboard_handler(): KEYBOARD isn't initialized yet, skipping interrupt.");
     }
-    
+
     interrupts::eoi(PS2_KEYBOARD_IRQ);
 }
 
@@ -168,17 +177,20 @@ fn handle_keyboard_input(keyboard: &PS2Keyboard, queue: &Queue<Event>, scan_code
         }
 
         // The "*Lock" keys are toggled only upon being pressed, not when released.
+        // NOTE: LED updates are deferred — calling set_keyboard_led() from the interrupt
+        // handler causes PS/2 command/response I/O that can leave residual data in the
+        // output buffer, triggering an IRQ storm (repeated INT 0x21).
         Ok(Keycode::CapsLock) => {
             modifiers.toggle(KeyboardModifiers::CAPS_LOCK);
-            set_keyboard_led(keyboard, modifiers);
+            PENDING_LED_UPDATE.store(1, Ordering::Release);
         }
         Ok(Keycode::ScrollLock) => {
             modifiers.toggle(KeyboardModifiers::SCROLL_LOCK);
-            set_keyboard_led(keyboard, modifiers);
+            PENDING_LED_UPDATE.store(1, Ordering::Release);
         }
         Ok(Keycode::NumLock) => {
             modifiers.toggle(KeyboardModifiers::NUM_LOCK);
-            set_keyboard_led(keyboard, modifiers);
+            PENDING_LED_UPDATE.store(1, Ordering::Release);
         }
 
         _ => {} // do nothing
@@ -202,6 +214,19 @@ fn handle_keyboard_input(keyboard: &PS2Keyboard, queue: &Queue<Event>, scan_code
     }
 }
 
+
+/// Process any pending LED updates that were deferred from the interrupt handler.
+/// This should be called periodically from a non-interrupt context (e.g., the main loop
+/// of the window manager or a dedicated keyboard task).
+pub fn process_deferred_led_update() {
+    if PENDING_LED_UPDATE.swap(0, Ordering::AcqRel) != 0 {
+        if let Some(KeyboardInterruptParams { keyboard, .. }) = KEYBOARD.get() {
+            // SAFE: we only read modifiers here, no real race with interrupt handler
+            let modifiers = unsafe { &*KBD_MODIFIERS };
+            set_keyboard_led(keyboard, modifiers);
+        }
+    }
+}
 
 fn set_keyboard_led(keyboard: &PS2Keyboard, modifiers: &KeyboardModifiers) {
     if let Err(e) = keyboard.set_keyboard_led(

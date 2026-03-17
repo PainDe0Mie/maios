@@ -28,6 +28,7 @@ extern crate window_inner;
 extern crate mgi;
 extern crate cpu;
 extern crate preemption;
+extern crate keyboard;
 
 use alloc::collections::VecDeque;
 use alloc::string::ToString;
@@ -765,8 +766,11 @@ pub fn init() -> Result<(Queue<Event>, Queue<Event>), &'static str> {
 fn window_manager_loop(
     (key_consumer, mouse_consumer): (Queue<Event>, Queue<Event>),
 ) -> Result<(), &'static str> {
-    // The WM loop should not be preempted in the middle of a render.
-    drop(preemption::hold_preemption());
+    // The WM loop must not be preempted while holding the WINDOW_MANAGER lock.
+    // Keep the guard alive for the entire loop so timer interrupts cannot
+    // context-switch away while a spinlock is held (which causes deadlock on
+    // single-CPU or when the preempted task holds the lock another task wants).
+    let _preemption_guard = preemption::hold_preemption();
 
     loop {
         let mut need_present = false;
@@ -781,6 +785,9 @@ fn window_manager_loop(
                 _ => break,
             }
         }
+
+        // Process any deferred keyboard LED updates (toggled Lock keys).
+        keyboard::process_deferred_led_update();
 
         // Coalesce mouse movement: accumulate deltas, keep only the last event for button state.
         let mut dx = 0isize;
