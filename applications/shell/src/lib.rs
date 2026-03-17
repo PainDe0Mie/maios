@@ -114,6 +114,7 @@ pub fn main(_args: Vec<String>) -> isize {
 
     loop {
         warn!("BUG: blocked shell task was scheduled in unexpectedly");
+        scheduler::schedule();
     }
 
     // TODO: when `join` puts this task to sleep instead of spinning, we can re-enable it.
@@ -1252,6 +1253,7 @@ impl Shell {
             // loop body. We do so to ensure that printing is handled before keypresses.
             if self.check_and_print_app_output() {
                 need_refresh = true;
+                scheduler::schedule(); // yield CPU even when processing output
                 continue;
             }
 
@@ -1328,9 +1330,9 @@ impl Shell {
             if need_refresh {
                 // update if there are inputs
                 self.terminal.lock().refresh_display()?;
-            } else {
-                scheduler::schedule(); // yield the CPU if nothing to do
             }
+            // Always yield after each iteration to prevent starving other tasks
+            scheduler::schedule();
         }
     }
 }

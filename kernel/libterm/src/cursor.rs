@@ -41,6 +41,7 @@ impl Cursor {
     }
 
     /// Let a cursor blink. It is invoked in a loop.
+    /// Returns `true` when the cursor state changed and needs redrawing.
     pub fn blink(&mut self) -> bool {
         if self.enabled {
             let time = Instant::now();
@@ -50,8 +51,9 @@ impl Cursor {
                 self.show = !self.show;
                 return true;
             }
+            return false;
         }
-        true
+        false
     }
 
     /// Whether a cursor is seen
@@ -66,39 +68,41 @@ impl Cursor {
     /// * `line`: the line of the cursor in the textarea.
     /// * `framebuffer`: the framebuffer to display the cursor in.
     ///
-    /// Returns a bounding box which wraps the cursor.
+    /// Returns `Some(bounding_box)` if the cursor was redrawn, `None` if unchanged.
     pub fn display<P: Pixel>(
         &mut self,
         coordinate: Coord,
         column: usize,
         line: usize,
         framebuffer: &mut Framebuffer<P>,
-    ) -> Result<Rectangle, &'static str> where Color: Into<P> {
-        if self.blink() {
-            if self.show() {
-                framebuffer_drawer::fill_rectangle(
-                    framebuffer,
-                    coordinate
-                        + (
-                            (column * CHARACTER_WIDTH) as isize,
-                            (line * CHARACTER_HEIGHT) as isize,
-                        )
-                        + (0, 1),
-                    CHARACTER_WIDTH,
-                    CHARACTER_HEIGHT - 2,
-                    self.color.into(),
-                );
-            } else {
-                framebuffer_printer::print_ascii_character(
-                    framebuffer,
-                    self.underlying_char,
-                    FONT_FOREGROUND_COLOR.into(),
-                    FONT_BACKGROUND_COLOR.into(),
-                    coordinate,
-                    column,
-                    line,
-                )
-            }
+    ) -> Result<Option<Rectangle>, &'static str> where Color: Into<P> {
+        if !self.blink() {
+            return Ok(None);
+        }
+
+        if self.show() {
+            framebuffer_drawer::fill_rectangle(
+                framebuffer,
+                coordinate
+                    + (
+                        (column * CHARACTER_WIDTH) as isize,
+                        (line * CHARACTER_HEIGHT) as isize,
+                    )
+                    + (0, 1),
+                CHARACTER_WIDTH,
+                CHARACTER_HEIGHT - 2,
+                self.color.into(),
+            );
+        } else {
+            framebuffer_printer::print_ascii_character(
+                framebuffer,
+                self.underlying_char,
+                FONT_FOREGROUND_COLOR.into(),
+                FONT_BACKGROUND_COLOR.into(),
+                coordinate,
+                column,
+                line,
+            )
         }
 
         let top_left = coordinate
@@ -111,7 +115,7 @@ impl Cursor {
             bottom_right: top_left + (CHARACTER_WIDTH as isize, CHARACTER_HEIGHT as isize),
         };
 
-        Ok(bounding_box)
+        Ok(Some(bounding_box))
     }
 
     /// Sets the position of the cursor relative to the end of the command

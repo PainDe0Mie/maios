@@ -543,9 +543,13 @@ pub fn main(_args: Vec<String>) -> isize {
             if !handled {
                 for idx in 0..icons.len() {
                     if icons[idx].hit(mx, my) {
-                        if let Some(app) = spawn_app(&icons[idx]) {
-                            apps.push(app);
-                            dirty = true;
+                        // Ne pas relancer une app déjà en cours
+                        let already_running = apps.iter().any(|a| a.name == icons[idx].name && !a.task.has_exited());
+                        if !already_running {
+                            if let Some(app) = spawn_app(&icons[idx]) {
+                                apps.push(app);
+                                dirty = true;
+                            }
                         }
                         break;
                     }
