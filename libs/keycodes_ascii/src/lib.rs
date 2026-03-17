@@ -2,6 +2,7 @@
 
 use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 // the implementation here follows the rule of representation, 
 // which is to use complicated data structures to permit simpler logic. 
@@ -132,6 +133,68 @@ pub fn scancode_to_ascii(modifiers: KeyboardModifiers, scan_code: u8) -> Option<
         .and_then(|k: Keycode| k.to_ascii(modifiers))
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Keyboard Layout System
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Available keyboard layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum KeyboardLayout {
+    Qwerty = 0,
+    Azerty = 1,
+}
+
+impl KeyboardLayout {
+    /// Returns the display name of this layout.
+    pub fn name(&self) -> &'static str {
+        match self {
+            KeyboardLayout::Qwerty => "QWERTY (US)",
+            KeyboardLayout::Azerty => "AZERTY (FR)",
+        }
+    }
+
+    /// Returns a short label for this layout (for status bar display).
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            KeyboardLayout::Qwerty => "EN",
+            KeyboardLayout::Azerty => "FR",
+        }
+    }
+}
+
+/// Global keyboard layout state (atomic for interrupt-safe access).
+static CURRENT_LAYOUT: AtomicU8 = AtomicU8::new(KeyboardLayout::Qwerty as u8);
+
+/// Returns the currently active keyboard layout.
+pub fn current_layout() -> KeyboardLayout {
+    match CURRENT_LAYOUT.load(Ordering::Relaxed) {
+        1 => KeyboardLayout::Azerty,
+        _ => KeyboardLayout::Qwerty,
+    }
+}
+
+/// Sets the active keyboard layout.
+pub fn set_layout(layout: KeyboardLayout) {
+    CURRENT_LAYOUT.store(layout as u8, Ordering::Relaxed);
+}
+
+/// Toggles between available keyboard layouts (QWERTY <-> AZERTY).
+/// Returns the new active layout.
+pub fn toggle_layout() -> KeyboardLayout {
+    let old = CURRENT_LAYOUT.load(Ordering::Relaxed);
+    let new = if old == KeyboardLayout::Qwerty as u8 {
+        KeyboardLayout::Azerty as u8
+    } else {
+        KeyboardLayout::Qwerty as u8
+    };
+    CURRENT_LAYOUT.store(new, Ordering::Relaxed);
+    match new {
+        1 => KeyboardLayout::Azerty,
+        _ => KeyboardLayout::Qwerty,
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy, TryFromPrimitive)]
 #[repr(u8)]
 pub enum Keycode {
@@ -238,21 +301,24 @@ pub enum Keycode {
 } 
 
 impl Keycode {
-    /// Obtains the ascii value for a keycode under the given modifiers
+    /// Obtains the ascii value for a keycode under the given modifiers,
+    /// using the currently active keyboard layout.
     pub fn to_ascii(&self, modifiers: KeyboardModifiers) -> Option<char> {
-        // handle shift key being pressed
+        match current_layout() {
+            KeyboardLayout::Qwerty => self.to_ascii_qwerty(modifiers),
+            KeyboardLayout::Azerty => self.to_ascii_azerty(modifiers),
+        }
+    }
+
+    /// QWERTY (US) layout conversion.
+    fn to_ascii_qwerty(&self, modifiers: KeyboardModifiers) -> Option<char> {
         if modifiers.is_shift() {
             if modifiers.is_caps_lock() && self.is_letter() {
-                // if shift is pressed and caps lock is on, give a regular lowercase letter
                 return self.as_ascii();
             } else {
-                // if shift is pressed and caps lock is not, give a regular shifted key
                 return self.as_ascii_shifted();
             }
         }
-        
-        // just a regular caps_lock, no shift pressed 
-        // (we already covered the shift && caps_lock scenario above)
         if modifiers.is_caps_lock() {
             if self.is_letter() {
                 return self.as_ascii_shifted();
@@ -260,11 +326,69 @@ impl Keycode {
                 return self.as_ascii();
             }
         }
-
-        // default to regular ascii value
         self.as_ascii()
-        
-        // TODO: handle numlock
+    }
+
+    /// AZERTY (FR) layout conversion.
+    fn to_ascii_azerty(&self, modifiers: KeyboardModifiers) -> Option<char> {
+        // AltGr produces special characters on AZERTY
+        if modifiers.is_alt_gr() {
+            if let Some(c) = self.as_ascii_azerty_altgr() {
+                return Some(c);
+            }
+        }
+
+        if modifiers.is_shift() {
+            if modifiers.is_caps_lock() && self.is_letter_azerty() {
+                return self.as_ascii_azerty();
+            } else {
+                return self.as_ascii_azerty_shifted();
+            }
+        }
+        if modifiers.is_caps_lock() {
+            if self.is_letter_azerty() {
+                return self.as_ascii_azerty_shifted();
+            } else {
+                return self.as_ascii_azerty();
+            }
+        }
+        self.as_ascii_azerty()
+    }
+
+    /// Returns true if this keycode produces a letter on AZERTY.
+    fn is_letter_azerty(&self) -> bool {
+        match *self {
+            // AZERTY letters: A, Z, E, R, T, Y, U, I, O, P
+            //                 Q, S, D, F, G, H, J, K, L, M
+            //                 W, X, C, V, B, N
+            Keycode::Q | // A on AZERTY
+            Keycode::W | // Z on AZERTY
+            Keycode::E |
+            Keycode::R |
+            Keycode::T |
+            Keycode::Y |
+            Keycode::U |
+            Keycode::I |
+            Keycode::O |
+            Keycode::P |
+            Keycode::A | // Q on AZERTY
+            Keycode::S |
+            Keycode::D |
+            Keycode::F |
+            Keycode::G |
+            Keycode::H |
+            Keycode::J |
+            Keycode::K |
+            Keycode::L |
+            Keycode::Semicolon | // M on AZERTY
+            Keycode::Z | // W on AZERTY
+            Keycode::X |
+            Keycode::C |
+            Keycode::V |
+            Keycode::B |
+            Keycode::N => true,
+            _ => false,
+        }
     }
 
     /// returns true if this keycode was a letter from A-Z
@@ -364,7 +488,7 @@ impl Keycode {
         }
     }
 
-    /// same as as_ascii, but adds the effect of the "shift" modifier key. 
+    /// same as as_ascii, but adds the effect of the "shift" modifier key.
     /// If a Keycode's ascii value doesn't change when shifted,
     /// then it defaults to it's non-shifted value as returned by as_ascii().
     fn as_ascii_shifted(&self) -> Option<char> {
@@ -378,7 +502,7 @@ impl Keycode {
             Keycode::Num7 => Some('&'),
             Keycode::Num8 => Some('*'),
             Keycode::Num9 => Some('('),
-            Keycode::Num0 => Some(')'), 
+            Keycode::Num0 => Some(')'),
             Keycode::Minus => Some('_'),
             Keycode::Equals => Some('+'),
             Keycode::Q => Some('Q'),
@@ -387,8 +511,8 @@ impl Keycode {
             Keycode::R => Some('R'),
             Keycode::T => Some('T'),
             Keycode::Y => Some('Y'),
-            Keycode::U => Some('U'), 
-            Keycode::I => Some('I'), 
+            Keycode::U => Some('U'),
+            Keycode::I => Some('I'),
             Keycode::O => Some('O'),
             Keycode::P => Some('P'),
             Keycode::LeftBracket => Some('{'),
@@ -403,7 +527,7 @@ impl Keycode {
             Keycode::K => Some('K'),
             Keycode::L => Some('L'),
             Keycode::Semicolon => Some(':'),
-            Keycode::Quote => Some('"'), 
+            Keycode::Quote => Some('"'),
             Keycode::Backtick => Some('~'),
             Keycode::Backslash => Some('|'),
             Keycode::Z => Some('Z'),
@@ -416,8 +540,159 @@ impl Keycode {
             Keycode::Comma => Some('<'),
             Keycode::Period => Some('>'),
             Keycode::Slash => Some('?'),
-            
+
             _ => self.as_ascii(),
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // AZERTY (FR) layout tables
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // AZERTY physical layout (scancode → character):
+    //   Row 1: &  é  "  '  (  -  è  _  ç  à  )  =
+    //   Row 2: a  z  e  r  t  y  u  i  o  p  ^  $
+    //   Row 3: q  s  d  f  g  h  j  k  l  m  ù  *
+    //   Row 4: <  w  x  c  v  b  n  ,  ;  :  !
+
+    /// AZERTY base (no modifiers) mapping.
+    fn as_ascii_azerty(&self) -> Option<char> {
+        match *self {
+            Keycode::Escape => Some(char::from(27)),
+            Keycode::Num1 => Some('&'),
+            Keycode::Num2 => Some('e'),   // é (simplified to 'e' for ASCII)
+            Keycode::Num3 => Some('"'),
+            Keycode::Num4 => Some('\''),
+            Keycode::Num5 => Some('('),
+            Keycode::Num6 => Some('-'),
+            Keycode::Num7 => Some('e'),   // è (simplified)
+            Keycode::Num8 => Some('_'),
+            Keycode::Num9 => Some('c'),   // ç (simplified)
+            Keycode::Num0 => Some('a'),   // à (simplified)
+            Keycode::Minus => Some(')'),
+            Keycode::Equals => Some('='),
+            Keycode::Backspace => Some(char::from(8)),
+            Keycode::Tab => Some(char::from(9)),
+            // Row 2: AZERTY swaps Q↔A, W↔Z
+            Keycode::Q => Some('a'),      // Q key → 'a' on AZERTY
+            Keycode::W => Some('z'),      // W key → 'z' on AZERTY
+            Keycode::E => Some('e'),
+            Keycode::R => Some('r'),
+            Keycode::T => Some('t'),
+            Keycode::Y => Some('y'),
+            Keycode::U => Some('u'),
+            Keycode::I => Some('i'),
+            Keycode::O => Some('o'),
+            Keycode::P => Some('p'),
+            Keycode::LeftBracket => Some('^'),
+            Keycode::RightBracket => Some('$'),
+            Keycode::Enter => Some('\n'),
+            // Row 3
+            Keycode::A => Some('q'),      // A key → 'q' on AZERTY
+            Keycode::S => Some('s'),
+            Keycode::D => Some('d'),
+            Keycode::F => Some('f'),
+            Keycode::G => Some('g'),
+            Keycode::H => Some('h'),
+            Keycode::J => Some('j'),
+            Keycode::K => Some('k'),
+            Keycode::L => Some('l'),
+            Keycode::Semicolon => Some('m'),  // Semicolon key → 'm' on AZERTY
+            Keycode::Quote => Some('u'),      // ù (simplified to 'u')
+            Keycode::Backtick => Some('*'),   // ² key area
+            Keycode::Backslash => Some('*'),
+            // Row 4: AZERTY swaps Z↔W
+            Keycode::Z => Some('w'),      // Z key → 'w' on AZERTY
+            Keycode::X => Some('x'),
+            Keycode::C => Some('c'),
+            Keycode::V => Some('v'),
+            Keycode::B => Some('b'),
+            Keycode::N => Some('n'),
+            Keycode::M => Some(','),      // M key → ',' on AZERTY
+            Keycode::Comma => Some(';'),  // Comma key → ';' on AZERTY
+            Keycode::Period => Some(':'), // Period key → ':' on AZERTY
+            Keycode::Slash => Some('!'),  // Slash key → '!' on AZERTY
+            Keycode::Space => Some(' '),
+            Keycode::NonUsBackslash => Some('<'),
+            Keycode::PadMultiply => Some('*'),
+            Keycode::PadMinus => Some('-'),
+            Keycode::PadPlus => Some('+'),
+            _ => None,
+        }
+    }
+
+    /// AZERTY shifted mapping.
+    fn as_ascii_azerty_shifted(&self) -> Option<char> {
+        match *self {
+            Keycode::Num1 => Some('1'),
+            Keycode::Num2 => Some('2'),
+            Keycode::Num3 => Some('3'),
+            Keycode::Num4 => Some('4'),
+            Keycode::Num5 => Some('5'),
+            Keycode::Num6 => Some('6'),
+            Keycode::Num7 => Some('7'),
+            Keycode::Num8 => Some('8'),
+            Keycode::Num9 => Some('9'),
+            Keycode::Num0 => Some('0'),
+            Keycode::Minus => Some(')'),  // °
+            Keycode::Equals => Some('+'),
+            // Letters: uppercase
+            Keycode::Q => Some('A'),
+            Keycode::W => Some('Z'),
+            Keycode::E => Some('E'),
+            Keycode::R => Some('R'),
+            Keycode::T => Some('T'),
+            Keycode::Y => Some('Y'),
+            Keycode::U => Some('U'),
+            Keycode::I => Some('I'),
+            Keycode::O => Some('O'),
+            Keycode::P => Some('P'),
+            Keycode::LeftBracket => Some('^'),  // ¨ (diaeresis, simplified)
+            Keycode::RightBracket => Some('$'), // £ (simplified to $)
+            Keycode::A => Some('Q'),
+            Keycode::S => Some('S'),
+            Keycode::D => Some('D'),
+            Keycode::F => Some('F'),
+            Keycode::G => Some('G'),
+            Keycode::H => Some('H'),
+            Keycode::J => Some('J'),
+            Keycode::K => Some('K'),
+            Keycode::L => Some('L'),
+            Keycode::Semicolon => Some('M'),
+            Keycode::Quote => Some('%'),
+            Keycode::Backtick => Some('~'),
+            Keycode::Backslash => Some('|'),
+            Keycode::Z => Some('W'),
+            Keycode::X => Some('X'),
+            Keycode::C => Some('C'),
+            Keycode::V => Some('V'),
+            Keycode::B => Some('B'),
+            Keycode::N => Some('N'),
+            Keycode::M => Some('?'),       // Shift+, → '?' on AZERTY
+            Keycode::Comma => Some('.'),   // Shift+; → '.' on AZERTY
+            Keycode::Period => Some('/'),  // Shift+: → '/' on AZERTY
+            Keycode::Slash => Some('!'),   // Shift+! → §  (simplified to !)
+            Keycode::NonUsBackslash => Some('>'),
+            _ => self.as_ascii_azerty(),
+        }
+    }
+
+    /// AZERTY AltGr mapping (right Alt key produces special characters).
+    fn as_ascii_azerty_altgr(&self) -> Option<char> {
+        match *self {
+            Keycode::Num2 => Some('~'),
+            Keycode::Num3 => Some('#'),
+            Keycode::Num4 => Some('{'),
+            Keycode::Num5 => Some('['),
+            Keycode::Num6 => Some('|'),
+            Keycode::Num7 => Some('`'),
+            Keycode::Num8 => Some('\\'),
+            Keycode::Num9 => Some('^'),
+            Keycode::Num0 => Some('@'),
+            Keycode::Minus => Some(']'),
+            Keycode::Equals => Some('}'),
+            Keycode::E => Some('e'),     // € (simplified to 'e')
+            _ => None,
         }
     }
 }
