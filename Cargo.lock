@@ -74,6 +74,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ahci"
+version = "0.1.0"
+dependencies = [
+ "io",
+ "log",
+ "memory",
+ "pci",
+ "spin 0.9.4",
+ "storage_device",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "0.7.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -907,6 +919,7 @@ name = "device_manager"
 version = "0.1.0"
 dependencies = [
  "acpi",
+ "ahci",
  "block_cache",
  "console",
  "e1000",
@@ -3715,6 +3728,7 @@ dependencies = [
 name = "storage_manager"
 version = "0.1.0"
 dependencies = [
+ "ahci",
  "ata",
  "log",
  "pci",

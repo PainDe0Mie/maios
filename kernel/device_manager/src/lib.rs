@@ -5,6 +5,7 @@ extern crate alloc;
 extern crate log;
 
 #[cfg(target_arch = "x86_64")] extern crate nvme;
+#[cfg(target_arch = "x86_64")] extern crate ahci;
 #[cfg(target_arch = "x86_64")] extern crate fat32;
 #[cfg(target_arch = "x86_64")] extern crate block_cache;
 #[cfg(target_arch = "x86_64")] extern crate storage_device;
@@ -101,6 +102,29 @@ pub fn init(
                 }
                 Ok(None)  => {}
                 Err(e)    => { error!("NVMe {:?}: {}", dev.location, e); continue; }
+            }
+        }
+
+        // AHCI (SATA)
+        #[cfg(target_arch = "x86_64")]
+        if dev.class == ahci::AHCI_PCI_CLASS && dev.subclass == ahci::AHCI_PCI_SUBCLASS {
+            match ahci::init_from_pci(dev) {
+                Ok(Some(ctrl_ref)) => {
+                    let drives: Vec<StorageDeviceRef> = ctrl_ref.lock().devices().collect();
+                    for ahci_ref in drives {
+                        let cached: StorageDeviceRef = Arc::new(Mutex::new(
+                            block_cache::BlockCache::new(ahci_ref)
+                        ));
+                        match fat32::mount_and_get_root(cached, &format!("sata{}", disk_idx)) {
+                            Ok(r)  => { info!("FAT32 sur sata{}", disk_idx); mount_disk_in_vfs(r, disk_idx); }
+                            Err(e) => debug!("sata{}: pas FAT32 ({})", disk_idx, e),
+                        }
+                        disk_idx += 1;
+                    }
+                    continue;
+                }
+                Ok(None)  => {}
+                Err(e)    => { error!("AHCI {:?}: {}", dev.location, e); continue; }
             }
         }
 

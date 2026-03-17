@@ -29,6 +29,7 @@ ps2             = { path = "../ps2" }
 serial_port     = { path = "../serial_port" }
 storage_manager = { path = "../storage_manager" }
 nvme            = { path = "../nvme" }
+ahci            = { path = "../ahci" }
 fat32           = { path = "../fat32" }
 block_cache     = { path = "../block_cache" }
 storage_device  = { path = "../storage_device" }
