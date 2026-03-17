@@ -393,6 +393,7 @@ dependencies = [
  "spawn",
  "stack",
  "storage_manager",
+ "syscall",
  "task",
  "task_fs",
  "time",
@@ -1038,6 +1039,17 @@ name = "either"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3be565ca5c557d7f59e7cfcf1844f9e3033650c929c6566f511e8005f205c1d0"
+
+[[package]]
+name = "elf_loader"
+version = "0.1.0"
+dependencies = [
+ "kernel_config",
+ "log",
+ "memory",
+ "memory_structs",
+ "pte_flags",
+]
 
 [[package]]
 name = "embedded-hal"
@@ -1907,6 +1919,29 @@ name = "linked_list_allocator"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "549ce1740e46b291953c4340adcd74c59bcf4308f4cac050fd33ba91b7168f4a"
+
+[[package]]
+name = "linux_syscall"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "elf_loader",
+ "fs_node",
+ "io",
+ "kernel_config",
+ "lazy_static",
+ "log",
+ "memory",
+ "memory_structs",
+ "mod_mgmt",
+ "path",
+ "pte_flags",
+ "root",
+ "spawn",
+ "spin 0.9.4",
+ "task",
+ "vfs_node",
+]
 
 [[package]]
 name = "loadc"
@@ -3800,6 +3835,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "syscall"
+version = "0.1.0"
+dependencies = [
+ "cpu",
+ "gdt",
+ "interrupts",
+ "linux_syscall",
+ "log",
+ "memory",
+ "spin 0.9.4",
+ "task",
+ "tss",
+ "windows_syscall",
+ "x86_64",
+]
+
+[[package]]
 name = "target-lexicon"
 version = "0.12.5"
 source = "git+https://github.com/theseus-os/target-lexicon?branch=theseus#75d36cc66df0ac4569df1b20a16ca914f417b85a"
@@ -4850,6 +4902,17 @@ dependencies = [
  "spawn",
  "spin 0.9.4",
  "window_inner",
+]
+
+[[package]]
+name = "windows_syscall"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "log",
+ "memory",
+ "spin 0.9.4",
+ "task",
 ]
 
 [[package]]
