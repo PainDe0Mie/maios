@@ -618,6 +618,7 @@ impl Terminal {
     }
 
     /// Display the cursor of the terminal.
+    /// Only re-renders if the cursor blink state actually changed.
     pub fn display_cursor(&mut self) -> Result<(), &'static str> {
         // get info about the text displayable
         let (col_num, line_num, text_next_pos) = {
@@ -636,7 +637,7 @@ impl Terminal {
         let cursor_line = cursor_pos / col_num;
         let cursor_col = cursor_pos % col_num;
 
-        // Get the bounding box that contains the displayed cursor.
+        // Get the bounding box that contains the displayed cursor (only if changed).
         let bounding_box = {
             let coord = self.window.area().top_left;
             self.cursor.display(
@@ -645,9 +646,13 @@ impl Terminal {
                 cursor_line,
                 self.window.framebuffer_mut().deref_mut(),
             )?
-        };   
+        };
 
-        self.window.render(Some(bounding_box))
+        // Only render if the cursor actually changed
+        if let Some(bb) = bounding_box {
+            self.window.render(Some(bb))?;
+        }
+        Ok(())
     }
 
     /// Gets the position of the cursor relative to the end of text in number of characters.
