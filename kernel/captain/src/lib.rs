@@ -22,6 +22,8 @@ extern crate alloc;
 extern crate mod_mgmt;
 extern crate environment;
 extern crate storage_manager;
+#[cfg(target_arch = "x86_64")]
+extern crate syscall;
 
 use log::{error, info};
 use memory::{EarlyIdentityMappedPages, MmiRef, PhysicalAddress};
@@ -235,6 +237,14 @@ pub fn init(
 
     info!("Init. swap");
     init_swap();
+
+    // Initialize the syscall subsystem (SYSCALL/SYSRET MSRs) for native
+    // Linux and Windows binary compatibility.
+    #[cfg(target_arch = "x86_64")]
+    match syscall::init() {
+        Ok(()) => info!("Syscall subsystem initialized (Linux + Windows ABI)"),
+        Err(e) => error!("Failed to initialize syscall subsystem: {}", e),
+    }
 
     // Now that key subsystems are initialized, we can:
     // 1. Drop the items that needed to be held through initialization,
