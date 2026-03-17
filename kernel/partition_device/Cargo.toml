@@ -1,0 +1,14 @@
+[package]
+name = "partition_device"
+description = "Virtual storage device representing a single partition on a disk"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+log = { version = "0.4", default-features = false }
+spin = { version = "0.9", default-features = false, features = ["mutex"] }
+storage_device = { path = "../storage_device" }
+io = { path = "../io" }
