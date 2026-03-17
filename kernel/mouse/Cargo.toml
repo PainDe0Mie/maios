@@ -23,5 +23,8 @@ path = "../ps2"
 [dependencies.event_types]
 path = "../event_types"
 
+[dependencies.port_io]
+path = "../../libs/port_io"
+
 [lib]
 crate-type = ["rlib"]

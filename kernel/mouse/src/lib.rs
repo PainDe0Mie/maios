@@ -10,6 +10,7 @@ use event_types::Event;
 use x86_64::structures::idt::InterruptStackFrame;
 use mouse_data::{MouseButtons, MouseEvent, MouseMovementRelative};
 use ps2::{PS2Mouse, MousePacket};
+extern crate port_io;
 
 /// The first PS/2 port for the mouse is connected directly to IRQ 0xC.
 /// Because we perform the typical PIC remapping, the remapped IRQ vector number is 0x2C.
@@ -57,23 +58,36 @@ pub fn init(mut mouse: PS2Mouse<'static>, mouse_queue_producer: Queue<Event>) ->
 /// In some cases (e.g. on device init), [the PS/2 controller can also send an interrupt](https://wiki.osdev.org/%228042%22_PS/2_Controller#Interrupts).
 extern "x86-interrupt" fn ps2_mouse_handler(_stack_frame: InterruptStackFrame) {
     if let Some(MouseInterruptParams { mouse, queue }) = MOUSE.get() {
-        if mouse.is_output_buffer_full() {
+        // Drain ALL available mouse packets in a single interrupt invocation.
+        // QEMU buffers host mouse events and immediately refills the PS/2 output
+        // buffer after each read. If we only read one packet per interrupt, the
+        // I/O APIC (level-triggered) sees the line still asserted after EOI and
+        // immediately re-fires, starving all other code on this CPU.
+        let mut drained = 0u8;
+        while mouse.is_output_buffer_full() && drained < 64 {
             let mouse_packet = mouse.read_mouse_packet();
-            
+            drained += 1;
+
             if mouse_packet.always_one() != 1 {
-                // Paquet désynchronisé — on draine tout le buffer pour resync
-                // au prochain interrupt on repartira du début d'un paquet propre
-                warn!("ps2_mouse_handler(): bad packet, resyncing...");
-                // Lire et jeter les bytes restants dans le buffer
+                // Desynchronized packet — drain remaining bytes and let the next
+                // interrupt start fresh.
                 while mouse.is_output_buffer_full() {
                     let _ = mouse.read_mouse_packet();
                 }
-            } else if let Err(e) = handle_mouse_input(mouse_packet, queue) {
-                warn!("ps2_mouse_handler(): {e:?}");
+                break;
+            } else {
+                let _ = handle_mouse_input(mouse_packet, queue);
             }
         }
+
+        // If no mouse data was available (status register bit 5 not set), drain
+        // port 0x60 anyway to clear whatever is there.
+        if drained == 0 {
+            unsafe { port_io::inb(0x60) };
+        }
     } else {
-        warn!("ps2_mouse_handler(): MOUSE isn't initialized yet, skipping interrupt.");
+        // MOUSE not initialized — drain port 0x60 to prevent IRQ storm.
+        unsafe { port_io::inb(0x60) };
     }
 
     interrupts::eoi(PS2_MOUSE_IRQ);
