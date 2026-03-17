@@ -1,0 +1,13 @@
+[package]
+name = "partition_table"
+description = "MBR and GPT partition table parsing for storage devices"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = { version = "0.4", default-features = false }
+storage_device = { path = "../storage_device" }
+io = { path = "../io" }
+
+[lib]
+crate-type = ["rlib"]

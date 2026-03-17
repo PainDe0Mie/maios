@@ -12,6 +12,7 @@ extern crate alloc;
 use alloc::{
     string::{String, ToString},
     sync::{Arc, Weak},
+    vec,
     vec::Vec,
 };
 use spin::Mutex;
@@ -42,6 +43,20 @@ const ATTR_LFN:       u8 = 0x0F;
 #[inline] fn ru16(buf: &[u8], off: usize) -> u16 { u16::from_le_bytes([buf[off], buf[off+1]]) }
 #[inline] fn ru32(buf: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
+}
+
+// Helpers écriture little-endian
+#[inline] fn wu16(buf: &mut [u8], off: usize, val: u16) {
+    let bytes = val.to_le_bytes();
+    buf[off]   = bytes[0];
+    buf[off+1] = bytes[1];
+}
+#[inline] fn wu32(buf: &mut [u8], off: usize, val: u32) {
+    let bytes = val.to_le_bytes();
+    buf[off]   = bytes[0];
+    buf[off+1] = bytes[1];
+    buf[off+2] = bytes[2];
+    buf[off+3] = bytes[3];
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -138,6 +153,36 @@ impl DirEntry83 {
         let ext_s:  String = self.name[8..].iter().take_while(|&&c| c != b' ').map(|&c| c as char).collect();
         if ext_s.is_empty() { base_s } else { alloc::format!("{}.{}", base_s, ext_s) }
     }
+
+    /// Serialize this directory entry into a 32-byte buffer.
+    pub fn to_bytes(&self) -> [u8; 32] {
+        let mut buf = [0u8; 32];
+        buf[0..11].copy_from_slice(&self.name);
+        buf[11] = self.attr;
+        // bytes 12..19 reserved / time fields — left as zero
+        wu16(&mut buf, 20, self.cluster_hi);
+        // bytes 22..25 time/date — left as zero
+        wu16(&mut buf, 26, self.cluster_lo);
+        wu32(&mut buf, 28, self.file_size);
+        buf
+    }
+}
+
+/// Convert a filename to 8.3 format (11 bytes, uppercase, space-padded).
+fn name_to_8_3(name: &str) -> [u8; 11] {
+    let mut out = [b' '; 11];
+    let upper: Vec<u8> = name.bytes().map(|b| if b >= b'a' && b <= b'z' { b - 32 } else { b }).collect();
+    // Find last dot for extension split
+    let dot_pos = upper.iter().rposition(|&b| b == b'.');
+    let (base, ext) = match dot_pos {
+        Some(pos) => (&upper[..pos], &upper[pos+1..]),
+        None      => (upper.as_slice(), &[][..]),
+    };
+    let base_len = base.len().min(8);
+    out[..base_len].copy_from_slice(&base[..base_len]);
+    let ext_len = ext.len().min(3);
+    out[8..8+ext_len].copy_from_slice(&ext[..ext_len]);
+    out
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -312,6 +357,262 @@ impl Fat32Volume {
         self.iter_dir(start, |name, entry| { entries.push((name, entry.is_dir())); })?;
         Ok(entries)
     }
+
+    // ── Write support ─────────────────────────────────────────────────────
+
+    /// Write a single sector to disk.
+    fn write_sector(&self, sector: u32, buf: &[u8]) -> Result<(), &'static str> {
+        self.device.lock().write_blocks(buf, sector as usize)
+            .map(|_| ()).map_err(|_| "FAT32: write error")
+    }
+
+    /// Write a full cluster to disk.
+    fn write_cluster(&self, cluster: u32, data: &[u8]) -> Result<(), &'static str> {
+        let bpc = self.params.bytes_per_cluster;
+        let bps = self.params.bytes_per_sector as usize;
+        let spc = self.params.sectors_per_cluster as usize;
+        if data.len() > bpc {
+            return Err("FAT32: data exceeds cluster size");
+        }
+        let first = self.params.cluster_to_sector(cluster);
+        // Pad to full cluster if data is shorter
+        let mut padded = Vec::with_capacity(bpc);
+        padded.extend_from_slice(data);
+        padded.resize(bpc, 0);
+        for i in 0..spc {
+            self.write_sector(first + i as u32, &padded[i*bps..(i+1)*bps])?;
+        }
+        Ok(())
+    }
+
+    /// Write a FAT entry for the given cluster. Updates all FAT copies.
+    fn set_fat_entry(&self, cluster: u32, value: u32) -> Result<(), &'static str> {
+        let off = (cluster * 4) as usize;
+        let sec_offset = off / SECTOR_SIZE;
+        let pos = off % SECTOR_SIZE;
+        for fat_idx in 0..self.params.num_fats as u32 {
+            let sec = self.params.fat_start_sector + fat_idx * self.params.sectors_per_fat + sec_offset as u32;
+            let mut buf = [0u8; SECTOR_SIZE];
+            self.read_sector(sec, &mut buf)?;
+            // Preserve the top 4 bits of the existing entry
+            let existing = ru32(&buf, pos);
+            let new_val = (existing & 0xF000_0000) | (value & 0x0FFF_FFFF);
+            wu32(&mut buf, pos, new_val);
+            self.write_sector(sec, &buf)?;
+        }
+        Ok(())
+    }
+
+    /// Allocate a single free cluster. Starts searching from `hint` (or 2 if hint is 0).
+    /// Marks the cluster as EOC in the FAT.
+    pub fn allocate_cluster(&self, hint: u32) -> Result<u32, &'static str> {
+        let total_clusters = (self.params.total_sectors - self.params.data_start_sector)
+            / self.params.sectors_per_cluster as u32;
+        let start = if hint < 2 { 2 } else { hint };
+        // Search from hint to end, then wrap around from 2 to hint
+        for c in start..total_clusters + 2 {
+            let entry = self.fat_entry(c)?;
+            if entry == FAT32_FREE {
+                self.set_fat_entry(c, 0x0FFF_FFFF)?;
+                return Ok(c);
+            }
+        }
+        for c in 2..start {
+            let entry = self.fat_entry(c)?;
+            if entry == FAT32_FREE {
+                self.set_fat_entry(c, 0x0FFF_FFFF)?;
+                return Ok(c);
+            }
+        }
+        Err("FAT32: no free clusters")
+    }
+
+    /// Allocate `count` clusters linked together. The last one gets EOC.
+    pub fn allocate_chain(&self, count: usize) -> Result<Vec<u32>, &'static str> {
+        if count == 0 { return Ok(Vec::new()); }
+        let mut clusters = Vec::with_capacity(count);
+        let mut hint = 2u32;
+        for _ in 0..count {
+            let c = self.allocate_cluster(hint)?;
+            clusters.push(c);
+            hint = c + 1;
+        }
+        // Link them: each cluster points to the next, last is already EOC
+        for i in 0..clusters.len() - 1 {
+            self.set_fat_entry(clusters[i], clusters[i + 1])?;
+        }
+        // Last is already marked EOC by allocate_cluster
+        Ok(clusters)
+    }
+
+    /// Extend an existing chain by allocating `additional` new clusters.
+    /// Links `last_cluster` to the first new cluster.
+    pub fn extend_chain(&self, last_cluster: u32, additional: usize) -> Result<Vec<u32>, &'static str> {
+        if additional == 0 { return Ok(Vec::new()); }
+        let new_clusters = self.allocate_chain(additional)?;
+        // Link the old last cluster to the first new one
+        self.set_fat_entry(last_cluster, new_clusters[0])?;
+        Ok(new_clusters)
+    }
+
+    /// Create a new 8.3 directory entry in the given directory cluster chain.
+    pub fn create_dir_entry(
+        &self,
+        dir_cluster: u32,
+        name: &str,
+        attr: u8,
+        first_cluster: u32,
+        file_size: u32,
+    ) -> Result<(), &'static str> {
+        let entry83 = DirEntry83 {
+            name: name_to_8_3(name),
+            attr,
+            cluster_hi: (first_cluster >> 16) as u16,
+            cluster_lo: first_cluster as u16,
+            file_size,
+        };
+        let entry_bytes = entry83.to_bytes();
+
+        let chain = self.cluster_chain(dir_cluster)?;
+        // Search for a free slot in existing clusters
+        for &cluster in &chain {
+            let mut buf = Vec::new();
+            self.read_cluster(cluster, &mut buf)?;
+            let bpc = self.params.bytes_per_cluster;
+            for off in (0..bpc).step_by(32) {
+                if buf[off] == 0x00 || buf[off] == 0xE5 {
+                    buf[off..off + 32].copy_from_slice(&entry_bytes);
+                    self.write_cluster(cluster, &buf)?;
+                    return Ok(());
+                }
+            }
+        }
+        // No free slot found — extend the directory by one cluster
+        let last = *chain.last().ok_or("FAT32: empty directory chain")?;
+        let new_clusters = self.extend_chain(last, 1)?;
+        let new_cluster = new_clusters[0];
+        // Write entry at start of new cluster, rest zeroed
+        let bpc = self.params.bytes_per_cluster;
+        let mut buf = vec![0u8; bpc];
+        buf[0..32].copy_from_slice(&entry_bytes);
+        self.write_cluster(new_cluster, &buf)?;
+        Ok(())
+    }
+
+    /// Update an existing directory entry's first_cluster and file_size.
+    fn update_dir_entry(
+        &self,
+        dir_cluster: u32,
+        name: &str,
+        first_cluster: u32,
+        file_size: u32,
+    ) -> Result<(), &'static str> {
+        let target_name = name_to_8_3(name);
+        let chain = self.cluster_chain(dir_cluster)?;
+        for &cluster in &chain {
+            let mut buf = Vec::new();
+            self.read_cluster(cluster, &mut buf)?;
+            let bpc = self.params.bytes_per_cluster;
+            for off in (0..bpc).step_by(32) {
+                if buf[off] == 0x00 { return Err("FAT32: entry not found"); }
+                if buf[off] == 0xE5 || buf[11 + off] == ATTR_LFN { continue; }
+                if buf[off..off + 11] == target_name {
+                    wu16(&mut buf, off + 20, (first_cluster >> 16) as u16);
+                    wu16(&mut buf, off + 26, first_cluster as u16);
+                    wu32(&mut buf, off + 28, file_size);
+                    self.write_cluster(cluster, &buf)?;
+                    return Ok(());
+                }
+            }
+        }
+        Err("FAT32: entry not found for update")
+    }
+
+    /// Free a cluster chain by setting each FAT entry to 0 (free).
+    fn free_chain(&self, first_cluster: u32) -> Result<(), &'static str> {
+        let chain = self.cluster_chain(first_cluster)?;
+        for &c in &chain {
+            self.set_fat_entry(c, FAT32_FREE)?;
+        }
+        Ok(())
+    }
+
+    /// High-level file write. Creates or updates a file in the given directory.
+    pub fn write_file(
+        &self,
+        dir_cluster: u32,
+        name: &str,
+        data: &[u8],
+    ) -> Result<(), &'static str> {
+        let bpc = self.params.bytes_per_cluster;
+        let clusters_needed = if data.is_empty() { 0 } else { (data.len() + bpc - 1) / bpc };
+
+        let existing = self.find_entry(dir_cluster, name)?;
+        if let Some(entry) = existing {
+            // File exists — free old chain and allocate new
+            if entry.cluster() >= 2 {
+                self.free_chain(entry.cluster())?;
+            }
+            if clusters_needed == 0 {
+                self.update_dir_entry(dir_cluster, name, 0, 0)?;
+            } else {
+                let chain = self.allocate_chain(clusters_needed)?;
+                // Write data cluster by cluster
+                for (i, &c) in chain.iter().enumerate() {
+                    let start = i * bpc;
+                    let end = (start + bpc).min(data.len());
+                    let mut cluster_buf = vec![0u8; bpc];
+                    cluster_buf[..end - start].copy_from_slice(&data[start..end]);
+                    self.write_cluster(c, &cluster_buf)?;
+                }
+                self.update_dir_entry(dir_cluster, name, chain[0], data.len() as u32)?;
+            }
+        } else {
+            // New file
+            if clusters_needed == 0 {
+                self.create_dir_entry(dir_cluster, name, ATTR_ARCHIVE, 0, 0)?;
+            } else {
+                let chain = self.allocate_chain(clusters_needed)?;
+                for (i, &c) in chain.iter().enumerate() {
+                    let start = i * bpc;
+                    let end = (start + bpc).min(data.len());
+                    let mut cluster_buf = vec![0u8; bpc];
+                    cluster_buf[..end - start].copy_from_slice(&data[start..end]);
+                    self.write_cluster(c, &cluster_buf)?;
+                }
+                self.create_dir_entry(dir_cluster, name, ATTR_ARCHIVE, chain[0], data.len() as u32)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete a file: mark directory entry as deleted and free its cluster chain.
+    pub fn delete_file(&self, dir_cluster: u32, name: &str) -> Result<(), &'static str> {
+        let target_name = name_to_8_3(name);
+        let chain = self.cluster_chain(dir_cluster)?;
+        for &cluster in &chain {
+            let mut buf = Vec::new();
+            self.read_cluster(cluster, &mut buf)?;
+            let bpc = self.params.bytes_per_cluster;
+            for off in (0..bpc).step_by(32) {
+                if buf[off] == 0x00 { return Err("FAT32: file not found"); }
+                if buf[off] == 0xE5 || buf[11 + off] == ATTR_LFN { continue; }
+                if buf[off..off + 11] == target_name {
+                    // Read cluster and size before marking deleted
+                    let file_cluster = ((ru16(&buf, off + 20) as u32) << 16) | ru16(&buf, off + 26) as u32;
+                    // Mark entry as deleted
+                    buf[off] = 0xE5;
+                    self.write_cluster(cluster, &buf)?;
+                    // Free the cluster chain
+                    if file_cluster >= 2 {
+                        self.free_chain(file_cluster)?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        Err("FAT32: file not found for deletion")
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -326,13 +627,15 @@ pub struct Fat32File {
     volume:        Arc<Mutex<Fat32Volume>>,
     first_cluster: u32,
     size:          usize,
+    dir_cluster:   u32,
     parent:        WeakDirRef,
 }
 
 impl Fat32File {
     pub fn new(name: String, volume: Arc<Mutex<Fat32Volume>>,
-               first_cluster: u32, size: usize, parent: WeakDirRef) -> fs_node::FileRef {
-        Arc::new(Mutex::new(Fat32File { name, volume, first_cluster, size, parent }))
+               first_cluster: u32, size: usize, dir_cluster: u32,
+               parent: WeakDirRef) -> fs_node::FileRef {
+        Arc::new(Mutex::new(Fat32File { name, volume, first_cluster, size, dir_cluster, parent }))
     }
 }
 
@@ -348,8 +651,29 @@ impl ByteReader for Fat32File {
     }
 }
 impl ByteWriter for Fat32File {
-    fn write_at(&mut self, _buf: &[u8], _off: usize) -> Result<usize, IoError> {
-        Err(IoError::from("FAT32: read-only"))
+    fn write_at(&mut self, buf: &[u8], offset: usize) -> Result<usize, IoError> {
+        // Read existing data (if any), apply the write, then re-write the whole file
+        let vol = self.volume.lock();
+        let mut data = if self.first_cluster >= 2 && self.size > 0 {
+            vol.read_file(self.first_cluster, self.size).map_err(|_| IoError::InvalidInput)?
+        } else {
+            Vec::new()
+        };
+        // Extend data if write goes past current end
+        let required = offset + buf.len();
+        if required > data.len() {
+            data.resize(required, 0);
+        }
+        data[offset..offset + buf.len()].copy_from_slice(buf);
+        // Re-write entire file contents
+        vol.write_file(self.dir_cluster, &self.name, &data)
+            .map_err(|_| IoError::InvalidInput)?;
+        // Update cached state: re-read the entry to get new first_cluster
+        if let Ok(Some(entry)) = vol.find_entry(self.dir_cluster, &self.name) {
+            self.first_cluster = entry.cluster();
+            self.size = entry.file_size as usize;
+        }
+        Ok(buf.len())
     }
     fn flush(&mut self) -> Result<(), IoError> { Ok(()) }
 }
@@ -403,23 +727,75 @@ impl fs_node::Directory for Fat32Directory {
         } else {
             Some(FileOrDir::File(Fat32File::new(
                 name.to_string(), self.volume.clone(),
-                entry.cluster(), entry.file_size as usize, self_weak,
+                entry.cluster(), entry.file_size as usize, self.cluster, self_weak,
             )))
         }
     }
 
     fn list(&self) -> Vec<String> {
-        self.volume.lock()
-            .list_dir("")
-            .map(|v| v.into_iter().map(|(n, _)| n).collect())
-            .unwrap_or_default()
+        let vol = self.volume.lock();
+        let mut entries = Vec::new();
+        let _ = vol.iter_dir(self.cluster, |name, _entry| {
+            entries.push(name);
+        });
+        entries
     }
 
-    fn insert(&mut self, _node: FileOrDir) -> Result<Option<FileOrDir>, &'static str> {
-        Err("FAT32: read-only")
+    fn insert(&mut self, node: FileOrDir) -> Result<Option<FileOrDir>, &'static str> {
+        let vol = self.volume.lock();
+        match &node {
+            FileOrDir::File(file_ref) => {
+                let file = file_ref.lock();
+                let name = file.get_name();
+                // Create an empty file entry; caller will write data via ByteWriter
+                vol.create_dir_entry(self.cluster, &name, ATTR_ARCHIVE, 0, 0)?;
+                drop(file);
+                Ok(None)
+            }
+            FileOrDir::Dir(dir_ref) => {
+                let dir = dir_ref.lock();
+                let name = dir.get_name();
+                // Allocate a cluster for the new directory and create . and .. entries
+                let new_cluster = vol.allocate_cluster(2)?;
+                // Initialize directory cluster with . and .. entries
+                let bpc = vol.params.bytes_per_cluster;
+                let mut buf = vec![0u8; bpc];
+                // "." entry pointing to self
+                let dot = DirEntry83 {
+                    name: *b".          ",
+                    attr: ATTR_DIRECTORY,
+                    cluster_hi: (new_cluster >> 16) as u16,
+                    cluster_lo: new_cluster as u16,
+                    file_size: 0,
+                };
+                buf[0..32].copy_from_slice(&dot.to_bytes());
+                // ".." entry pointing to parent
+                let dotdot = DirEntry83 {
+                    name: *b"..         ",
+                    attr: ATTR_DIRECTORY,
+                    cluster_hi: (self.cluster >> 16) as u16,
+                    cluster_lo: self.cluster as u16,
+                    file_size: 0,
+                };
+                buf[32..64].copy_from_slice(&dotdot.to_bytes());
+                vol.write_cluster(new_cluster, &buf)?;
+                // Create entry in parent directory
+                vol.create_dir_entry(self.cluster, &name, ATTR_DIRECTORY, new_cluster, 0)?;
+                drop(dir);
+                Ok(None)
+            }
+        }
     }
 
-    fn remove(&mut self, _node: &FileOrDir) -> Option<FileOrDir> { None }
+    fn remove(&mut self, node: &FileOrDir) -> Option<FileOrDir> {
+        let vol = self.volume.lock();
+        let name = match node {
+            FileOrDir::File(f) => f.lock().get_name(),
+            FileOrDir::Dir(d)  => d.lock().get_name(),
+        };
+        vol.delete_file(self.cluster, &name).ok()?;
+        None
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
