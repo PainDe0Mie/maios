@@ -8,6 +8,7 @@ extern crate alloc;
 extern crate spin;
 extern crate pci;
 extern crate ata;
+extern crate ahci;
 extern crate storage_device;
 
 use alloc::{
@@ -60,7 +61,18 @@ pub fn init_device(pci_device: &PciDevice) -> Result<Option<StorageControllerRef
         STORAGE_CONTROLLERS.lock().push(Arc::clone(&storage_controller_ref));
         Some(storage_controller_ref)
     } 
-    // Here: in the future, handle other supported storage devices
+    // AHCI (SATA) controllers
+    else if pci_device.class == ahci::AHCI_PCI_CLASS && pci_device.subclass == ahci::AHCI_PCI_SUBCLASS {
+        info!("AHCI controller PCI device found at: {:?}", pci_device.location);
+        match ahci::init_from_pci(pci_device) {
+            Ok(Some(ctrl_ref)) => {
+                STORAGE_CONTROLLERS.lock().push(Arc::clone(&ctrl_ref));
+                Some(ctrl_ref)
+            }
+            Ok(None) => None,
+            Err(e) => return Err(e),
+        }
+    }
     else {
         None
     };
