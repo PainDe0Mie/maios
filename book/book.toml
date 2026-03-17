@@ -1,7 +1,7 @@
 [book]
-title = "The Theseus OS Book"
+title = "The MaiOS Book"
 authors = ["Kevin Boos", "Lin Zhong"]
-description = "Describes the design principles and implementation details of Theseus, a companion to its source-level docs."
+description = "Describes the design principles and implementation details of MaiOS, a companion to its source-level docs."
 multilingual = false
 src = "src"
 
