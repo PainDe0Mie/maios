@@ -844,6 +844,15 @@ fn handle_keyboard(key: KeyEvent) -> Result<(), &'static str> {
         }
     }
 
+    // Ctrl+Shift+Space — toggle keyboard layout (QWERTY <-> AZERTY).
+    if key.modifiers.is_control() && key.modifiers.is_shift()
+        && key.keycode == Keycode::Space && key.action == KeyAction::Pressed
+    {
+        let new_layout = keycodes_ascii::toggle_layout();
+        info!("Keyboard layout switched to: {}", new_layout.name());
+        return Ok(());
+    }
+
     // Ctrl+Alt+T — open a new terminal.
     if key.modifiers.is_control() && key.modifiers.is_alt()
         && key.keycode == Keycode::T && key.action == KeyAction::Pressed
