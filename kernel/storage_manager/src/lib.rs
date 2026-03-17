@@ -76,6 +76,6 @@ pub fn init_device(pci_device: &PciDevice) -> Result<Option<StorageControllerRef
     else {
         None
     };
-    
+
     Ok(storage_controller)
 }
