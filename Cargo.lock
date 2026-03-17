@@ -1829,6 +1829,7 @@ dependencies = [
  "log",
  "mpmc",
  "once_cell",
+ "port_io",
  "ps2",
  "spin 0.9.4",
  "x86_64",
@@ -2380,6 +2381,7 @@ dependencies = [
  "log",
  "mouse_data",
  "mpmc",
+ "port_io",
  "ps2",
  "spin 0.9.4",
  "x86_64",
@@ -4210,6 +4212,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_win_compat"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "windows_syscall",
+]
+
+[[package]]
 name = "text_display"
 version = "0.1.0"
 dependencies = [
@@ -4922,6 +4932,7 @@ dependencies = [
  "framebuffer",
  "framebuffer_compositor",
  "framebuffer_drawer",
+ "keyboard",
  "keycodes_ascii",
  "lazy_static",
  "log",
