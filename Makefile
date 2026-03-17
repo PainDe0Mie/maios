@@ -1,6 +1,6 @@
-### This makefile is the top-level build script that builds all the crates in subdirectories 
+### This makefile is the top-level build script that builds all the crates in subdirectories
 ### and combines them into the final OS .iso image.
-### It also provides convenient targets for running and debugging Theseus and using GDB on your host computer.
+### It also provides convenient targets for running and debugging MaiOS and using GDB on your host computer.
 SHELL := /usr/bin/env bash
 
 ## Disable parallelism for this Makefile since it breaks the build,
@@ -55,7 +55,7 @@ IS_WSL = $(shell grep -is 'microsoft' /proc/version)
 ###################################################################################################
 BUILD_DIR               := $(ROOT_DIR)/build
 NANO_CORE_BUILD_DIR     := $(BUILD_DIR)/nano_core
-iso                     := $(BUILD_DIR)/theseus-$(ARCH).$(ISO_EXTENSION)
+iso                     := $(BUILD_DIR)/MaiOS.$(ISO_EXTENSION)
 ISOFILES                := $(BUILD_DIR)/isofiles
 OBJECT_FILES_BUILD_DIR  := $(ISOFILES)/modules
 DEBUG_SYMBOLS_DIR       := $(BUILD_DIR)/debug_symbols
@@ -698,7 +698,7 @@ endif
 ### Opens the Theseus book.
 export override MDBOOK_ARGS+=--open
 view-book: book
-	@echo -e "Opened the Theseus book in your browser."
+	@echo -e "Opened the MaiOS book in your browser."
 
 
 ### Removes all built documentation
@@ -711,21 +711,21 @@ clean-doc:
 help: 
 	@echo -e "\nThe following make targets are available:"
 	@echo -e "   iso:"
-	@echo -e "\t The default and most basic target. Builds Theseus OS with the default feature set and creates a bootable ISO image."
+	@echo -e "\t The default and most basic target. Builds MaiOS with the default feature set and creates a bootable ISO image."
 
 	@echo -e "   all:"
 	@echo -e "   full:"
-	@echo -e "\t Same as 'iso', but builds all Theseus OS crates by enabling the 'theseus_features/everything' feature."
+	@echo -e "\t Same as 'iso', but builds all MaiOS crates by enabling the 'theseus_features/everything' feature."
 
 	@echo -e "   run:"
-	@echo -e "\t Builds Theseus (via the 'iso' target) and runs it using QEMU."
+	@echo -e "\t Builds MaiOS (via the 'iso' target) and runs it using QEMU."
 
 	@echo -e "   run_pause:"
 	@echo -e "\t Same as 'run', but pauses QEMU at its GDB stub entry point,"
 	@echo -e "\t which waits for you to connect a GDB debugger using 'make gdb'."
 
 	@echo -e "   orun:"
-	@echo -e "\t Runs the existing build of Theseus using QEMU, without building Theseus first."
+	@echo -e "\t Runs the existing build of MaiOS using QEMU, without building first."
 
 	@echo -e "   orun_pause:"
 	@echo -e "\t Same as 'orun', but pauses QEMU at its GDB stub entry point,"
@@ -1069,7 +1069,7 @@ ifneq ($(IS_WSL), )
 	@echo -e "The ISO file is available at \"$(iso)\"."
 else
 ## building on Linux or macOS
-	@echo -e "\n\033[1;32mThe build finished successfully.\033[0m Writing Theseus OS ISO to /dev/$(drive)..."
+	@echo -e "\n\033[1;32mThe build finished successfully.\033[0m Writing MaiOS ISO to /dev/$(drive)..."
 	@$(UNMOUNT) /dev/$(drive)* 2> /dev/null  |  true  ## force it to return true
 	@sudo dd bs=4194304 if=$(iso) of=/dev/$(drive)    ## use 4194304 instead of 4M because macOS doesn't support 4M
 	@sync
