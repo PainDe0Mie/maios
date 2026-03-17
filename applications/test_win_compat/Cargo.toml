@@ -1,0 +1,8 @@
+[package]
+name = "test_win_compat"
+version = "0.1.0"
+description = "Test application for Windows NT syscall compatibility layer"
+
+[dependencies]
+app_io = { path = "../../kernel/app_io" }
+windows_syscall = { path = "../../kernel/windows_syscall" }
