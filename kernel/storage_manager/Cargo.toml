@@ -17,5 +17,8 @@ path = "../pci"
 [dependencies.ata]
 path = "../ata"
 
+[dependencies.ahci]
+path = "../ahci"
+
 [lib]
 crate-type = ["rlib"]
