@@ -67,6 +67,10 @@ pub struct TaskSchedInfo {
     pub last_cpu: AtomicUsize,
     /// Absolute timestamp (ns) at which a sleeping task should wake.
     pub wakeup_time_ns: u64,
+    /// Whether this task is currently on a run queue.
+    pub on_rq: bool,
+    /// Total wall-clock execution time in nanoseconds.
+    pub exec_runtime: u64,
 }
 
 impl Default for TaskSchedInfo {
@@ -84,6 +88,8 @@ impl Default for TaskSchedInfo {
             policy: SchedClass::Normal,
             last_cpu: AtomicUsize::new(0),
             wakeup_time_ns: 0,
+            on_rq: false,
+            exec_runtime: 0,
         }
     }
 }

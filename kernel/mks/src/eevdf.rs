@@ -34,7 +34,7 @@
 
 use alloc::collections::BTreeMap;
 
-use task_struct::TaskRef;
+use task::TaskRef;
 use crate::{SCHED_MIN_GRANULARITY_NS, SCHED_LATENCY_NS, weight_for_nice, NICE_TO_WMULT};
 
 // ---------------------------------------------------------------------------
