@@ -173,3 +173,80 @@ pub fn sys_getuid(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResu
 pub fn sys_getgid(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult { Ok(0) }
 pub fn sys_geteuid(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult { Ok(0) }
 pub fn sys_getegid(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult { Ok(0) }
+
+// =============================================================================
+// Threading stubs (Phase 1B)
+// =============================================================================
+
+/// sys_set_tid_address — register the clear_child_tid pointer.
+///
+/// Called by glibc/musl at thread startup. The kernel writes 0 to this address
+/// and does a FUTEX_WAKE when the thread dies (for pthread_join).
+/// Stub: just return the current tid.
+pub fn sys_set_tid_address(_tidptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    // TODO: store tidptr in task struct for cleanup notification
+    let tid = task::get_my_current_task_id();
+    Ok(tid as u64)
+}
+
+/// sys_set_robust_list — register the robust futex list head.
+///
+/// Called once per thread by glibc. If not implemented, glibc may crash.
+/// Stub: accept and ignore.
+pub fn sys_set_robust_list(_head: u64, _len: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    // len must be 24 (sizeof(struct robust_list_head))
+    Ok(0)
+}
+
+/// sys_prlimit64 — get/set resource limits.
+///
+/// glibc calls this at startup for RLIMIT_STACK.
+/// Stub: return sensible defaults, ignore set operations.
+pub fn sys_prlimit64(_pid: u64, resource: u64, _new_limit: u64, old_limit: u64, _: u64, _: u64) -> SyscallResult {
+    const RLIMIT_STACK: u64 = 3;
+    const RLIMIT_NOFILE: u64 = 7;
+    const RLIMIT_AS: u64 = 9;
+    const RLIM_INFINITY: u64 = u64::MAX;
+
+    if old_limit != 0 {
+        // struct rlimit { rlim_cur: u64, rlim_max: u64 }
+        let (cur, max) = match resource {
+            RLIMIT_STACK => (8 * 1024 * 1024, 64 * 1024 * 1024), // 8MB / 64MB
+            RLIMIT_NOFILE => (1024, 4096),
+            RLIMIT_AS => (RLIM_INFINITY, RLIM_INFINITY),
+            _ => (RLIM_INFINITY, RLIM_INFINITY),
+        };
+        unsafe {
+            let ptr = old_limit as *mut [u64; 2];
+            (*ptr)[0] = cur;
+            (*ptr)[1] = max;
+        }
+    }
+
+    // Ignore new_limit (we don't enforce resource limits)
+    Ok(0)
+}
+
+/// sys_sched_yield — voluntarily give up the CPU.
+pub fn sys_sched_yield(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    scheduler::schedule();
+    Ok(0)
+}
+
+/// sys_gettimeofday — legacy time syscall.
+///
+/// Many older programs use this instead of clock_gettime.
+/// struct timeval { tv_sec: i64, tv_usec: i64 }
+pub fn sys_gettimeofday(tv: u64, _tz: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if tv != 0 {
+        let elapsed = time::Instant::now().duration_since(time::Instant::ZERO);
+        // For a proper implementation we'd add the RTC epoch like clock_gettime does,
+        // but for now just return monotonic time as a reasonable approximation.
+        unsafe {
+            let ptr = tv as *mut [i64; 2];
+            (*ptr)[0] = elapsed.as_secs() as i64;
+            (*ptr)[1] = (elapsed.subsec_nanos() / 1000) as i64; // microseconds
+        }
+    }
+    Ok(0)
+}

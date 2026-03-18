@@ -110,6 +110,9 @@ pub fn syscall_name(nr: u16) -> &'static str {
         0x000A => "getgid",
         0x000B => "geteuid",
         0x000C => "getegid",
+        0x000D => "set_tid_address",
+        0x000E => "set_robust_list",
+        0x000F => "prlimit64",
 
         // Memory (0x01xx)
         0x0100 => "mmap",
@@ -150,6 +153,11 @@ pub fn syscall_name(nr: u16) -> &'static str {
         0x0400 => "uname",
         0x0401 => "arch_prctl",
         0x0402 => "getrandom",
+        0x0403 => "rt_sigaction",
+        0x0404 => "rt_sigprocmask",
+        0x0405 => "rt_sigreturn",
+        0x0406 => "sched_yield",
+        0x0407 => "gettimeofday",
 
         // MaiOS-specific (0x08xx)
         0x0800 => "create_window",

@@ -52,8 +52,16 @@ pub mod nr {
     pub const SYS_DUP: u64 = 32;
     pub const SYS_DUP2: u64 = 33;
     pub const SYS_NANOSLEEP: u64 = 35;
+    pub const SYS_SCHED_YIELD: u64 = 24;
     pub const SYS_FCNTL: u64 = 72;
     pub const SYS_GETCWD: u64 = 79;
+    pub const SYS_GETTIMEOFDAY: u64 = 96;
+    pub const SYS_RT_SIGACTION: u64 = 13;
+    pub const SYS_RT_SIGPROCMASK: u64 = 14;
+    pub const SYS_RT_SIGRETURN: u64 = 15;
+    pub const SYS_SET_TID_ADDRESS: u64 = 218;
+    pub const SYS_SET_ROBUST_LIST: u64 = 273;
+    pub const SYS_PRLIMIT64: u64 = 302;
     pub const SYS_CLOCK_GETTIME: u64 = 228;
     pub const SYS_EXIT_GROUP: u64 = 231;
     pub const SYS_OPENAT: u64 = 257;
@@ -119,9 +127,16 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[107] = maios_syscall::nr::SYS_GETEUID;    // geteuid
     table[108] = maios_syscall::nr::SYS_GETEGID;    // getegid
 
-    // Time
-    table[35]  = maios_syscall::nr::SYS_NANOSLEEP;   // nanosleep
-    table[228] = maios_syscall::nr::SYS_CLOCK_GETTIME; // clock_gettime
+    // Signals
+    table[13]  = maios_syscall::nr::SYS_RT_SIGACTION;   // rt_sigaction
+    table[14]  = maios_syscall::nr::SYS_RT_SIGPROCMASK; // rt_sigprocmask
+    table[15]  = maios_syscall::nr::SYS_RT_SIGRETURN;   // rt_sigreturn
+
+    // Time & scheduling
+    table[24]  = maios_syscall::nr::SYS_SCHED_YIELD;    // sched_yield
+    table[35]  = maios_syscall::nr::SYS_NANOSLEEP;      // nanosleep
+    table[96]  = maios_syscall::nr::SYS_GETTIMEOFDAY;   // gettimeofday
+    table[228] = maios_syscall::nr::SYS_CLOCK_GETTIME;  // clock_gettime
 
     // File I/O extras
     table[22]  = maios_syscall::nr::SYS_PIPE;        // pipe
@@ -129,9 +144,14 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[33]  = maios_syscall::nr::SYS_DUP2;        // dup2
 
     // System info
-    table[63]  = maios_syscall::nr::SYS_UNAME;      // uname
-    table[158] = maios_syscall::nr::SYS_ARCH_PRCTL;  // arch_prctl
-    table[318] = maios_syscall::nr::SYS_GETRANDOM;  // getrandom
+    table[63]  = maios_syscall::nr::SYS_UNAME;        // uname
+    table[158] = maios_syscall::nr::SYS_ARCH_PRCTL;   // arch_prctl
+    table[318] = maios_syscall::nr::SYS_GETRANDOM;    // getrandom
+
+    // Threading stubs
+    table[218] = maios_syscall::nr::SYS_SET_TID_ADDRESS; // set_tid_address
+    table[273] = maios_syscall::nr::SYS_SET_ROBUST_LIST; // set_robust_list
+    table[302] = maios_syscall::nr::SYS_PRLIMIT64;       // prlimit64
 
     table
 };

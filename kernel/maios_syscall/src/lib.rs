@@ -31,6 +31,7 @@ pub mod memory;
 pub mod process;
 pub mod time;
 pub mod system;
+pub mod signals;
 pub mod trace;
 
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -60,6 +61,9 @@ pub mod nr {
     pub const SYS_GETGID: u16          = 0x000A;
     pub const SYS_GETEUID: u16         = 0x000B;
     pub const SYS_GETEGID: u16         = 0x000C;
+    pub const SYS_SET_TID_ADDRESS: u16 = 0x000D;
+    pub const SYS_SET_ROBUST_LIST: u16 = 0x000E;
+    pub const SYS_PRLIMIT64: u16       = 0x000F;
 
     // === 0x01xx: Memory ===
     pub const SYS_MMAP: u16            = 0x0100;
@@ -96,10 +100,15 @@ pub mod nr {
     pub const SYS_NANOSLEEP: u16       = 0x0301;
     pub const SYS_PERF_COUNTER: u16    = 0x0302;
 
-    // === 0x04xx: System Info ===
+    // === 0x04xx: System Info & Signals ===
     pub const SYS_UNAME: u16           = 0x0400;
     pub const SYS_ARCH_PRCTL: u16      = 0x0401;
     pub const SYS_GETRANDOM: u16       = 0x0402;
+    pub const SYS_RT_SIGACTION: u16    = 0x0403;
+    pub const SYS_RT_SIGPROCMASK: u16  = 0x0404;
+    pub const SYS_RT_SIGRETURN: u16    = 0x0405;
+    pub const SYS_SCHED_YIELD: u16     = 0x0406;
+    pub const SYS_GETTIMEOFDAY: u16    = 0x0407;
 
     // === 0x08xx: MaiOS-specific (future) ===
     pub const SYS_CREATE_WINDOW: u16   = 0x0800;
@@ -202,6 +211,11 @@ pub fn init() {
         register(nr::SYS_GETGID,     process::sys_getgid,     "sys_getgid",     0, 0);
         register(nr::SYS_GETEUID,    process::sys_geteuid,    "sys_geteuid",    0, 0);
         register(nr::SYS_GETEGID,    process::sys_getegid,    "sys_getegid",    0, 0);
+        register(nr::SYS_SET_TID_ADDRESS, process::sys_set_tid_address, "sys_set_tid_address", 1, 0);
+        register(nr::SYS_SET_ROBUST_LIST, process::sys_set_robust_list, "sys_set_robust_list", 2, 0);
+        register(nr::SYS_PRLIMIT64, process::sys_prlimit64, "sys_prlimit64",  4, 0);
+        register(nr::SYS_SCHED_YIELD, process::sys_sched_yield, "sys_sched_yield", 0, 0);
+        register(nr::SYS_GETTIMEOFDAY, process::sys_gettimeofday, "sys_gettimeofday", 2, 0);
 
         // --- Memory (0x01xx) ---
         register(nr::SYS_MMAP,       memory::sys_mmap,        "sys_mmap",       6, 0);
@@ -242,6 +256,9 @@ pub fn init() {
         register(nr::SYS_UNAME,       system::sys_uname,       "sys_uname",       1, 0);
         register(nr::SYS_ARCH_PRCTL,   system::sys_arch_prctl,  "sys_arch_prctl",  2, 0);
         register(nr::SYS_GETRANDOM,    system::sys_getrandom,   "sys_getrandom",   3, 0);
+        register(nr::SYS_RT_SIGACTION, signals::sys_rt_sigaction, "sys_rt_sigaction", 4, 0);
+        register(nr::SYS_RT_SIGPROCMASK, signals::sys_rt_sigprocmask, "sys_rt_sigprocmask", 4, 0);
+        register(nr::SYS_RT_SIGRETURN, signals::sys_rt_sigreturn, "sys_rt_sigreturn", 0, 0);
     }
 
     INITIALIZED.store(true, Ordering::SeqCst);
