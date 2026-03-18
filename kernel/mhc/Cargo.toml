@@ -1,0 +1,28 @@
+[package]
+name = "mhc"
+version = "0.1.0"
+authors = ["MaiOS Contributors"]
+description = "MHC — Mai Heterogeneous Compute: unified CPU+GPU scheduling and compute engine"
+edition = "2021"
+
+[lib]
+name = "mhc"
+path = "src/lib.rs"
+
+[dependencies]
+# MaiOS kernel crates
+task_struct = { path = "../../kernel/task_struct" }
+log          = { version = "0.4", default-features = false }
+spin         = { version = "0.9", features = ["once"] }
+bitflags     = "2.4"
+
+[features]
+default = []
+## Enable VirtIO-GPU driver (requires PCI and virtio crates)
+virtio = []
+## Enable IOMMU-backed GPU memory isolation
+iommu = []
+## Enable MKS scheduler integration (SchedClass::Compute)
+mks_integration = []
+## Enable built-in compute kernels (SPIR-V shaders)
+builtin_shaders = []
