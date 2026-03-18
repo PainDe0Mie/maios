@@ -33,6 +33,8 @@
 #![allow(clippy::module_inception)]
 
 extern crate alloc;
+extern crate task;
+extern crate task_struct;
 
 pub mod eevdf;
 pub mod plugin;
@@ -46,7 +48,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
 use spin::RwLock;
 
-use task_struct::{Task, TaskRef, RunState};
+use task::TaskRef;
+use task_struct::{Task, RunState};
 use topology::CpuTopology;
 use runqueue::PerCpuRunQueue;
 

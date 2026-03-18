@@ -96,6 +96,30 @@ impl TaskRef {
         WeakTaskRef(Arc::downgrade(&self.0))
     }
 
+    /// Read access to the task (immutable borrow).
+    ///
+    /// Since `TaskRef: Deref<Target = Task>`, this is a zero-cost alias
+    /// for `&**self`. It exists so MKS can write `task.read().sched.xxx`
+    /// in a symmetric style with `task.write()`.
+    #[inline(always)]
+    pub fn read(&self) -> &Task {
+        &**self
+    }
+
+    /// Write (mutable) access to the task for MKS scheduler internals.
+    ///
+    /// # Safety contract (enforced by call sites)
+    /// The MKS run-queue lock (per-CPU `spin::Mutex`) ensures that at most
+    /// one CPU holds a `write()` guard on a given task at a time.
+    /// All callers of this method must be inside a locked run-queue section.
+    #[inline(always)]
+    pub fn write(&self) -> MksSchedGuard<'_> {
+        MksSchedGuard {
+            // SAFETY: Guaranteed unique access via per-CPU run-queue lock.
+            task: unsafe { &mut *(alloc::sync::Arc::as_ptr(&self.0) as *mut Task) },
+        }
+    }
+
     pub fn unblock(&self) -> Result<(), RunState> {
         match self.runstate.compare_exchange(RunState::Blocked, RunState::Runnable) {
             Ok(_) => {
@@ -163,8 +187,26 @@ impl core::ops::Deref for TaskRef {
     fn deref(&self) -> &Task { &self.0 }
 }
 
-/// A weak reference to a `Task` (does not keep the task alive).
-#[derive(Clone, Debug)]
+/// Mutable guard returned by `TaskRef::write()`.
+///
+/// Provides `DerefMut<Target = Task>` so MKS can mutate scheduling fields
+/// (vruntime, nice, policy, etc.) while holding the per-CPU run-queue lock.
+pub struct MksSchedGuard<'a> {
+    task: &'a mut Task,
+}
+
+impl<'a> core::ops::Deref for MksSchedGuard<'a> {
+    type Target = Task;
+    #[inline(always)]
+    fn deref(&self) -> &Task { self.task }
+}
+
+impl<'a> core::ops::DerefMut for MksSchedGuard<'a> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Task { self.task }
+}
+
+#[derive(Clone)]
 pub struct WeakTaskRef(pub Weak<Task>);
 
 impl WeakTaskRef {
