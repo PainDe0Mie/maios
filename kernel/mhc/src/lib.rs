@@ -74,7 +74,7 @@ extern crate log;
 extern crate spin;
 extern crate bitflags;
 extern crate pci;
-extern crate memory;
+extern crate memory as kernel_memory;
 
 pub mod device;
 pub mod memory;
@@ -90,12 +90,12 @@ pub mod drivers;
 use alloc::sync::Arc;
 use spin::Once;
 
-use device::{GpuDevice, GpuError, QueueHandle, QueueKind};
-use command::CommandBuffer;
-use fence::FenceId;
-use memory::{GpuAllocation, GpuMemFlags};
-use queue::GpuPriority;
-use scheduler::PerGpuRunQueue;
+use crate::device::{GpuDevice, GpuError, QueueHandle, QueueKind};
+use crate::command::CommandBuffer;
+use crate::fence::FenceId;
+use crate::memory::{GpuAllocation, GpuMemFlags};
+use crate::queue::GpuPriority;
+use crate::scheduler::PerGpuRunQueue;
 
 // ---------------------------------------------------------------------------
 // Global MHC state
