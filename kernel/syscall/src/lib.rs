@@ -22,11 +22,19 @@
 #![feature(naked_functions)]
 #![feature(asm_const)]
 
+extern crate alloc;
+
+use alloc::collections::BTreeMap;
 use log::{info, debug};
 use core::sync::atomic::{AtomicBool, Ordering};
+use spin::Mutex;
 
 /// Whether the syscall subsystem has been initialized.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Per-task execution mode registry.
+/// Maps task IDs to their execution mode (Linux, Windows, or Native).
+static EXEC_MODES: Mutex<BTreeMap<usize, ExecMode>> = Mutex::new(BTreeMap::new());
 
 /// The execution mode of a userspace process, determining which syscall ABI it uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,6 +262,25 @@ unsafe extern "C" fn syscall_entry_naked() {
     );
 }
 
+/// Register the execution mode for a task.
+///
+/// Should be called when loading a binary (ELF → Linux, PE → Windows).
+pub fn set_task_exec_mode(task_id: usize, mode: ExecMode) {
+    debug!("Setting ExecMode::{:?} for task {}", mode, task_id);
+    EXEC_MODES.lock().insert(task_id, mode);
+}
+
+/// Remove the execution mode for a task (on task exit).
+pub fn remove_task_exec_mode(task_id: usize) {
+    EXEC_MODES.lock().remove(&task_id);
+}
+
+/// Get the execution mode for the current task.
+fn current_exec_mode() -> ExecMode {
+    let task_id = task::get_my_current_task_id();
+    EXEC_MODES.lock().get(&task_id).copied().unwrap_or(ExecMode::Linux)
+}
+
 /// High-level syscall dispatcher called from assembly.
 ///
 /// Determines the execution mode of the calling task and routes
@@ -264,28 +291,33 @@ unsafe extern "C" fn syscall_entry_naked() {
 extern "C" fn syscall_dispatcher(frame: &mut SyscallFrame) {
     let syscall_num = frame.rax;
 
-    // TODO: Determine exec mode from the current task's metadata.
-    // For now, we detect based on syscall number ranges:
-    // - Linux syscalls: 0..~450 (standard Linux x86_64 syscall table)
-    // - Windows NT syscalls: numbers with service table bits set,
-    //   or we check task metadata.
-    //
-    // The proper approach is to check the task's ExecMode field,
-    // which is set when the binary is loaded (ELF → Linux, PE → Windows).
-
-    // For the initial implementation, default to Linux ABI detection
-    // since it's the most common use case.
-
-    // Try Linux first (most common case for compatibility)
-    let result = linux_syscall::handle_syscall(
-        syscall_num,
-        frame.rdi,
-        frame.rsi,
-        frame.rdx,
-        frame.r10,
-        frame.r8,
-        frame.r9,
-    );
+    let result = match current_exec_mode() {
+        ExecMode::Windows => {
+            // Windows NT ABI: R10=arg0, RDX=arg1, R8=arg2, R9=arg3
+            // (R10 holds the original RCX which was clobbered by SYSCALL)
+            windows_syscall::handle_syscall(
+                syscall_num,
+                frame.r10,   // arg0 (was RCX, moved to R10 by ntdll stub)
+                frame.rdx,   // arg1
+                frame.r8,    // arg2
+                frame.r9,    // arg3
+                0,           // arg4 (would be on stack, not yet supported)
+                0,           // arg5
+            )
+        }
+        ExecMode::Linux | ExecMode::Native => {
+            // Linux ABI: RDI=arg0, RSI=arg1, RDX=arg2, R10=arg3, R8=arg4, R9=arg5
+            linux_syscall::handle_syscall(
+                syscall_num,
+                frame.rdi,
+                frame.rsi,
+                frame.rdx,
+                frame.r10,
+                frame.r8,
+                frame.r9,
+            )
+        }
+    };
 
     // Store result back
     frame.rax = result as u64;
