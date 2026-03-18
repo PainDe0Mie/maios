@@ -8,6 +8,4 @@
 //! - `virtio_gpu`: VirtIO-GPU 1.2 driver for QEMU (requires `virtio` feature)
 
 pub mod software;
-
-#[cfg(feature = "virtio")]
 pub mod virtio_gpu;
