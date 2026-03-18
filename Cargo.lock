@@ -394,6 +394,7 @@ dependencies = [
  "logger",
  "memory",
  "memory_swap",
+ "mks",
  "mod_mgmt",
  "multicore_bringup",
  "multiple_heaps",
@@ -1829,7 +1830,6 @@ dependencies = [
  "log",
  "mpmc",
  "once_cell",
- "port_io",
  "ps2",
  "spin 0.9.4",
  "x86_64",
@@ -2250,8 +2250,19 @@ dependencies = [
  "framebuffer",
  "framebuffer_drawer",
  "log",
+ "mhc",
  "shapes",
  "spin 0.9.4",
+]
+
+[[package]]
+name = "mhc"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.4.1",
+ "log",
+ "spin 0.9.4",
+ "task_struct",
 ]
 
 [[package]]
@@ -2273,6 +2284,15 @@ dependencies = [
  "getopts",
  "task",
  "vfs_node",
+]
+
+[[package]]
+name = "mks"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "spin 0.9.4",
+ "task_struct",
 ]
 
 [[package]]
@@ -2381,7 +2401,6 @@ dependencies = [
  "log",
  "mouse_data",
  "mpmc",
- "port_io",
  "ps2",
  "spin 0.9.4",
  "x86_64",
@@ -3321,16 +3340,16 @@ checksum = "f2cc38e8fa666e2de3c4aba7edeb5ffc5246c1c2ed0e3d17e560aeeba736b23f"
 name = "scheduler"
 version = "0.1.0"
 dependencies = [
- "cfg-if 1.0.0",
  "cpu",
  "generic_timer_aarch64",
  "interrupts",
  "kernel_config",
  "log",
+ "mks",
  "sleep",
  "spin 0.9.4",
  "task",
- "x86_64",
+ "task_struct",
 ]
 
 [[package]]
@@ -4303,6 +4322,7 @@ dependencies = [
  "test_tls",
  "test_wait_queue",
  "test_wasmtime",
+ "test_win_compat",
  "theseus_std",
  "unified_channel",
  "unwind_test",
@@ -4932,7 +4952,6 @@ dependencies = [
  "framebuffer",
  "framebuffer_compositor",
  "framebuffer_drawer",
- "keyboard",
  "keycodes_ascii",
  "lazy_static",
  "log",
@@ -4954,11 +4973,7 @@ dependencies = [
 name = "windows_syscall"
 version = "0.1.0"
 dependencies = [
- "app_io",
  "log",
- "memory",
- "spin 0.9.4",
- "task",
 ]
 
 [[package]]

@@ -42,3 +42,4 @@ github_pages/doc/
 
 # macOS directory stores
 /**/.DS_Store
+.claude/
