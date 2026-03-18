@@ -223,11 +223,12 @@ pub trait AllocablePage {
         let page_offset = (ptr.as_ptr() as usize) & (Self::SIZE - 1);
         assert!(page_offset % layout.size() == 0);
         let idx = page_offset / layout.size();
-        assert!(
-            self.bitfield().is_allocated(idx),
-            "{:p} not marked allocated?",
-            ptr
-        );
+        if !self.bitfield().is_allocated(idx) {
+            // Double-free detected. Return error instead of panicking:
+            // a panic inside the allocator triggers the panic handler which
+            // tries to allocate → recursive deadlock → triple fault.
+            return Err("deallocate: pointer not marked allocated (double-free)");
+        }
 
         self.bitfield().clear_bit(idx);
         Ok(())

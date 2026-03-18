@@ -662,15 +662,12 @@ fn task_restartable_cleanup_failure<F, A, R>(current_task: ExitableTaskRef, kill
 #[inline(always)]
 fn task_cleanup_final_internal(current_task: &ExitableTaskRef) {
     task::scheduler::remove_task_from_current(current_task);
-
     for tls_dtor in thread_local_macro::take_current_tls_destructors().into_iter() {
         unsafe {
             (tls_dtor.dtor)(tls_dtor.object_ptr);
         }
     }
-
     current_task.reap_if_orphaned();
-
     fence(Ordering::Acquire)
 }
 

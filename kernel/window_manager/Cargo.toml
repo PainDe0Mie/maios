@@ -60,9 +60,6 @@ path = "../../libs/mouse_data"
 [dependencies.path]
 path = "../../kernel/path"
 
-[dependencies.preemption]
-path = "../../kernel/preemption"
-
 [lib]
 crate-type = ["rlib"]
 

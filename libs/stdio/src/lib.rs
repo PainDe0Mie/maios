@@ -7,13 +7,14 @@ extern crate alloc;
 extern crate spin;
 extern crate core2;
 extern crate keycodes_ascii;
+extern crate sync_irq;
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::{Mutex, MutexGuard};
+use sync_irq::{Mutex, MutexGuard};
 use core2::io::{Read, Write};
 use keycodes_ascii::KeyEvent;
 use core::ops::Deref;
@@ -27,12 +28,23 @@ pub struct RingBufferEof<T> {
 }
 
 /// A reference to a ring buffer with an EOF mark with mutex protection.
-pub type RingBufferEofRef<T> = Arc<Mutex<RingBufferEof<T>>>;
+///
+/// Uses `sync_irq::Mutex` which disables interrupts while the lock is held.
+/// This prevents preemption deadlocks: if a reader holds this lock and gets
+/// preempted, a writer on the same CPU would spin forever on a plain
+/// spin::Mutex. Disabling interrupts prevents timer IRQ-driven context
+/// switches during the brief critical section.
+pub type RingBufferEofRef<T> = Arc<sync_irq::Mutex<RingBufferEof<T>>>;
 
 /// A ring buffer containing bytes. It forms `stdin`, `stdout` and `stderr`.
 /// The two `Arc`s actually point to the same ring buffer. It is designed to prevent
 /// interleaved reading but at the same time allow writing to the ring buffer while
 /// the reader is holding its lock, and vice versa.
+///
+/// The outer locks (read_access, write_access) use plain spin::Mutex because
+/// they can be held for extended periods (reader busy-waits for data).
+/// The inner lock (RingBufferEof) uses sync_irq::Mutex (interrupt-disabling)
+/// because it's held briefly and prevents same-CPU preemption deadlocks.
 pub struct Stdio {
     /// This prevents interleaved reading.
     read_access: Arc<Mutex<RingBufferEofRef<u8>>>,
@@ -73,10 +85,17 @@ pub struct StdioWriteGuard<'a> {
 }
 
 impl<T> RingBufferEof<T> {
-    /// Create a new ring buffer.
+    /// Create a new ring buffer with pre-allocated capacity.
+    ///
+    /// Pre-allocating avoids heap allocation during write (VecDeque::push_back).
+    /// The heap allocator uses hold_preemption() (CLS allocator) which creates
+    /// a PreemptionGuard. If the task migrates between CPUs before the guard
+    /// is dropped, PreemptionGuard::drop panics on the CPU ID mismatch.
+    /// By pre-allocating, push_back doesn't need to grow the buffer for
+    /// typical output sizes.
     fn new() -> RingBufferEof<T> {
         RingBufferEof {
-            queue: VecDeque::new(),
+            queue: VecDeque::with_capacity(4096),
             end: false
         }
     }
@@ -85,7 +104,7 @@ impl<T> RingBufferEof<T> {
 impl Stdio {
     /// Create a new stdio buffer.
     pub fn new() -> Stdio {
-        let ring_buffer = Arc::new(Mutex::new(RingBufferEof::new()));
+        let ring_buffer = Arc::new(sync_irq::Mutex::new(RingBufferEof::new()));
         Stdio {
             read_access: Arc::new(Mutex::new(Arc::clone(&ring_buffer))),
             write_access: Arc::new(Mutex::new(ring_buffer))
@@ -232,6 +251,13 @@ impl<'a> Read for StdioReadGuard<'a> {
 
             // Break if we have read something or we encounter EOF.
             if cnt > 0 || end { break; }
+
+            // Yield CPU time before retrying. Without this, the tight loop
+            // monopolizes the inner spinlock due to cache-line locality on x86,
+            // starving any concurrent writer trying to push data into the queue.
+            for _ in 0..64 {
+                core::hint::spin_loop();
+            }
         }
         return Ok(cnt);
     }
@@ -271,20 +297,22 @@ impl<'a> StdioReadGuard<'a> {
 }
 
 impl<'a> Write for StdioWriteGuard<'a> {
-    /// Write to the ring buffer, returniong the number of bytes written.
-    /// 
-    /// When this method is called after setting the EOF flag, it returns error with `ErrorKind`
-    /// set to `UnexpectedEof`.
-    /// 
-    /// Also note that this method does *not* guarantee to write all given bytes, although it currently
-    /// does so. Always check the return value when using this method. Otherwise, use `write_all` to
-    /// ensure that all given bytes are written.
+    /// Write to the ring buffer, returning the number of bytes written.
+    ///
+    /// Disables interrupts while holding the inner ring buffer lock to prevent
+    /// preemption deadlocks: if the reader (on the same CPU) holds the lock and
+    /// gets preempted, the writer would spin forever.
+    ///
+    /// The EOF check and write are done in a single lock acquisition to avoid
+    /// TOCTOU races and reduce contention (previously two separate locks).
     fn write(&mut self, buf: &[u8]) -> Result<usize, core2::io::Error> {
-        if self.guard.lock().end {
+        // Single lock acquisition for both EOF check and write to reduce
+        // contention (previously two separate lock acquisitions).
+        let mut locked_ring_buf = self.guard.lock();
+        if locked_ring_buf.end {
             return Err(core2::io::Error::new(core2::io::ErrorKind::UnexpectedEof,
                                            "cannot write to a stream with EOF set"));
         }
-        let mut locked_ring_buf = self.guard.lock();
         for byte in buf {
             locked_ring_buf.queue.push_back(*byte)
         }
@@ -334,7 +362,7 @@ impl KeyEventQueue {
     /// Create a new ring buffer storing `KeyEvent`.
     pub fn new() -> KeyEventQueue {
         KeyEventQueue {
-            key_event_queue: Arc::new(Mutex::new(RingBufferEof::new()))
+            key_event_queue: Arc::new(sync_irq::Mutex::new(RingBufferEof::new()))
         }
     }
 

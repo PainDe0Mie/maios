@@ -1,214 +1,200 @@
-//! Windows NT syscall compatibility layer for MaiOS.
+//! Couche de traduction Windows NT → MaiOS.
 //!
-//! Implements the Windows NT kernel syscall ABI, mapping NT system service
-//! numbers to their MaiOS kernel equivalents. This allows Windows PE binaries
-//! to run on MaiOS without a translation layer.
+//! Ce crate est un mapper mince qui traduit les numéros de syscall NT
+//! en numéros MaiOS natifs, avec des fonctions d'adaptation pour les
+//! particularités de l'ABI NT (pointeur-vers-valeur, NTSTATUS, etc.).
 //!
-//! ## NT Syscall Convention (x86_64)
+//! ## Convention NT x86_64
 //!
-//! - RAX = syscall number (includes service table index in bits 12..13)
-//! - Arguments: R10 (original RCX), RDX, R8, R9, then stack
-//! - Return value: NTSTATUS in RAX
-//!
-//! ## NT Syscall Number Format
-//!
-//! ```text
-//! Bits  0..11 : System service number within the table
-//! Bits 12..13 : Service table index (0 = Nt*, 1 = Win32k)
-//! ```
+//! - RAX = numéro de syscall (bits 12..13 = index table service)
+//! - Arguments : R10 (original RCX), RDX, R8, R9
+//! - Retour : NTSTATUS dans RAX
 
 #![no_std]
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
-use log::{debug, warn, info};
-use memory::MappedPages;
-use spin::Mutex;
+use log::warn;
+use maios_syscall::error::{SyscallResult, SyscallError, result_to_ntstatus};
 
-/// NT status codes.
+/// Codes NTSTATUS Windows.
 pub mod ntstatus {
     pub const STATUS_SUCCESS: i64 = 0x0000_0000;
     pub const STATUS_NOT_IMPLEMENTED: i64 = 0xC000_0002_u32 as i32 as i64;
     pub const STATUS_INVALID_PARAMETER: i64 = 0xC000_000D_u32 as i32 as i64;
-    pub const STATUS_ACCESS_DENIED: i64 = 0xC000_0022_u32 as i32 as i64;
-    pub const STATUS_NO_MEMORY: i64 = 0xC000_0017_u32 as i32 as i64;
     pub const STATUS_INVALID_HANDLE: i64 = 0xC000_0008_u32 as i32 as i64;
+    pub const STATUS_NO_MEMORY: i64 = 0xC000_0017_u32 as i32 as i64;
+    #[allow(dead_code)]
+    pub const STATUS_ACCESS_DENIED: i64 = 0xC000_0022_u32 as i32 as i64;
+    #[allow(dead_code)]
     pub const STATUS_OBJECT_NAME_NOT_FOUND: i64 = 0xC000_0034_u32 as i32 as i64;
+    #[allow(dead_code)]
     pub const STATUS_BUFFER_TOO_SMALL: i64 = 0xC000_0023_u32 as i32 as i64;
 }
 
-/// Windows NT syscall numbers (Windows 10 21H2+ / build 19044+).
+/// Numéros de syscall Windows NT (Windows 10 21H2+ / build 19044+).
 pub mod nr {
-    // --- Process & Thread ---
     pub const NT_CLOSE: u64 = 0x000F;
-    pub const NT_CREATE_PROCESS: u64 = 0x00B4;
-    pub const NT_CREATE_THREAD: u64 = 0x004E;
     pub const NT_TERMINATE_PROCESS: u64 = 0x002C;
-    pub const NT_TERMINATE_THREAD: u64 = 0x0053;
-    pub const NT_QUERY_INFORMATION_PROCESS: u64 = 0x0019;
-    pub const NT_QUERY_INFORMATION_THREAD: u64 = 0x0025;
-    pub const NT_SET_INFORMATION_THREAD: u64 = 0x000D;
-
-    // --- Memory ---
     pub const NT_ALLOCATE_VIRTUAL_MEMORY: u64 = 0x0018;
     pub const NT_FREE_VIRTUAL_MEMORY: u64 = 0x001E;
     pub const NT_PROTECT_VIRTUAL_MEMORY: u64 = 0x0050;
-    pub const NT_QUERY_VIRTUAL_MEMORY: u64 = 0x0023;
-    pub const NT_READ_VIRTUAL_MEMORY: u64 = 0x003F;
-    pub const NT_WRITE_VIRTUAL_MEMORY: u64 = 0x003A;
-
-    // --- File I/O ---
-    pub const NT_CREATE_FILE: u64 = 0x0055;
     pub const NT_READ_FILE: u64 = 0x0006;
     pub const NT_WRITE_FILE: u64 = 0x0008;
+    pub const NT_CREATE_FILE: u64 = 0x0055;
     pub const NT_QUERY_INFORMATION_FILE: u64 = 0x0011;
-    pub const NT_SET_INFORMATION_FILE: u64 = 0x0027;
-
-    // --- Registry (stubs) ---
-    pub const NT_OPEN_KEY: u64 = 0x0012;
-    pub const NT_QUERY_VALUE_KEY: u64 = 0x0017;
-    pub const NT_SET_VALUE_KEY: u64 = 0x0060;
-
-    // --- Synchronization ---
-    pub const NT_WAIT_FOR_SINGLE_OBJECT: u64 = 0x0004;
-    pub const NT_SIGNAL_AND_WAIT_FOR_SINGLE_OBJECT: u64 = 0x001C;
-    pub const NT_CREATE_EVENT: u64 = 0x0048;
-    pub const NT_CREATE_MUTANT: u64 = 0x0076;
-
-    // --- System info ---
     pub const NT_QUERY_SYSTEM_INFORMATION: u64 = 0x0036;
     pub const NT_QUERY_PERFORMANCE_COUNTER: u64 = 0x0031;
+    pub const NT_QUERY_INFORMATION_PROCESS: u64 = 0x0019;
 }
 
 // =============================================================================
-// Windows memory protection constants
+// Table de traduction NT → MaiOS
 // =============================================================================
 
-#[allow(dead_code)]
-mod mem_protect {
-    pub const PAGE_NOACCESS: u64 = 0x01;
-    pub const PAGE_READONLY: u64 = 0x02;
-    pub const PAGE_READWRITE: u64 = 0x04;
-    pub const PAGE_WRITECOPY: u64 = 0x08;
-    pub const PAGE_EXECUTE: u64 = 0x10;
-    pub const PAGE_EXECUTE_READ: u64 = 0x20;
-    pub const PAGE_EXECUTE_READWRITE: u64 = 0x40;
-}
+const UNMAPPED: u16 = 0xFFFF;
 
-mod mem_type {
-    pub const MEM_COMMIT: u64 = 0x1000;
-    pub const MEM_RESERVE: u64 = 0x2000;
-    pub const MEM_DECOMMIT: u64 = 0x4000;
-    pub const MEM_RELEASE: u64 = 0x8000;
-}
+/// Table de correspondance : index = numéro NT service, valeur = numéro MaiOS.
+///
+/// Taille : 256 entrées × 2 octets = 512 octets. Lookup O(1).
+static NT_TO_MAIOS: [u16; 256] = {
+    let mut table = [UNMAPPED; 256];
 
-/// Convert Windows PAGE_* protection flags to MaiOS PteFlags.
-fn win_protect_to_pte_flags(protect: u64) -> pte_flags::PteFlags {
-    let mut flags = pte_flags::PteFlags::new();
-    match protect {
-        mem_protect::PAGE_READWRITE | mem_protect::PAGE_WRITECOPY => {
-            flags = flags.writable(true);
-        }
-        mem_protect::PAGE_EXECUTE_READ => {
-            flags = flags.executable(true);
-        }
-        mem_protect::PAGE_EXECUTE_READWRITE => {
-            flags = flags.writable(true).executable(true);
-        }
-        mem_protect::PAGE_EXECUTE => {
-            flags = flags.executable(true);
-        }
-        _ => {
-            // PAGE_READONLY, PAGE_NOACCESS, or unknown — read-only, no exec
-        }
-    }
-    flags
-}
+    // File I/O
+    table[0x06] = maios_syscall::nr::SYS_READ;       // NtReadFile
+    table[0x08] = maios_syscall::nr::SYS_WRITE;      // NtWriteFile
+    table[0x0F] = maios_syscall::nr::SYS_CLOSE;      // NtClose
+
+    // Memory (avec adaptateurs — pas de dispatch direct)
+    // 0x18 et 0x1E sont traités séparément via adaptateurs
+    table[0x50] = maios_syscall::nr::SYS_MPROTECT;   // NtProtectVirtualMemory
+
+    // Process
+    table[0x2C] = maios_syscall::nr::SYS_EXIT;       // NtTerminateProcess
+
+    // System info
+    table[0x31] = maios_syscall::nr::SYS_PERF_COUNTER; // NtQueryPerformanceCounter
+
+    table
+};
 
 // =============================================================================
-// Handle table — tracks NT kernel object handles per-task
+// Adaptateurs NT spécifiques
 // =============================================================================
 
-/// Represents the type of object behind an NT handle.
-#[derive(Debug)]
-enum HandleEntry {
-    /// Console stdin
-    Stdin,
-    /// Console stdout
-    Stdout,
-    /// Console stderr
-    Stderr,
-    /// A memory region allocated by NtAllocateVirtualMemory
-    VirtualMemory { base: usize, #[allow(dead_code)] size: usize },
-}
+/// Adaptateur pour NtAllocateVirtualMemory.
+///
+/// NT passe des pointeurs-vers-valeurs (*BaseAddress, *RegionSize)
+/// alors que MaiOS sys_alloc_vm prend des valeurs directes.
+fn adapt_nt_allocate_vm(
+    _process_handle: u64,
+    base_addr_ptr: u64,
+    _zero_bits: u64,
+    region_size_ptr: u64,
+    alloc_type: u64,
+    protect: u64,
+) -> i64 {
+    if region_size_ptr == 0 {
+        return ntstatus::STATUS_INVALID_PARAMETER;
+    }
 
-/// Per-task handle table.
-struct HandleTable {
-    entries: BTreeMap<u64, HandleEntry>,
-    next_handle: u64,
-}
+    let requested_size = unsafe { *(region_size_ptr as *const u64) };
 
-impl HandleTable {
-    fn new() -> Self {
-        let mut entries = BTreeMap::new();
-        // Standard console handles (Windows convention)
-        entries.insert(0x03, HandleEntry::Stdin);
-        entries.insert(0x07, HandleEntry::Stdout);
-        entries.insert(0x0B, HandleEntry::Stderr);
-        HandleTable {
-            entries,
-            next_handle: 0x100, // User handles start here (4-aligned like Windows)
+    if requested_size == 0 {
+        return ntstatus::STATUS_INVALID_PARAMETER;
+    }
+
+    let result = maios_syscall::dispatch(
+        maios_syscall::nr::SYS_ALLOC_VM,
+        requested_size,
+        protect,
+        alloc_type,
+        0, 0, 0,
+    );
+
+    match result {
+        Ok(base_addr) => {
+            // Écrire l'adresse de base dans le pointeur du caller
+            if base_addr_ptr != 0 {
+                unsafe { *(base_addr_ptr as *mut u64) = base_addr; }
+            }
+            // Écrire la taille réelle (arrondie aux pages)
+            let page_size = kernel_config::memory::PAGE_SIZE as u64;
+            let actual_size = (requested_size + page_size - 1) & !(page_size - 1);
+            unsafe { *(region_size_ptr as *mut u64) = actual_size; }
+            ntstatus::STATUS_SUCCESS
         }
-    }
-
-    fn allocate(&mut self, entry: HandleEntry) -> u64 {
-        let handle = self.next_handle;
-        self.next_handle += 4; // Windows handles are 4-byte aligned
-        self.entries.insert(handle, entry);
-        handle
-    }
-
-    fn close(&mut self, handle: u64) -> Option<HandleEntry> {
-        // Don't allow closing standard console handles
-        if handle == 0x03 || handle == 0x07 || handle == 0x0B {
-            return None;
-        }
-        self.entries.remove(&handle)
-    }
-
-    #[allow(dead_code)]
-    fn get(&self, handle: u64) -> Option<&HandleEntry> {
-        self.entries.get(&handle)
+        Err(e) => e.to_ntstatus(),
     }
 }
 
-/// Global handle tables, keyed by task ID.
-static HANDLE_TABLES: Mutex<BTreeMap<usize, HandleTable>> = Mutex::new(BTreeMap::new());
+/// Adaptateur pour NtFreeVirtualMemory.
+///
+/// NT passe *BaseAddress (pointeur-vers-pointeur).
+fn adapt_nt_free_vm(
+    _process_handle: u64,
+    base_addr_ptr: u64,
+    _region_size_ptr: u64,
+    free_type: u64,
+) -> i64 {
+    if base_addr_ptr == 0 {
+        return ntstatus::STATUS_INVALID_PARAMETER;
+    }
 
-/// Get or create a handle table for the given task.
-fn with_handle_table<F, R>(task_id: usize, f: F) -> R
-where
-    F: FnOnce(&mut HandleTable) -> R,
-{
-    let mut tables = HANDLE_TABLES.lock();
-    let table = tables.entry(task_id).or_insert_with(HandleTable::new);
-    f(table)
+    let base_addr = unsafe { *(base_addr_ptr as *const u64) };
+
+    let result = maios_syscall::dispatch(
+        maios_syscall::nr::SYS_FREE_VM,
+        base_addr,
+        free_type,
+        0, 0, 0, 0,
+    );
+
+    result_to_ntstatus(result)
+}
+
+/// Adaptateur pour NtWriteFile avec handles console.
+///
+/// NT utilise des handles spéciaux (0x07 stdout, 0x0B stderr).
+/// Le dispatch vers sys_write fonctionne directement car la ResourceTable
+/// mappe ces handles aux mêmes ressources Stdout/Stderr.
+fn adapt_nt_write_file(handle: u64, _event: u64, buffer: u64, length: u64) -> i64 {
+    if buffer == 0 && length > 0 {
+        return ntstatus::STATUS_INVALID_PARAMETER;
+    }
+
+    let result = maios_syscall::dispatch(
+        maios_syscall::nr::SYS_WRITE,
+        handle, buffer, length,
+        0, 0, 0,
+    );
+
+    result_to_ntstatus(result)
+}
+
+/// Adaptateur pour NtQueryPerformanceCounter.
+///
+/// Dispatch directement — les arguments (counter_ptr, freq_ptr) sont
+/// déjà dans le bon format pour sys_perf_counter.
+fn adapt_nt_perf_counter(counter_out: u64, frequency_out: u64) -> i64 {
+    let result = maios_syscall::dispatch(
+        maios_syscall::nr::SYS_PERF_COUNTER,
+        counter_out, frequency_out,
+        0, 0, 0, 0,
+    );
+
+    result_to_ntstatus(result)
 }
 
 // =============================================================================
-// Virtual memory tracking
+// Point d'entrée
 // =============================================================================
 
-/// Tracks all NtAllocateVirtualMemory allocations so they aren't dropped.
-/// Keyed by starting virtual address.
-static VM_REGIONS: Mutex<BTreeMap<usize, MappedPages>> = Mutex::new(BTreeMap::new());
-
-// =============================================================================
-// Main entry point
-// =============================================================================
-
-/// Main entry point for Windows NT syscall handling.
+/// Point d'entrée pour le handling des syscalls Windows NT.
+///
+/// Extrait l'index de table service (bits 12..13), puis traduit
+/// le numéro de service en numéro MaiOS via lookup O(1) ou
+/// adaptateur spécifique.
 pub fn handle_syscall(
     num: u64,
     arg0: u64,
@@ -219,337 +205,59 @@ pub fn handle_syscall(
     arg5: u64,
 ) -> i64 {
     let table_index = (num >> 12) & 0x3;
-    let service_num = num & 0xFFF;
+    let service_num = (num & 0xFFF) as usize;
 
     if table_index != 0 {
-        warn!("windows_syscall: Win32k syscall table not implemented (table={}, service={})",
-            table_index, service_num);
+        warn!(
+            "windows_syscall: Win32k table not implemented (table={}, service={})",
+            table_index, service_num
+        );
         return ntstatus::STATUS_NOT_IMPLEMENTED;
     }
 
-    match service_num {
-        // --- File I/O ---
-        nr::NT_READ_FILE => nt_read_file(arg0, arg1, arg2, arg3),
-        nr::NT_WRITE_FILE => nt_write_file(arg0, arg1, arg2, arg3),
-        nr::NT_CREATE_FILE => nt_create_file(arg0, arg1, arg2, arg3),
-        nr::NT_CLOSE => nt_close(arg0),
-        nr::NT_QUERY_INFORMATION_FILE => nt_query_information_file(arg0, arg1, arg2, arg3),
-
-        // --- Memory ---
-        nr::NT_ALLOCATE_VIRTUAL_MEMORY => nt_allocate_virtual_memory(arg0, arg1, arg2, arg3, arg4, arg5),
-        nr::NT_FREE_VIRTUAL_MEMORY => nt_free_virtual_memory(arg0, arg1, arg2, arg3),
-        nr::NT_PROTECT_VIRTUAL_MEMORY => nt_protect_virtual_memory(arg0, arg1, arg2, arg3),
-
-        // --- Process ---
-        nr::NT_TERMINATE_PROCESS => nt_terminate_process(arg0, arg1),
-        nr::NT_QUERY_INFORMATION_PROCESS => nt_query_information_process(arg0, arg1, arg2, arg3),
-
-        // --- System info ---
-        nr::NT_QUERY_SYSTEM_INFORMATION => nt_query_system_information(arg0, arg1, arg2, arg3),
-        nr::NT_QUERY_PERFORMANCE_COUNTER => nt_query_performance_counter(arg0, arg1),
-
-        _ => {
-            warn!("windows_syscall: unimplemented NT syscall {:#x} (args: {:#x}, {:#x}, {:#x}, {:#x})",
-                service_num, arg0, arg1, arg2, arg3);
-            ntstatus::STATUS_NOT_IMPLEMENTED
+    // Syscalls nécessitant des adaptateurs spécifiques (argument conversion)
+    match service_num as u64 {
+        nr::NT_ALLOCATE_VIRTUAL_MEMORY => {
+            return adapt_nt_allocate_vm(arg0, arg1, arg2, arg3, arg4, arg5);
         }
-    }
-}
-
-// =============================================================================
-// File I/O
-// =============================================================================
-
-fn nt_read_file(handle: u64, _event: u64, buffer: u64, length: u64) -> i64 {
-    debug!("NtReadFile(handle={:#x}, buf={:#x}, len={})", handle, buffer, length);
-    ntstatus::STATUS_NOT_IMPLEMENTED
-}
-
-fn nt_write_file(handle: u64, _event: u64, buffer: u64, length: u64) -> i64 {
-    debug!("NtWriteFile(handle={:#x}, buf={:#x}, len={})", handle, buffer, length);
-
-    // Handle stdout/stderr (console handles)
-    if handle == 0x07 || handle == 0x0B {
-        if buffer == 0 || length == 0 {
-            return ntstatus::STATUS_INVALID_PARAMETER;
+        nr::NT_FREE_VIRTUAL_MEMORY => {
+            return adapt_nt_free_vm(arg0, arg1, arg2, arg3);
         }
-        let slice = unsafe {
-            core::slice::from_raw_parts(buffer as *const u8, length as usize)
-        };
-        if let Ok(s) = core::str::from_utf8(slice) {
-            info!("[win-userspace] {}", s);
+        nr::NT_WRITE_FILE => {
+            return adapt_nt_write_file(arg0, arg1, arg2, arg3);
         }
-        return ntstatus::STATUS_SUCCESS;
-    }
-
-    ntstatus::STATUS_NOT_IMPLEMENTED
-}
-
-fn nt_create_file(
-    handle_out: u64,
-    _desired_access: u64,
-    _obj_attributes: u64,
-    _io_status: u64,
-) -> i64 {
-    debug!("NtCreateFile(handle_out={:#x})", handle_out);
-    ntstatus::STATUS_NOT_IMPLEMENTED
-}
-
-fn nt_close(handle: u64) -> i64 {
-    debug!("NtClose(handle={:#x})", handle);
-
-    let task_id = task::get_my_current_task_id();
-
-    let closed_entry = with_handle_table(task_id, |table| table.close(handle));
-
-    match closed_entry {
-        Some(HandleEntry::VirtualMemory { base, .. }) => {
-            // Free the associated memory region
-            if VM_REGIONS.lock().remove(&base).is_some() {
-                debug!("NtClose: freed virtual memory at {:#x}", base);
+        nr::NT_QUERY_PERFORMANCE_COUNTER => {
+            return adapt_nt_perf_counter(arg0, arg1);
+        }
+        nr::NT_TERMINATE_PROCESS => {
+            // NtTerminateProcess : handle -1 = processus courant
+            if arg0 == 0xFFFF_FFFF_FFFF_FFFF || arg0 == 0 {
+                let result = maios_syscall::dispatch(
+                    maios_syscall::nr::SYS_EXIT,
+                    arg1, 0, 0, 0, 0, 0,
+                );
+                return result_to_ntstatus(result);
             }
-            ntstatus::STATUS_SUCCESS
+            return ntstatus::STATUS_NOT_IMPLEMENTED;
         }
-        Some(_) => {
-            // Other handle types (file, event, etc.) — just close
-            ntstatus::STATUS_SUCCESS
-        }
-        None => {
-            // Console handles or unknown handle
-            if handle == 0x03 || handle == 0x07 || handle == 0x0B {
-                // Can't close console handles, but return success (Windows behavior)
-                ntstatus::STATUS_SUCCESS
-            } else {
-                ntstatus::STATUS_INVALID_HANDLE
-            }
-        }
-    }
-}
-
-fn nt_query_information_file(handle: u64, _io_status: u64, _info: u64, _info_class: u64) -> i64 {
-    debug!("NtQueryInformationFile(handle={:#x})", handle);
-    ntstatus::STATUS_NOT_IMPLEMENTED
-}
-
-// =============================================================================
-// Memory management
-// =============================================================================
-
-/// NtAllocateVirtualMemory — allocates or reserves virtual memory.
-///
-/// Arguments (Windows ABI):
-///   arg0: ProcessHandle (-1 = current process)
-///   arg1: *BaseAddress (IN/OUT pointer to PVOID)
-///   arg2: ZeroBits
-///   arg3: *RegionSize (IN/OUT pointer to SIZE_T)
-///   arg4: AllocationType (MEM_COMMIT, MEM_RESERVE, etc.)
-///   arg5: Protect (PAGE_READWRITE, etc.)
-fn nt_allocate_virtual_memory(
-    _process_handle: u64,
-    base_addr_ptr: u64,
-    _zero_bits: u64,
-    region_size_ptr: u64,
-    alloc_type: u64,
-    protect: u64,
-) -> i64 {
-    // Read the requested size from the pointer
-    if region_size_ptr == 0 {
-        return ntstatus::STATUS_INVALID_PARAMETER;
+        _ => {}
     }
 
-    let requested_size = unsafe { *(region_size_ptr as *const u64) } as usize;
-
-    debug!("NtAllocateVirtualMemory(base_ptr={:#x}, size={:#x}, type={:#x}, protect={:#x})",
-        base_addr_ptr, requested_size, alloc_type, protect);
-
-    if requested_size == 0 {
-        return ntstatus::STATUS_INVALID_PARAMETER;
-    }
-
-    // We only support MEM_COMMIT (and optionally MEM_RESERVE combined)
-    if alloc_type & mem_type::MEM_COMMIT == 0 && alloc_type & mem_type::MEM_RESERVE == 0 {
-        return ntstatus::STATUS_INVALID_PARAMETER;
-    }
-
-    let pte_flags = win_protect_to_pte_flags(protect);
-
-    match memory::create_mapping(requested_size, pte_flags) {
-        Ok(mp) => {
-            let vaddr = mp.start_address().value();
-            let actual_size = mp.size_in_bytes();
-
-            // Zero the allocated memory (committed pages are zero-filled)
-            unsafe {
-                core::ptr::write_bytes(vaddr as *mut u8, 0, actual_size);
-            }
-
-            debug!("NtAllocateVirtualMemory: mapped {} bytes at {:#x}", actual_size, vaddr);
-
-            // Write back the base address and size to the caller's pointers
-            if base_addr_ptr != 0 {
-                unsafe { *(base_addr_ptr as *mut u64) = vaddr as u64; }
-            }
-            unsafe { *(region_size_ptr as *mut u64) = actual_size as u64; }
-
-            // Track the allocation
-            let task_id = task::get_my_current_task_id();
-            with_handle_table(task_id, |table| {
-                table.allocate(HandleEntry::VirtualMemory { base: vaddr, size: actual_size });
-            });
-            VM_REGIONS.lock().insert(vaddr, mp);
-
-            ntstatus::STATUS_SUCCESS
-        }
-        Err(e) => {
-            warn!("NtAllocateVirtualMemory: memory::create_mapping failed: {}", e);
-            ntstatus::STATUS_NO_MEMORY
-        }
-    }
-}
-
-/// NtFreeVirtualMemory — frees or decommits virtual memory.
-///
-/// Arguments:
-///   arg0: ProcessHandle
-///   arg1: *BaseAddress (IN/OUT pointer to PVOID)
-///   arg2: *RegionSize (IN/OUT pointer to SIZE_T)
-///   arg3: FreeType (MEM_DECOMMIT or MEM_RELEASE)
-fn nt_free_virtual_memory(
-    _process_handle: u64,
-    base_addr_ptr: u64,
-    _region_size_ptr: u64,
-    free_type: u64,
-) -> i64 {
-    if base_addr_ptr == 0 {
-        return ntstatus::STATUS_INVALID_PARAMETER;
-    }
-
-    let base_addr = unsafe { *(base_addr_ptr as *const u64) } as usize;
-
-    debug!("NtFreeVirtualMemory(base={:#x}, type={:#x})", base_addr, free_type);
-
-    if free_type & mem_type::MEM_RELEASE != 0 {
-        // MEM_RELEASE: free the entire region
-        if VM_REGIONS.lock().remove(&base_addr).is_some() {
-            // Also remove from handle table
-            let task_id = task::get_my_current_task_id();
-            with_handle_table(task_id, |table| {
-                // Find and close the handle for this memory region
-                let handle_to_close: Option<u64> = table.entries.iter()
-                    .find(|(_, v)| matches!(v, HandleEntry::VirtualMemory { base, .. } if *base == base_addr))
-                    .map(|(k, _)| *k);
-                if let Some(h) = handle_to_close {
-                    table.close(h);
-                }
-            });
-            debug!("NtFreeVirtualMemory: released region at {:#x}", base_addr);
-            ntstatus::STATUS_SUCCESS
-        } else {
-            warn!("NtFreeVirtualMemory: no region found at {:#x}", base_addr);
-            ntstatus::STATUS_INVALID_PARAMETER
-        }
-    } else if free_type & mem_type::MEM_DECOMMIT != 0 {
-        // MEM_DECOMMIT: we treat this as a no-op success for now
-        // (decommitting individual pages within a reservation isn't supported yet)
-        debug!("NtFreeVirtualMemory: MEM_DECOMMIT treated as no-op");
-        ntstatus::STATUS_SUCCESS
+    // Lookup dans la table de traduction pour les syscalls sans adaptation
+    let maios_nr = if service_num < NT_TO_MAIOS.len() {
+        NT_TO_MAIOS[service_num]
     } else {
-        ntstatus::STATUS_INVALID_PARAMETER
-    }
-}
-
-fn nt_protect_virtual_memory(
-    _process_handle: u64,
-    base_addr: u64,
-    _region_size: u64,
-    new_protect: u64,
-) -> i64 {
-    debug!("NtProtectVirtualMemory(base={:#x}, prot={:#x})", base_addr, new_protect);
-    // Stub: return success (like Linux mprotect stub)
-    ntstatus::STATUS_SUCCESS
-}
-
-// =============================================================================
-// Process management
-// =============================================================================
-
-fn nt_terminate_process(process_handle: u64, exit_status: u64) -> i64 {
-    debug!("NtTerminateProcess(handle={:#x}, status={:#x})", process_handle, exit_status);
-
-    // Handle -1 (NtCurrentProcess) means current process
-    if process_handle == 0xFFFF_FFFF_FFFF_FFFF || process_handle == 0 {
-        // Clean up handle table
-        let task_id = task::get_my_current_task_id();
-        HANDLE_TABLES.lock().remove(&task_id);
-
-        // Kill the current task
-        let kill_result = task::with_current_task(|t| {
-            t.kill(task::KillReason::Requested)
-        });
-
-        match kill_result {
-            Ok(Ok(())) => {
-                debug!("NtTerminateProcess: task killed, scheduling away");
-                task::scheduler::schedule();
-            }
-            Ok(Err(state)) => {
-                warn!("NtTerminateProcess: could not kill task (state: {:?})", state);
-            }
-            Err(e) => {
-                warn!("NtTerminateProcess: no current task: {}", e);
-            }
-        }
-    }
-
-    ntstatus::STATUS_SUCCESS
-}
-
-fn nt_query_information_process(
-    process_handle: u64,
-    info_class: u64,
-    _info_buffer: u64,
-    _buffer_length: u64,
-) -> i64 {
-    debug!("NtQueryInformationProcess(handle={:#x}, class={})", process_handle, info_class);
-    ntstatus::STATUS_NOT_IMPLEMENTED
-}
-
-// =============================================================================
-// System information
-// =============================================================================
-
-fn nt_query_system_information(
-    info_class: u64,
-    _buffer: u64,
-    _buffer_length: u64,
-    _return_length: u64,
-) -> i64 {
-    debug!("NtQuerySystemInformation(class={})", info_class);
-    ntstatus::STATUS_NOT_IMPLEMENTED
-}
-
-fn nt_query_performance_counter(counter_out: u64, frequency_out: u64) -> i64 {
-    debug!("NtQueryPerformanceCounter(counter={:#x}, freq={:#x})", counter_out, frequency_out);
-
-    if counter_out == 0 {
-        return ntstatus::STATUS_INVALID_PARAMETER;
-    }
-
-    // Use TSC as performance counter
-    let tsc: u64 = unsafe {
-        let lo: u32;
-        let hi: u32;
-        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi);
-        ((hi as u64) << 32) | (lo as u64)
+        UNMAPPED
     };
 
-    unsafe {
-        *(counter_out as *mut u64) = tsc;
-        if frequency_out != 0 {
-            // Report a nominal 1 GHz frequency
-            *(frequency_out as *mut u64) = 1_000_000_000;
-        }
+    if maios_nr == UNMAPPED {
+        warn!(
+            "windows_syscall: unmapped NT syscall {:#x} (args: {:#x}, {:#x}, {:#x}, {:#x})",
+            service_num, arg0, arg1, arg2, arg3
+        );
+        return ntstatus::STATUS_NOT_IMPLEMENTED;
     }
 
-    ntstatus::STATUS_SUCCESS
+    let result = maios_syscall::dispatch(maios_nr, arg0, arg1, arg2, arg3, arg4, arg5);
+    result_to_ntstatus(result)
 }

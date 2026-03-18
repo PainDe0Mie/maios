@@ -6,6 +6,7 @@ authors = ["Zhiyao Ma <zm16@pku.edu.cn>"]
 [dependencies]
 spin = "0.9.4"
 core2 = { version = "0.4.0", default-features = false, features = ["alloc", "nightly"] }
+sync_irq = { path = "../../libs/sync_irq" }
 
 [dependencies.keycodes_ascii]
 path = "../keycodes_ascii"

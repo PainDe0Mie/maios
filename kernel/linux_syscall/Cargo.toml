@@ -2,29 +2,14 @@
 name = "linux_syscall"
 version = "0.1.0"
 authors = ["MaiOS Contributors"]
-description = "Linux syscall compatibility layer for MaiOS - implements Linux ABI syscalls natively"
+description = "Linux syscall translation layer - maps Linux ABI numbers to MaiOS unified syscall table"
 edition = "2021"
 
 [dependencies]
 log = "0.4.8"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-memory = { path = "../memory" }
-memory_structs = { path = "../memory_structs" }
-pte_flags = { path = "../pte_flags" }
-task = { path = "../task" }
-app_io = { path = "../app_io" }
-spin = "0.9.4"
-kernel_config = { path = "../kernel_config" }
-lazy_static = { version = "1.4", features = ["spin_no_std"] }
-fs_node = { path = "../fs_node" }
-root = { path = "../root" }
-path = { path = "../path" }
-io = { path = "../io" }
-vfs_node = { path = "../vfs_node" }
-elf_loader = { path = "../elf_loader" }
-spawn = { path = "../spawn" }
-mod_mgmt = { path = "../mod_mgmt" }
+maios_syscall = { path = "../maios_syscall" }
 
 [lib]
 crate-type = ["rlib"]

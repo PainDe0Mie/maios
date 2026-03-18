@@ -34,6 +34,7 @@ fn status_str(status: i64) -> &'static str {
 
 pub fn main(_args: Vec<String>) -> isize {
     println!("=== Windows NT Syscall Compatibility Test ===");
+
     println!("");
 
     let mut passed = 0u32;
