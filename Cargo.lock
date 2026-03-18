@@ -2811,6 +2811,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pe_loader"
+version = "0.1.0"
+dependencies = [
+ "kernel_config",
+ "log",
+ "memory",
+ "memory_structs",
+ "pte_flags",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "1.0.2"
 
@@ -4957,6 +4968,8 @@ dependencies = [
  "app_io",
  "log",
  "memory",
+ "memory_structs",
+ "pte_flags",
  "spin 0.9.4",
  "task",
 ]

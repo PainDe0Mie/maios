@@ -2,8 +2,8 @@
 //!
 //! This app directly invokes the Windows NT syscall handler functions
 //! to verify that the compatibility layer works correctly.
-//! It tests: NtQueryPerformanceCounter, NtWriteFile (stdout),
-//! NtAllocateVirtualMemory, NtClose, and NtTerminateProcess stubs.
+//! Tests cover: NtQueryPerformanceCounter, NtWriteFile, NtAllocateVirtualMemory,
+//! NtFreeVirtualMemory, NtClose, and handle table management.
 
 #![no_std]
 
@@ -20,7 +20,7 @@ fn nt_success(status: i64) -> bool {
     status >= 0
 }
 
-/// Format an NTSTATUS as hex string
+/// Format an NTSTATUS as a name
 fn status_str(status: i64) -> &'static str {
     match status {
         s if s == ntstatus::STATUS_SUCCESS => "STATUS_SUCCESS",
@@ -38,7 +38,6 @@ pub fn main(_args: Vec<String>) -> isize {
 
     let mut passed = 0u32;
     let mut failed = 0u32;
-    let mut not_impl = 0u32;
 
     // ---------------------------------------------------------------
     // Test 1: NtQueryPerformanceCounter
@@ -91,8 +90,8 @@ pub fn main(_args: Vec<String>) -> isize {
         let msg = b"  Hello from Windows NT compatibility layer!\n";
         let status = handle_syscall(
             nr::NT_WRITE_FILE,
-            0x07, // stdout handle
-            0,    // event (unused)
+            0x07,
+            0,
             msg.as_ptr() as u64,
             msg.len() as u64,
             0, 0,
@@ -115,7 +114,7 @@ pub fn main(_args: Vec<String>) -> isize {
         let msg = b"  Hello from stderr via NT syscall!\n";
         let status = handle_syscall(
             nr::NT_WRITE_FILE,
-            0x0B, // stderr handle
+            0x0B,
             0,
             msg.as_ptr() as u64,
             msg.len() as u64,
@@ -151,82 +150,122 @@ pub fn main(_args: Vec<String>) -> isize {
     }
 
     // ---------------------------------------------------------------
-    // Test 6: NtClose (not yet implemented)
+    // Test 6: NtAllocateVirtualMemory — allocate 4 KB
     // ---------------------------------------------------------------
-    println!("[TEST 6] NtClose (stub check)");
+    println!("[TEST 6] NtAllocateVirtualMemory (4 KB, PAGE_READWRITE)");
     {
-        let status = handle_syscall(
-            nr::NT_CLOSE,
-            0x42, 0, 0, 0, 0, 0,
-        );
+        let mut base_addr: u64 = 0;
+        let mut region_size: u64 = 0x1000; // 4 KB
+        let base_ptr = &mut base_addr as *mut u64 as u64;
+        let size_ptr = &mut region_size as *mut u64 as u64;
 
-        if status == ntstatus::STATUS_NOT_IMPLEMENTED {
-            println!("  INFO: NtClose returns STATUS_NOT_IMPLEMENTED (expected for stub)");
-            not_impl += 1;
-        } else if nt_success(status) {
-            println!("  PASS: NtClose succeeded");
-            passed += 1;
-        } else {
-            println!("  FAIL: unexpected status {}", status_str(status));
-            failed += 1;
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // Test 7: NtAllocateVirtualMemory (stub check)
-    // ---------------------------------------------------------------
-    println!("[TEST 7] NtAllocateVirtualMemory (stub check)");
-    {
+        // Args: ProcessHandle, *BaseAddress, ZeroBits, *RegionSize, AllocationType, Protect
         let status = handle_syscall(
             nr::NT_ALLOCATE_VIRTUAL_MEMORY,
             0xFFFF_FFFF_FFFF_FFFF, // current process
-            0, 0, 0x1000,
-            0, 0,
+            base_ptr,
+            0,        // ZeroBits
+            size_ptr, // *RegionSize
+            0x3000,   // MEM_COMMIT | MEM_RESERVE
+            0x04,     // PAGE_READWRITE
         );
 
-        if status == ntstatus::STATUS_NOT_IMPLEMENTED {
-            println!("  INFO: NtAllocateVirtualMemory returns NOT_IMPLEMENTED (expected)");
-            not_impl += 1;
-        } else if nt_success(status) {
-            println!("  PASS: NtAllocateVirtualMemory succeeded");
-            passed += 1;
+        if nt_success(status) && base_addr != 0 && region_size >= 0x1000 {
+            println!("  PASS: allocated at {:#x}, size={:#x}", base_addr, region_size);
+
+            // Verify we can write to the allocated memory
+            let ptr = base_addr as *mut u8;
+            unsafe {
+                *ptr = 0xAA;
+                let val = *ptr;
+                if val == 0xAA {
+                    println!("  PASS: memory is readable/writable (wrote 0xAA, read back 0xAA)");
+                    passed += 1;
+                } else {
+                    println!("  FAIL: memory read back {:#x}, expected 0xAA", val);
+                    failed += 1;
+                }
+            }
+
+            // Test 7: Free the memory with NtFreeVirtualMemory
+            println!("[TEST 7] NtFreeVirtualMemory (MEM_RELEASE)");
+            {
+                let mut free_base: u64 = base_addr;
+                let mut free_size: u64 = 0; // MEM_RELEASE ignores size
+                let free_base_ptr = &mut free_base as *mut u64 as u64;
+                let free_size_ptr = &mut free_size as *mut u64 as u64;
+
+                let free_status = handle_syscall(
+                    nr::NT_FREE_VIRTUAL_MEMORY,
+                    0xFFFF_FFFF_FFFF_FFFF, // current process
+                    free_base_ptr,
+                    free_size_ptr,
+                    0x8000, // MEM_RELEASE
+                    0, 0,
+                );
+
+                if nt_success(free_status) {
+                    println!("  PASS: NtFreeVirtualMemory succeeded");
+                    passed += 1;
+                } else {
+                    println!("  FAIL: status={}", status_str(free_status));
+                    failed += 1;
+                }
+            }
         } else {
-            println!("  FAIL: unexpected status {}", status_str(status));
+            println!("  FAIL: status={} base={:#x} size={:#x}", status_str(status), base_addr, region_size);
+            failed += 1;
+            // Skip test 7 since allocation failed
+            println!("[TEST 7] NtFreeVirtualMemory (SKIPPED - allocation failed)");
             failed += 1;
         }
     }
 
     // ---------------------------------------------------------------
-    // Test 8: NtQuerySystemInformation (stub check)
+    // Test 8: NtClose on invalid handle (should return INVALID_HANDLE)
     // ---------------------------------------------------------------
-    println!("[TEST 8] NtQuerySystemInformation (stub check)");
+    println!("[TEST 8] NtClose (invalid handle)");
     {
         let status = handle_syscall(
-            nr::NT_QUERY_SYSTEM_INFORMATION,
-            0, // SystemBasicInformation
-            0, 0, 0, 0, 0,
+            nr::NT_CLOSE,
+            0xDEAD, 0, 0, 0, 0, 0,
         );
 
-        if status == ntstatus::STATUS_NOT_IMPLEMENTED {
-            println!("  INFO: NtQuerySystemInformation returns NOT_IMPLEMENTED");
-            not_impl += 1;
-        } else if nt_success(status) {
-            println!("  PASS: NtQuerySystemInformation succeeded");
+        if status == ntstatus::STATUS_INVALID_HANDLE {
+            println!("  PASS: correctly returned STATUS_INVALID_HANDLE");
             passed += 1;
         } else {
-            println!("  FAIL: unexpected status {}", status_str(status));
+            println!("  FAIL: expected INVALID_HANDLE, got {}", status_str(status));
             failed += 1;
         }
     }
 
     // ---------------------------------------------------------------
-    // Test 9: Unknown syscall number
+    // Test 9: NtClose on console handle (should succeed, Windows behavior)
     // ---------------------------------------------------------------
-    println!("[TEST 9] Unknown NT syscall (should return NOT_IMPLEMENTED)");
+    println!("[TEST 9] NtClose (console handle 0x07 - should succeed)");
     {
         let status = handle_syscall(
-            0x0FFF, // high service number, unlikely to be implemented
-            0, 0, 0, 0, 0, 0,
+            nr::NT_CLOSE,
+            0x07, 0, 0, 0, 0, 0,
+        );
+
+        if nt_success(status) {
+            println!("  PASS: NtClose on console handle returns SUCCESS");
+            passed += 1;
+        } else {
+            println!("  FAIL: status={}", status_str(status));
+            failed += 1;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Test 10: Unknown syscall number
+    // ---------------------------------------------------------------
+    println!("[TEST 10] Unknown NT syscall (should return NOT_IMPLEMENTED)");
+    {
+        let status = handle_syscall(
+            0x0FFF, 0, 0, 0, 0, 0, 0,
         );
 
         if status == ntstatus::STATUS_NOT_IMPLEMENTED {
@@ -239,15 +278,13 @@ pub fn main(_args: Vec<String>) -> isize {
     }
 
     // ---------------------------------------------------------------
-    // Test 10: Win32k table (table index 1) should be rejected
+    // Test 11: Win32k table (table index 1) should be rejected
     // ---------------------------------------------------------------
-    println!("[TEST 10] Win32k syscall table (should be NOT_IMPLEMENTED)");
+    println!("[TEST 11] Win32k syscall table (should be NOT_IMPLEMENTED)");
     {
-        // Set bit 12 to indicate table index 1 (Win32k)
         let win32k_syscall = 0x1000 | 0x0001;
         let status = handle_syscall(
-            win32k_syscall,
-            0, 0, 0, 0, 0, 0,
+            win32k_syscall, 0, 0, 0, 0, 0, 0,
         );
 
         if status == ntstatus::STATUS_NOT_IMPLEMENTED {
@@ -260,21 +297,43 @@ pub fn main(_args: Vec<String>) -> isize {
     }
 
     // ---------------------------------------------------------------
+    // Test 12: NtAllocateVirtualMemory with invalid params
+    // ---------------------------------------------------------------
+    println!("[TEST 12] NtAllocateVirtualMemory (null size ptr -> should fail)");
+    {
+        let status = handle_syscall(
+            nr::NT_ALLOCATE_VIRTUAL_MEMORY,
+            0xFFFF_FFFF_FFFF_FFFF,
+            0, 0,
+            0, // null RegionSize pointer
+            0x3000, 0x04,
+        );
+
+        if status == ntstatus::STATUS_INVALID_PARAMETER {
+            println!("  PASS: correctly returned STATUS_INVALID_PARAMETER");
+            passed += 1;
+        } else {
+            println!("  FAIL: expected INVALID_PARAMETER, got {}", status_str(status));
+            failed += 1;
+        }
+    }
+
+    // ---------------------------------------------------------------
     // Summary
     // ---------------------------------------------------------------
+    let total = passed + failed;
     println!("");
     println!("=== Results ===");
-    println!("  Passed:          {}", passed);
-    println!("  Failed:          {}", failed);
-    println!("  Not implemented: {}", not_impl);
-    println!("  Total tests:     {}", passed + failed + not_impl);
+    println!("  Passed:       {}", passed);
+    println!("  Failed:       {}", failed);
+    println!("  Total tests:  {}", total);
     println!("");
 
     if failed > 0 {
         println!("RESULT: SOME TESTS FAILED");
         -1
     } else {
-        println!("RESULT: ALL IMPLEMENTED SYSCALLS WORK CORRECTLY");
+        println!("RESULT: ALL {} TESTS PASSED", total);
         0
     }
 }

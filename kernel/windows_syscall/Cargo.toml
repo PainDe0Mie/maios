@@ -10,6 +10,8 @@ log = "0.4.8"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 memory = { path = "../memory" }
+memory_structs = { path = "../memory_structs" }
+pte_flags = { path = "../pte_flags" }
 task = { path = "../task" }
 app_io = { path = "../app_io" }
 spin = "0.9.4"
