@@ -1,0 +1,23 @@
+[package]
+name = "mks"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "mks"
+path = "src/lib.rs"
+
+[dependencies]
+# MaiOS kernel crates
+task_struct   = { path = "../../kernel/task_struct" }
+log           = { version = "0.4", default-features = false }
+spin          = { version = "0.9", features = ["once"] }
+
+[features]
+default = []
+# Enable NUMA-aware work stealing (Phase 3 — requires ACPI topology)
+numa_aware = []
+# Enable real-time classes (SCHED_FIFO / SCHED_RR / SCHED_DEADLINE)
+realtime = []
+# Enable the plugin interface (ghOSt-style userspace scheduling)
+plugins = []
