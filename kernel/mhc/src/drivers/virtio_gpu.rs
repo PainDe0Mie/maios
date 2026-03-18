@@ -402,13 +402,13 @@ impl VirtioGpuDevice {
         // Step 3: Map the common-config BAR region
         // -------------------------------------------------------------------
         let common_bar_phys = device.determine_mem_base(common_cap.bar as usize)?;
-        let common_phys = memory::PhysicalAddress::new(
+        let common_phys = kernel_memory::PhysicalAddress::new(
             common_bar_phys.value() + common_cap.bar_offset as usize,
         )
         .ok_or("MHC/VirtIO-GPU: invalid common config physical address")?;
 
         let common_mapped =
-            memory::map_frame_range(common_phys, common_cap.length as usize, memory::MMIO_FLAGS)?;
+            kernel_memory::map_frame_range(common_phys, common_cap.length as usize, kernel_memory::MMIO_FLAGS)?;
         let cfg = common_mapped.start_address().value();
 
         // Leak the mapping — it must live forever (device lifetime = OS lifetime).
@@ -425,13 +425,13 @@ impl VirtioGpuDevice {
             // A production driver would parse the extra field from config space.
             let nb_phys = device
                 .determine_mem_base(nc.bar as usize)?;
-            let nb_phys_off = memory::PhysicalAddress::new(
+            let nb_phys_off = kernel_memory::PhysicalAddress::new(
                 nb_phys.value() + nc.bar_offset as usize,
             )
             .ok_or("MHC/VirtIO-GPU: invalid notify BAR address")?;
 
             let nb_mapped =
-                memory::map_frame_range(nb_phys_off, nc.length as usize.max(4096), memory::MMIO_FLAGS)?;
+                kernel_memory::map_frame_range(nb_phys_off, (nc.length as usize).max(4096), kernel_memory::MMIO_FLAGS)?;
             let va = nb_mapped.start_address().value();
             core::mem::forget(nb_mapped);
             (va, 4u32) // 4 bytes per notify offset is the QEMU default
@@ -521,7 +521,7 @@ impl VirtioGpuDevice {
         let total     = used_off + used_size;
 
         let (vq_mapped, vq_phys) =
-            memory::create_contiguous_mapping(total, memory::DMA_FLAGS)?;
+            kernel_memory::create_contiguous_mapping(total, kernel_memory::DMA_FLAGS)?;
         let vq_va = vq_mapped.start_address().value();
 
         // Zero the queue memory so all descriptors and ring entries start clean.
@@ -633,7 +633,7 @@ impl VirtioGpuDevice {
         let resp_size = core::mem::size_of::<VirtioGpuRespDisplayInfo>();
 
         let (cmd_mapped, cmd_phys) =
-            memory::create_contiguous_mapping(cmd_size + resp_size, memory::DMA_FLAGS)?;
+            kernel_memory::create_contiguous_mapping(cmd_size + resp_size, kernel_memory::DMA_FLAGS)?;
         let cmd_va = cmd_mapped.start_address().value();
 
         // Zero buffers.
