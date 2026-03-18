@@ -245,3 +245,38 @@ pub fn sys_madvise(_addr: u64, _length: u64, _advice: u64, _: u64, _: u64, _: u6
     // - MADV_SEQUENTIAL/RANDOM: hint for readahead
     Ok(0)
 }
+
+/// sys_sysinfo — get system information (memory, uptime, load).
+pub fn sys_sysinfo(info_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if info_ptr == 0 {
+        return Err(SyscallError::Fault);
+    }
+    let elapsed = time::Instant::now().duration_since(time::Instant::ZERO);
+    unsafe {
+        core::ptr::write_bytes(info_ptr as *mut u8, 0, 112);
+        let ptr = info_ptr as *mut u64;
+        *ptr = elapsed.as_secs();                     // uptime
+        *ptr.add(4) = 4 * 1024 * 1024 * 1024;        // totalram (4GB)
+        *ptr.add(5) = 3 * 1024 * 1024 * 1024;        // freeram
+        let procs_ptr = (info_ptr + 64) as *mut u16;
+        *procs_ptr = 4;                               // procs
+    }
+    Ok(0)
+}
+
+/// sys_getrusage — get resource usage statistics. Stub: zeroed struct.
+pub fn sys_getrusage(_who: u64, usage_ptr: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if usage_ptr == 0 { return Err(SyscallError::Fault); }
+    unsafe { core::ptr::write_bytes(usage_ptr as *mut u8, 0, 144); }
+    Ok(0)
+}
+
+/// sys_umask — set file creation mask. Stub: returns 022.
+pub fn sys_umask(_mask: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    Ok(0o022)
+}
+
+/// sys_eventfd2 — create an eventfd. Stub.
+pub fn sys_eventfd2(_initval: u64, _flags: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    Err(SyscallError::NotImplemented)
+}

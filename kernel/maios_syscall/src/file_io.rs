@@ -836,3 +836,13 @@ pub fn sys_pwrite64(fd: u64, buf_ptr: u64, count: u64, offset: u64, _: u64, _: u
         }
     })
 }
+
+/// sys_ftruncate — truncate a file to a given length. Stub.
+pub fn sys_ftruncate(_fd: u64, _length: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    Err(SyscallError::NotImplemented)
+}
+
+/// sys_rename — rename a file. Stub: VFS doesn't support renaming.
+pub fn sys_rename(_oldpath: u64, _newpath: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    Err(SyscallError::ReadOnlyFs)
+}

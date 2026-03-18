@@ -81,6 +81,28 @@ pub mod nr {
     pub const SYS_EPOLL_WAIT: u64 = 232;
     pub const SYS_EPOLL_CTL: u64 = 233;
     pub const SYS_TGKILL: u64 = 234;
+    pub const SYS_MREMAP: u64 = 25;
+    pub const SYS_SOCKET: u64 = 41;
+    pub const SYS_CONNECT: u64 = 42;
+    pub const SYS_SENDTO: u64 = 44;
+    pub const SYS_RECVFROM: u64 = 45;
+    pub const SYS_SENDMSG: u64 = 46;
+    pub const SYS_RECVMSG: u64 = 47;
+    pub const SYS_SHUTDOWN: u64 = 48;
+    pub const SYS_BIND: u64 = 49;
+    pub const SYS_LISTEN: u64 = 50;
+    pub const SYS_GETSOCKNAME: u64 = 51;
+    pub const SYS_GETPEERNAME: u64 = 52;
+    pub const SYS_SOCKETPAIR: u64 = 53;
+    pub const SYS_SETSOCKOPT: u64 = 54;
+    pub const SYS_GETSOCKOPT: u64 = 55;
+    pub const SYS_FTRUNCATE: u64 = 77;
+    pub const SYS_RENAME: u64 = 82;
+    pub const SYS_UMASK: u64 = 95;
+    pub const SYS_GETRUSAGE: u64 = 98;
+    pub const SYS_SYSINFO: u64 = 99;
+    pub const SYS_ACCEPT4: u64 = 288;
+    pub const SYS_EVENTFD2: u64 = 290;
     pub const SYS_EPOLL_CREATE1: u64 = 291;
     pub const SYS_CLOCK_GETTIME: u64 = 228;
     pub const SYS_EXIT_GROUP: u64 = 231;
@@ -105,8 +127,8 @@ const UNMAPPED: u16 = 0xFFFF;
 /// Table de correspondance : index = numéro Linux, valeur = numéro MaiOS.
 ///
 /// Taille : 319 entrées × 2 octets = 638 octets. Lookup O(1).
-static LINUX_TO_MAIOS: [u16; 335] = {
-    let mut table = [UNMAPPED; 335];
+static LINUX_TO_MAIOS: [u16; 450] = {
+    let mut table = [UNMAPPED; 450];
 
     // File I/O
     table[0]   = maios_syscall::nr::SYS_READ;       // read
@@ -125,6 +147,8 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[79]  = maios_syscall::nr::SYS_GETCWD;     // getcwd
     table[257] = maios_syscall::nr::SYS_OPENAT;     // openat
     table[292] = maios_syscall::nr::SYS_DUP3;       // dup3
+    table[288] = maios_syscall::nr::SYS_ACCEPT4;       // accept4
+    table[290] = maios_syscall::nr::SYS_EVENTFD2;      // eventfd2
     table[291] = maios_syscall::nr::SYS_EPOLL_CREATE1; // epoll_create1
     table[293] = maios_syscall::nr::SYS_PIPE2;      // pipe2
 
@@ -140,6 +164,22 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[60]  = maios_syscall::nr::SYS_EXIT;       // exit
     table[61]  = maios_syscall::nr::SYS_WAIT4;      // wait4
     table[62]  = maios_syscall::nr::SYS_KILL;       // kill
+
+    // Sockets
+    table[41]  = maios_syscall::nr::SYS_SOCKET;      // socket
+    table[42]  = maios_syscall::nr::SYS_CONNECT;     // connect
+    table[44]  = maios_syscall::nr::SYS_SENDTO;      // sendto
+    table[45]  = maios_syscall::nr::SYS_RECVFROM;    // recvfrom
+    table[46]  = maios_syscall::nr::SYS_SENDMSG;     // sendmsg
+    table[47]  = maios_syscall::nr::SYS_RECVMSG;     // recvmsg
+    table[48]  = maios_syscall::nr::SYS_SHUTDOWN;    // shutdown
+    table[49]  = maios_syscall::nr::SYS_BIND;        // bind
+    table[50]  = maios_syscall::nr::SYS_LISTEN;      // listen
+    table[51]  = maios_syscall::nr::SYS_GETSOCKNAME; // getsockname
+    table[52]  = maios_syscall::nr::SYS_GETPEERNAME; // getpeername
+    table[53]  = maios_syscall::nr::SYS_SOCKETPAIR;  // socketpair
+    table[54]  = maios_syscall::nr::SYS_SETSOCKOPT;  // setsockopt
+    table[55]  = maios_syscall::nr::SYS_GETSOCKOPT;  // getsockopt
     table[110] = maios_syscall::nr::SYS_GETPPID;    // getppid
     table[186] = maios_syscall::nr::SYS_GETTID;     // gettid
     table[231] = maios_syscall::nr::SYS_EXIT_GROUP;  // exit_group
@@ -167,6 +207,7 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     // File I/O extras
     table[18]  = maios_syscall::nr::SYS_PWRITE64;    // pwrite64
     table[22]  = maios_syscall::nr::SYS_PIPE;        // pipe
+    table[25]  = maios_syscall::nr::SYS_MREMAP;       // mremap
     table[28]  = maios_syscall::nr::SYS_MADVISE;     // madvise
     table[32]  = maios_syscall::nr::SYS_DUP;         // dup
     table[33]  = maios_syscall::nr::SYS_DUP2;        // dup2
@@ -177,10 +218,15 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[318] = maios_syscall::nr::SYS_GETRANDOM;    // getrandom
 
     // Filesystem
+    table[77]  = maios_syscall::nr::SYS_FTRUNCATE;     // ftruncate
     table[80]  = maios_syscall::nr::SYS_CHDIR;         // chdir
+    table[82]  = maios_syscall::nr::SYS_RENAME;        // rename
     table[83]  = maios_syscall::nr::SYS_MKDIR;         // mkdir
     table[87]  = maios_syscall::nr::SYS_UNLINK;        // unlink
     table[89]  = maios_syscall::nr::SYS_READLINK;      // readlink
+    table[95]  = maios_syscall::nr::SYS_UMASK;         // umask
+    table[98]  = maios_syscall::nr::SYS_GETRUSAGE;     // getrusage
+    table[99]  = maios_syscall::nr::SYS_SYSINFO;       // sysinfo
     table[157] = maios_syscall::nr::SYS_PRCTL;         // prctl
     table[204] = maios_syscall::nr::SYS_SCHED_GETAFFINITY; // sched_getaffinity
     table[217] = maios_syscall::nr::SYS_GETDENTS64;    // getdents64

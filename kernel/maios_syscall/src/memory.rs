@@ -282,3 +282,11 @@ pub fn sys_free_vm(base: u64, free_type: u64, _: u64, _: u64, _: u64, _: u64) ->
         Err(SyscallError::InvalidArgument)
     }
 }
+
+/// sys_mremap — remap a memory region (grow/shrink/move).
+///
+/// Stub: returns NotImplemented. A real implementation would need to
+/// relocate MappedPages, which the MaiOS memory subsystem doesn't support yet.
+pub fn sys_mremap(_old_addr: u64, _old_size: u64, _new_size: u64, _flags: u64, _: u64, _: u64) -> SyscallResult {
+    Err(SyscallError::NotImplemented)
+}
