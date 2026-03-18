@@ -103,7 +103,22 @@ pub mod nr {
     pub const SYS_SYSINFO: u64 = 99;
     pub const SYS_ACCEPT4: u64 = 288;
     pub const SYS_EVENTFD2: u64 = 290;
+    pub const SYS_SELECT: u64 = 23;
+    pub const SYS_MINCORE: u64 = 27;
+    pub const SYS_MSYNC: u64 = 26;
+    pub const SYS_CLONE: u64 = 56;
+    pub const SYS_STATFS: u64 = 137;
+    pub const SYS_FSTATFS: u64 = 138;
+    pub const SYS_PERSONALITY: u64 = 135;
+    pub const SYS_FUTEX: u64 = 202;
+    pub const SYS_PSELECT6: u64 = 270;
+    pub const SYS_PPOLL: u64 = 271;
+    pub const SYS_TIMERFD_CREATE: u64 = 283;
+    pub const SYS_TIMERFD_SETTIME: u64 = 286;
+    pub const SYS_TIMERFD_GETTIME: u64 = 287;
+    pub const SYS_SIGNALFD4: u64 = 289;
     pub const SYS_EPOLL_CREATE1: u64 = 291;
+    pub const SYS_MEMFD_CREATE: u64 = 319;
     pub const SYS_CLOCK_GETTIME: u64 = 228;
     pub const SYS_EXIT_GROUP: u64 = 231;
     pub const SYS_OPENAT: u64 = 257;
@@ -148,6 +163,7 @@ static LINUX_TO_MAIOS: [u16; 450] = {
     table[257] = maios_syscall::nr::SYS_OPENAT;     // openat
     table[292] = maios_syscall::nr::SYS_DUP3;       // dup3
     table[288] = maios_syscall::nr::SYS_ACCEPT4;       // accept4
+    table[289] = maios_syscall::nr::SYS_SIGNALFD4;     // signalfd4
     table[290] = maios_syscall::nr::SYS_EVENTFD2;      // eventfd2
     table[291] = maios_syscall::nr::SYS_EPOLL_CREATE1; // epoll_create1
     table[293] = maios_syscall::nr::SYS_PIPE2;      // pipe2
@@ -180,6 +196,7 @@ static LINUX_TO_MAIOS: [u16; 450] = {
     table[53]  = maios_syscall::nr::SYS_SOCKETPAIR;  // socketpair
     table[54]  = maios_syscall::nr::SYS_SETSOCKOPT;  // setsockopt
     table[55]  = maios_syscall::nr::SYS_GETSOCKOPT;  // getsockopt
+    table[56]  = maios_syscall::nr::SYS_CLONE;         // clone
     table[110] = maios_syscall::nr::SYS_GETPPID;    // getppid
     table[186] = maios_syscall::nr::SYS_GETTID;     // gettid
     table[231] = maios_syscall::nr::SYS_EXIT_GROUP;  // exit_group
@@ -192,6 +209,9 @@ static LINUX_TO_MAIOS: [u16; 450] = {
 
     // Event I/O
     table[7]   = maios_syscall::nr::SYS_POLL;           // poll
+    table[23]  = maios_syscall::nr::SYS_SELECT;         // select
+    table[26]  = maios_syscall::nr::SYS_MSYNC;          // msync
+    table[27]  = maios_syscall::nr::SYS_MINCORE;        // mincore
 
     // Signals
     table[13]  = maios_syscall::nr::SYS_RT_SIGACTION;   // rt_sigaction
@@ -216,6 +236,7 @@ static LINUX_TO_MAIOS: [u16; 450] = {
     table[63]  = maios_syscall::nr::SYS_UNAME;        // uname
     table[158] = maios_syscall::nr::SYS_ARCH_PRCTL;   // arch_prctl
     table[318] = maios_syscall::nr::SYS_GETRANDOM;    // getrandom
+    table[319] = maios_syscall::nr::SYS_MEMFD_CREATE; // memfd_create
 
     // Filesystem
     table[77]  = maios_syscall::nr::SYS_FTRUNCATE;     // ftruncate
@@ -227,7 +248,11 @@ static LINUX_TO_MAIOS: [u16; 450] = {
     table[95]  = maios_syscall::nr::SYS_UMASK;         // umask
     table[98]  = maios_syscall::nr::SYS_GETRUSAGE;     // getrusage
     table[99]  = maios_syscall::nr::SYS_SYSINFO;       // sysinfo
+    table[135] = maios_syscall::nr::SYS_PERSONALITY;   // personality
+    table[137] = maios_syscall::nr::SYS_STATFS;        // statfs
+    table[138] = maios_syscall::nr::SYS_FSTATFS;       // fstatfs
     table[157] = maios_syscall::nr::SYS_PRCTL;         // prctl
+    table[202] = maios_syscall::nr::SYS_FUTEX;           // futex
     table[204] = maios_syscall::nr::SYS_SCHED_GETAFFINITY; // sched_getaffinity
     table[217] = maios_syscall::nr::SYS_GETDENTS64;    // getdents64
     table[229] = maios_syscall::nr::SYS_CLOCK_GETRES;  // clock_getres
@@ -237,6 +262,11 @@ static LINUX_TO_MAIOS: [u16; 450] = {
     table[262] = maios_syscall::nr::SYS_NEWFSTATAT;    // newfstatat
     table[267] = maios_syscall::nr::SYS_READLINK;      // readlinkat (simplified: ignore dirfd)
     table[269] = maios_syscall::nr::SYS_FACCESSAT;     // faccessat
+    table[270] = maios_syscall::nr::SYS_PSELECT6;      // pselect6
+    table[271] = maios_syscall::nr::SYS_PPOLL;         // ppoll
+    table[283] = maios_syscall::nr::SYS_TIMERFD_CREATE; // timerfd_create
+    table[286] = maios_syscall::nr::SYS_TIMERFD_SETTIME; // timerfd_settime
+    table[287] = maios_syscall::nr::SYS_TIMERFD_GETTIME; // timerfd_gettime
 
     // Threading stubs
     table[218] = maios_syscall::nr::SYS_SET_TID_ADDRESS; // set_tid_address
