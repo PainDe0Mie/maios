@@ -199,6 +199,25 @@ pub fn syscall_name(nr: u16) -> &'static str {
         0x050D => "sendmsg",
         0x050E => "recvmsg",
 
+        // Synchronization
+        0x0600 => "futex",
+
+        // Extended
+        0x0700 => "select",
+        0x0701 => "statfs",
+        0x0702 => "fstatfs",
+        0x0703 => "personality",
+        0x0704 => "memfd_create",
+        0x0705 => "timerfd_create",
+        0x0706 => "timerfd_settime",
+        0x0707 => "timerfd_gettime",
+        0x0708 => "signalfd4",
+        0x0709 => "ppoll",
+        0x070A => "pselect6",
+        0x070B => "clone",
+        0x070C => "mincore",
+        0x070D => "msync",
+
         // MaiOS-specific (0x08xx)
         0x0800 => "create_window",
         0x0801 => "destroy_window",

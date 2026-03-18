@@ -32,6 +32,8 @@ pub mod process;
 pub mod time;
 pub mod system;
 pub mod event_io;
+pub mod extended;
+pub mod futex;
 pub mod socket;
 pub mod signals;
 pub mod trace;
@@ -151,6 +153,25 @@ pub mod nr {
     pub const SYS_SOCKETPAIR: u16      = 0x050C;
     pub const SYS_SENDMSG: u16         = 0x050D;
     pub const SYS_RECVMSG: u16         = 0x050E;
+
+    // === 0x06xx: Synchronization ===
+    pub const SYS_FUTEX: u16           = 0x0600;
+
+    // === 0x07xx: Extended System ===
+    pub const SYS_SELECT: u16          = 0x0700;
+    pub const SYS_STATFS: u16          = 0x0701;
+    pub const SYS_FSTATFS: u16         = 0x0702;
+    pub const SYS_PERSONALITY: u16     = 0x0703;
+    pub const SYS_MEMFD_CREATE: u16    = 0x0704;
+    pub const SYS_TIMERFD_CREATE: u16  = 0x0705;
+    pub const SYS_TIMERFD_SETTIME: u16 = 0x0706;
+    pub const SYS_TIMERFD_GETTIME: u16 = 0x0707;
+    pub const SYS_SIGNALFD4: u16       = 0x0708;
+    pub const SYS_PPOLL: u16           = 0x0709;
+    pub const SYS_PSELECT6: u16        = 0x070A;
+    pub const SYS_CLONE: u16           = 0x070B;
+    pub const SYS_MINCORE: u16         = 0x070C;
+    pub const SYS_MSYNC: u16           = 0x070D;
 
     // === 0x08xx: MaiOS-specific (future) ===
     pub const SYS_CREATE_WINDOW: u16   = 0x0800;
@@ -344,6 +365,25 @@ pub fn init() {
         register(nr::SYS_SOCKETPAIR,  socket::sys_socketpair,  "sys_socketpair",  4, 0);
         register(nr::SYS_SENDMSG,     socket::sys_sendmsg,     "sys_sendmsg",     3, 0);
         register(nr::SYS_RECVMSG,     socket::sys_recvmsg,     "sys_recvmsg",     3, 0);
+
+        // --- Synchronization (0x06xx) ---
+        register(nr::SYS_FUTEX,       futex::sys_futex,        "sys_futex",       6, 0);
+
+        // --- Extended (0x07xx) ---
+        register(nr::SYS_SELECT,       extended::sys_select,       "sys_select",       5, 0);
+        register(nr::SYS_STATFS,       extended::sys_statfs,       "sys_statfs",       2, 0);
+        register(nr::SYS_FSTATFS,      extended::sys_fstatfs,      "sys_fstatfs",      2, 0);
+        register(nr::SYS_PERSONALITY,  extended::sys_personality,  "sys_personality",  1, 0);
+        register(nr::SYS_MEMFD_CREATE, extended::sys_memfd_create, "sys_memfd_create", 2, 0);
+        register(nr::SYS_TIMERFD_CREATE, extended::sys_timerfd_create, "sys_timerfd_create", 2, 0);
+        register(nr::SYS_TIMERFD_SETTIME, extended::sys_timerfd_settime, "sys_timerfd_settime", 4, 0);
+        register(nr::SYS_TIMERFD_GETTIME, extended::sys_timerfd_gettime, "sys_timerfd_gettime", 2, 0);
+        register(nr::SYS_SIGNALFD4,    extended::sys_signalfd4,    "sys_signalfd4",    4, 0);
+        register(nr::SYS_PPOLL,        extended::sys_ppoll,        "sys_ppoll",        5, 0);
+        register(nr::SYS_PSELECT6,     extended::sys_pselect6,     "sys_pselect6",     6, 0);
+        register(nr::SYS_CLONE,        extended::sys_clone,        "sys_clone",        5, FLAG_NORETURN);
+        register(nr::SYS_MINCORE,      extended::sys_mincore,      "sys_mincore",      3, 0);
+        register(nr::SYS_MSYNC,        extended::sys_msync,        "sys_msync",        3, 0);
     }
 
     INITIALIZED.store(true, Ordering::SeqCst);
