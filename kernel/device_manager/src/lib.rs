@@ -4,6 +4,7 @@
 extern crate alloc;
 extern crate log;
 
+#[cfg(target_arch = "x86_64")] extern crate mhc;
 #[cfg(target_arch = "x86_64")] extern crate nvme;
 #[cfg(target_arch = "x86_64")] extern crate ahci;
 #[cfg(target_arch = "x86_64")] extern crate fat32;
@@ -155,6 +156,18 @@ pub fn init(
             }
         }
 
+        // GPU — VirtIO-GPU (vendor 0x1AF4 device 0x1050) or VGA-class (0x03)
+        #[cfg(target_arch = "x86_64")]
+        if dev.vendor_id == 0x1AF4 && (dev.device_id == 0x1050 || dev.device_id == 0x1040 + 16) {
+            // VirtIO-GPU is initialized via mhc::init() below; skip the warning.
+            continue;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if dev.class == 0x03 {
+            // Standard VGA/display controller — MHC handles it when probing.
+            continue;
+        }
+
         warn!("PCI sans driver: {:X?}", dev);
     }
 
@@ -162,6 +175,15 @@ pub fn init(
         let nics = ixgbe::IXGBE_NICS.call_once(|| ixgbe_devs);
         for nic in nics.iter() { net::register_device(nic); }
         if net::get_default_interface().is_none() { warn!("Aucun réseau."); }
+    }
+
+    // Initialize MHC (Mai Heterogeneous Compute) — GPU subsystem.
+    // This probes for a VirtIO-GPU device (QEMU) and registers it in the MHC
+    // device registry. Falls back to a CPU software GPU if no hardware is found.
+    #[cfg(target_arch = "x86_64")]
+    match mhc::init() {
+        Ok(())  => info!("MHC: GPU subsystem initialized"),
+        Err(e)  => warn!("MHC: init failed: {}", e),
     }
 
     #[cfg(target_arch = "x86_64")]

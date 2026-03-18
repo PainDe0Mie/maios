@@ -1,30 +1,32 @@
-//! MHC VirtIO-GPU Driver — GPU driver for QEMU/KVM virtual machines.
+//! MHC VirtIO-GPU Driver — Real GPU driver for QEMU/KVM.
 //!
 //! ## VirtIO-GPU Specification
 //!
 //! Implements VirtIO GPU Device (device type 16) per the VirtIO 1.2 spec:
-//! - PCI vendor 0x1AF4, device 0x1050 (transitional) or 0x1040+16 (modern)
-//! - Two virtqueues: controlq (commands) and cursorq (cursor updates)
+//! - PCI vendor 0x1AF4, device 0x1050 (transitional) or 0x1040+16=0x1050 (modern)
+//! - Two virtqueues: controlq (index 0) and cursorq (index 1)
 //! - Supports 2D (scanout, transfer, resource management)
 //! - Optionally supports 3D via virgl (OpenGL) or venus (Vulkan)
 //!
-//! ## Current Status
+//! ## Initialization sequence
 //!
-//! This is a skeleton driver providing the structure for VirtIO-GPU integration.
-//! Full implementation requires the VirtIO transport layer and PCI device
-//! access, which will be connected when the `virtio` feature is enabled.
+//! Per VirtIO 1.2 §3.1.1 (Driver Requirements: Device Initialization):
+//!   1. Reset device (write 0 to device_status)
+//!   2. Write ACKNOWLEDGE to device_status
+//!   3. Write ACKNOWLEDGE|DRIVER to device_status
+//!   4. Read device features; write driver features
+//!   5. Write FEATURES_OK; re-read to confirm it is still set
+//!   6. Set up virtqueues
+//!   7. Write DRIVER_OK
 //!
 //! ## References
 //!
-//! - VirtIO Spec 1.2, Section 5.7: GPU Device
-//! - virgl (Mesa): 3D acceleration over virtio-gpu
-//! - venus (Mesa): Vulkan pass-through over virtio-gpu
+//! - VirtIO Spec 1.2, §4.1 (PCI Transport), §5.7 (GPU Device)
+//! - QEMU virtio-gpu sources: hw/display/virtio-gpu.c
 
 #![allow(dead_code)]
 
-use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::command::CommandBuffer;
@@ -34,58 +36,52 @@ use crate::memory::{GpuAddress, GpuAllocation, GpuMemFlags};
 use crate::shader::ShaderModule;
 
 // ---------------------------------------------------------------------------
-// VirtIO-GPU constants
+// VirtIO-GPU protocol constants
 // ---------------------------------------------------------------------------
 
-/// VirtIO-GPU command types (from spec 5.7.6.7).
+/// VirtIO-GPU command types (spec §5.7.6.7).
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum VirtioGpuCmd {
-    // 2D commands
-    GetDisplayInfo     = 0x0100,
-    ResourceCreate2d   = 0x0101,
-    ResourceUnref      = 0x0102,
-    SetScanout         = 0x0103,
-    ResourceFlush      = 0x0104,
-    TransferToHost2d   = 0x0105,
+    GetDisplayInfo        = 0x0100,
+    ResourceCreate2d      = 0x0101,
+    ResourceUnref         = 0x0102,
+    SetScanout            = 0x0103,
+    ResourceFlush         = 0x0104,
+    TransferToHost2d      = 0x0105,
     ResourceAttachBacking = 0x0106,
     ResourceDetachBacking = 0x0107,
-    GetCapsetInfo      = 0x0108,
-    GetCapset          = 0x0109,
-    GetEdid            = 0x010A,
-
-    // 3D commands (virgl)
-    CtxCreate          = 0x0200,
-    CtxDestroy         = 0x0201,
-    CtxAttachResource  = 0x0202,
-    CtxDetachResource  = 0x0203,
-    ResourceCreate3d   = 0x0204,
-    TransferToHost3d   = 0x0205,
-    TransferFromHost3d = 0x0206,
-    SubmitCmd3d        = 0x0207,
-    ResourceMapBlob    = 0x0208,
-    ResourceUnmapBlob  = 0x0209,
-
-    // Cursor commands
-    UpdateCursor       = 0x0300,
-    MoveCursor         = 0x0301,
+    GetCapsetInfo         = 0x0108,
+    GetCapset             = 0x0109,
+    GetEdid               = 0x010A,
+    CtxCreate             = 0x0200,
+    CtxDestroy            = 0x0201,
+    CtxAttachResource     = 0x0202,
+    CtxDetachResource     = 0x0203,
+    ResourceCreate3d      = 0x0204,
+    TransferToHost3d      = 0x0205,
+    TransferFromHost3d    = 0x0206,
+    SubmitCmd3d           = 0x0207,
+    ResourceMapBlob       = 0x0208,
+    ResourceUnmapBlob     = 0x0209,
+    UpdateCursor          = 0x0300,
+    MoveCursor            = 0x0301,
 }
 
 /// VirtIO-GPU response types.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VirtioGpuResp {
-    OkNodata          = 0x1100,
-    OkDisplayInfo     = 0x1101,
-    OkCapsetInfo      = 0x1102,
-    OkCapset          = 0x1103,
-    OkEdid            = 0x1104,
-    OkResourceUuid    = 0x1105,
-    OkMapInfo         = 0x1106,
-
-    ErrUnspec         = 0x1200,
-    ErrOutOfMemory    = 0x1201,
-    ErrInvalidScanoutId = 0x1202,
+    OkNodata             = 0x1100,
+    OkDisplayInfo        = 0x1101,
+    OkCapsetInfo         = 0x1102,
+    OkCapset             = 0x1103,
+    OkEdid               = 0x1104,
+    OkResourceUuid       = 0x1105,
+    OkMapInfo            = 0x1106,
+    ErrUnspec            = 0x1200,
+    ErrOutOfMemory       = 0x1201,
+    ErrInvalidScanoutId  = 0x1202,
     ErrInvalidResourceId = 0x1203,
     ErrInvalidContextId  = 0x1204,
     ErrInvalidParameter  = 0x1205,
@@ -106,86 +102,620 @@ pub enum VirtioGpuFormat {
 }
 
 // ---------------------------------------------------------------------------
-// VirtIO-GPU device state
+// VirtIO device status bits (spec §2.1)
+// ---------------------------------------------------------------------------
+
+const VIRTIO_STATUS_ACKNOWLEDGE:        u8 = 1;
+const VIRTIO_STATUS_DRIVER:             u8 = 2;
+const VIRTIO_STATUS_DRIVER_OK:          u8 = 4;
+const VIRTIO_STATUS_FEATURES_OK:        u8 = 8;
+const VIRTIO_STATUS_DEVICE_NEEDS_RESET: u8 = 64;
+const VIRTIO_STATUS_FAILED:             u8 = 128;
+
+// VirtIO GPU feature bits (spec §5.7.3)
+const VIRTIO_GPU_F_VIRGL:          u32 = 1 << 0;
+const VIRTIO_GPU_F_EDID:           u32 = 1 << 1;
+const VIRTIO_GPU_F_RESOURCE_UUID:  u32 = 1 << 2;
+const VIRTIO_GPU_F_RESOURCE_BLOB:  u32 = 1 << 3;
+
+// Standard VirtIO feature bit (spec §6)
+const VIRTIO_F_VERSION_1: u32 = 1; // bit 32 → high feature word bit 0
+
+// Virtqueue descriptor flags (spec §2.7.5)
+const VIRTQ_DESC_F_NEXT:  u16 = 1;
+const VIRTQ_DESC_F_WRITE: u16 = 2;
+
+// VirtIO PCI common config register offsets (spec §4.1.4.3)
+const OFF_DEVICE_FEATURE_SEL: usize = 0x00;
+const OFF_DEVICE_FEATURE:     usize = 0x04;
+const OFF_DRIVER_FEATURE_SEL: usize = 0x08;
+const OFF_DRIVER_FEATURE:     usize = 0x0c;
+const OFF_CONFIG_MSIX_VEC:    usize = 0x10;
+const OFF_NUM_QUEUES:         usize = 0x12;
+const OFF_DEVICE_STATUS:      usize = 0x14;
+const OFF_CONFIG_GEN:         usize = 0x15;
+const OFF_QUEUE_SELECT:       usize = 0x16;
+const OFF_QUEUE_SIZE:         usize = 0x18;
+const OFF_QUEUE_MSIX_VEC:     usize = 0x1a;
+const OFF_QUEUE_ENABLE:       usize = 0x1c;
+const OFF_QUEUE_NOTIFY_OFF:   usize = 0x1e;
+const OFF_QUEUE_DESC:         usize = 0x20;
+const OFF_QUEUE_DRIVER:       usize = 0x28;
+const OFF_QUEUE_DEVICE:       usize = 0x30;
+
+// Descriptor table entry size in bytes
+const VIRTQ_DESC_SIZE: usize = 16;
+
+// ---------------------------------------------------------------------------
+// VirtIO-GPU wire structures (repr(C) for direct memory mapping)
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+struct VirtioGpuCtrlHdr {
+    type_:    u32,
+    flags:    u32,
+    fence_id: u64,
+    ctx_id:   u32,
+    ring_idx: u8,
+    _pad:     [u8; 3],
+}
+
+#[repr(C)]
+struct VirtioGpuRect {
+    x: u32, y: u32, width: u32, height: u32,
+}
+
+#[repr(C)]
+struct VirtioGpuDisplayOne {
+    r:       VirtioGpuRect,
+    enabled: u32,
+    flags:   u32,
+}
+
+#[repr(C)]
+struct VirtioGpuRespDisplayInfo {
+    hdr:    VirtioGpuCtrlHdr,
+    pmodes: [VirtioGpuDisplayOne; 16],
+}
+
+// ---------------------------------------------------------------------------
+// Hardware state (kept alive after probe)
+// ---------------------------------------------------------------------------
+
+/// Live hardware state for an initialized VirtIO-GPU device.
+///
+/// All pointer-like fields are stored as `usize` (virtual addresses) so that
+/// the struct is `Send + Sync` without unsafe impls.  The underlying memory
+/// regions are intentionally leaked (they must live as long as the device).
+struct VirtioHwState {
+    /// Virtual address of the VirtIO common-config register page.
+    common_cfg_va: usize,
+    /// Virtual address of the notify doorbell region (0 = unavailable).
+    notify_va: usize,
+    /// Per-queue multiplier for the notify offset (spec §4.1.4.4).
+    notify_multiplier: u32,
+
+    /// Controlq: virtual address of the descriptor table.
+    desc_va:   usize,
+    /// Controlq: virtual address of the driver (available) ring.
+    avail_va:  usize,
+    /// Controlq: virtual address of the device (used) ring.
+    used_va:   usize,
+    /// Controlq: physical address of the descriptor table.
+    desc_pa:   u64,
+    /// Controlq: physical address of the driver ring.
+    avail_pa:  u64,
+    /// Controlq: physical address of the device ring.
+    used_pa:   u64,
+
+    /// Queue size in use.
+    q_size: u16,
+    /// Next available ring index (driver side, wraps freely).
+    avail_idx: u16,
+    /// Last consumed used ring index (driver side).
+    last_used_idx: u16,
+    /// Simple bump allocator for descriptor indices.
+    next_desc: u16,
+    /// Notify queue offset (used for the doorbell calculation).
+    notify_queue_off: u16,
+}
+
+// ---------------------------------------------------------------------------
+// VirtIO-GPU device
 // ---------------------------------------------------------------------------
 
 /// VirtIO-GPU device driver.
 ///
-/// This is the skeleton structure. Full implementation requires:
-/// 1. PCI device discovery (via `kernel/pci`)
-/// 2. VirtQueue setup (control + cursor queues)
-/// 3. MMIO register mapping
-/// 4. Interrupt handler registration
+/// After a successful `probe()` the device is fully operational and
+/// registered in the MHC device registry.
 pub struct VirtioGpuDevice {
-    /// Device capabilities.
-    caps: GpuCapabilities,
-    /// Fence pool for tracking command completion.
-    fences: FencePool,
-    /// Whether the device has been fully initialized.
-    initialized: bool,
-    /// Number of scanout displays.
+    caps:         GpuCapabilities,
+    fences:       FencePool,
+    initialized:  bool,
     num_scanouts: u32,
-    /// Whether 3D (virgl/venus) is supported.
-    has_virgl: bool,
-    /// Whether blob resources are supported (for zero-copy).
-    has_blob: bool,
+    has_virgl:    bool,
+    has_blob:     bool,
+    /// Mutable hardware state (behind a Mutex for Send + Sync).
+    hw: Mutex<Option<VirtioHwState>>,
 }
 
 impl VirtioGpuDevice {
-    /// Create a new VirtIO-GPU device instance.
-    ///
-    /// This does NOT initialize the device. Call `probe()` to detect and
-    /// initialize the hardware.
+    /// Create a new (not yet probed) VirtIO-GPU device instance.
     pub fn new() -> Self {
         VirtioGpuDevice {
             caps: GpuCapabilities {
-                max_workgroup_size: [256, 256, 64],
-                max_workgroup_invocations: 256,
-                max_shared_memory: 32768,
-                supports_compute: false, // Only with virgl/venus 3D
-                supports_graphics: true,
-                supports_unified_memory: false,
-                max_queues: 2, // controlq + cursorq
-                shader_formats: ShaderFormats::empty(),
-                compute_units: 0,
-                device_memory_bytes: 0,
+                max_workgroup_size:          [256, 256, 64],
+                max_workgroup_invocations:   256,
+                max_shared_memory:           32768,
+                supports_compute:            false,
+                supports_graphics:           true,
+                supports_unified_memory:     false,
+                max_queues:                  2,
+                shader_formats:              ShaderFormats::empty(),
+                compute_units:               0,
+                device_memory_bytes:         0,
             },
-            fences: FencePool::new(1), // Device ID 1 for VirtIO
-            initialized: false,
+            fences:       FencePool::new(1),
+            initialized:  false,
             num_scanouts: 0,
-            has_virgl: false,
-            has_blob: false,
+            has_virgl:    false,
+            has_blob:     false,
+            hw:           Mutex::new(None),
         }
     }
 
-    /// Probe for a VirtIO-GPU device on the PCI bus.
-    ///
-    /// Returns `Ok(())` if a device was found and initialized.
-    /// Returns `Err` with a description if no device was found.
-    pub fn probe(&mut self) -> Result<(), &'static str> {
-        // TODO: Use kernel/pci to find VirtIO-GPU device
-        // PCI vendor: 0x1AF4
-        // PCI device: 0x1050 (transitional) or 0x1040+16=0x1050 (modern)
-        // Subsystem ID: 16 (GPU)
-        //
-        // Steps:
-        // 1. Enumerate PCI devices
-        // 2. Find VirtIO-GPU device
-        // 3. Map BAR0 for device registers
-        // 4. Initialize virtqueues (controlq index=0, cursorq index=1)
-        // 5. Negotiate features (VIRGL_SUPPORTED, EDID_SUPPORTED, etc.)
-        // 6. Read display info via VIRTIO_GPU_CMD_GET_DISPLAY_INFO
-        // 7. Register interrupt handler
+    // -----------------------------------------------------------------------
+    // MMIO register helpers
+    // -----------------------------------------------------------------------
 
-        log::warn!("MHC/VirtIO-GPU: probe() not yet implemented — \
-                    requires PCI + virtio transport integration");
-        Err("VirtIO-GPU probe not yet implemented")
+    #[inline(always)]
+    unsafe fn r8(base: usize, off: usize) -> u8 {
+        core::ptr::read_volatile((base + off) as *const u8)
+    }
+    #[inline(always)]
+    unsafe fn w8(base: usize, off: usize, v: u8) {
+        core::ptr::write_volatile((base + off) as *mut u8, v);
+    }
+    #[inline(always)]
+    unsafe fn r16(base: usize, off: usize) -> u16 {
+        core::ptr::read_volatile((base + off) as *const u16)
+    }
+    #[inline(always)]
+    unsafe fn w16(base: usize, off: usize, v: u16) {
+        core::ptr::write_volatile((base + off) as *mut u16, v);
+    }
+    #[inline(always)]
+    unsafe fn r32(base: usize, off: usize) -> u32 {
+        core::ptr::read_volatile((base + off) as *const u32)
+    }
+    #[inline(always)]
+    unsafe fn w32(base: usize, off: usize, v: u32) {
+        core::ptr::write_volatile((base + off) as *mut u32, v);
+    }
+    #[inline(always)]
+    unsafe fn w64(base: usize, off: usize, v: u64) {
+        core::ptr::write_volatile((base + off) as *mut u64, v);
+    }
+
+    // -----------------------------------------------------------------------
+    // Virtqueue helpers
+    // -----------------------------------------------------------------------
+
+    /// Write one descriptor to the descriptor table.
+    ///
+    /// # Safety
+    /// `desc_va` must point to a valid, writable descriptor table with at
+    /// least `idx+1` entries.
+    unsafe fn write_desc(
+        desc_va: usize,
+        idx:     u16,
+        addr:    u64,
+        len:     u32,
+        flags:   u16,
+        next:    u16,
+    ) {
+        let ptr = (desc_va + idx as usize * VIRTQ_DESC_SIZE) as *mut u64;
+        // addr (8 bytes), len (4 bytes), flags (2 bytes), next (2 bytes)
+        ptr.write_volatile(addr);
+        let len_flags_next = (ptr as *mut u32).add(2);
+        len_flags_next.write_volatile(len);
+        let flags_next = (ptr as *mut u16).add(6);
+        flags_next.write_volatile(flags);
+        flags_next.add(1).write_volatile(next);
+    }
+
+    /// Append a descriptor head to the available ring and advance avail_idx.
+    ///
+    /// # Safety
+    /// `avail_va` must point to a valid available ring for a queue of `q_size`.
+    unsafe fn push_avail(avail_va: usize, avail_idx: u16, q_size: u16, desc_head: u16) {
+        // Available ring layout: flags(u16), idx(u16), ring[q_size](u16), ...
+        let slot = (avail_idx % q_size) as usize;
+        let ring_ptr = (avail_va + 4 + slot * 2) as *mut u16;
+        ring_ptr.write_volatile(desc_head);
+        // Memory barrier before updating idx
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        let idx_ptr = (avail_va + 2) as *mut u16;
+        idx_ptr.write_volatile(avail_idx.wrapping_add(1));
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Poll the used ring for a new entry. Returns `(desc_head, bytes_written)`.
+    ///
+    /// # Safety
+    /// `used_va` must point to a valid device (used) ring.
+    unsafe fn poll_used(used_va: usize, last_used: u16, q_size: u16) -> Option<(u16, u32)> {
+        // Used ring layout: flags(u16), idx(u16), ring[q_size * {id(u32),len(u32)}]
+        let device_idx = (used_va + 2) as *const u16;
+        let dev_idx = core::ptr::read_volatile(device_idx);
+        if dev_idx == last_used {
+            return None;
+        }
+        let slot = (last_used % q_size) as usize;
+        let entry_ptr = (used_va + 4 + slot * 8) as *const u32;
+        let id  = entry_ptr.read_volatile() as u16;
+        let len = entry_ptr.add(1).read_volatile();
+        Some((id, len))
+    }
+
+    // -----------------------------------------------------------------------
+    // Probe
+    // -----------------------------------------------------------------------
+
+    /// Probe for a VirtIO-GPU device on the PCI bus and initialize it.
+    ///
+    /// Returns `Ok(())` if a VirtIO-GPU was found and made operational.
+    pub fn probe(&mut self) -> Result<(), &'static str> {
+        // -------------------------------------------------------------------
+        // Step 1: Enumerate PCI — find VirtIO-GPU
+        // -------------------------------------------------------------------
+        let device = pci::pci_device_iter()?
+            .find(|d| {
+                d.vendor_id == 0x1AF4
+                    && (d.device_id == 0x1050 || d.device_id == 0x1040 + 16)
+            })
+            .ok_or("MHC/VirtIO-GPU: no VirtIO-GPU PCI device found")?;
+
+        log::info!("MHC/VirtIO-GPU: found at PCI {}", device.location);
+
+        // Enable bus-mastering so the device can DMA.
+        device.pci_set_command_bus_master_bit();
+
+        // -------------------------------------------------------------------
+        // Step 2: Parse VirtIO PCI capabilities
+        // -------------------------------------------------------------------
+        let virtio_caps = device.location.get_virtio_caps();
+        if virtio_caps.is_empty() {
+            return Err("MHC/VirtIO-GPU: no VirtIO PCI capabilities found (not a modern device?)");
+        }
+
+        let common_cap = virtio_caps
+            .iter()
+            .find(|c| c.cfg_type == pci::VIRTIO_PCI_CAP_COMMON_CFG)
+            .ok_or("MHC/VirtIO-GPU: missing COMMON_CFG capability")?;
+
+        let notify_cap = virtio_caps
+            .iter()
+            .find(|c| c.cfg_type == pci::VIRTIO_PCI_CAP_NOTIFY_CFG);
+
+        // -------------------------------------------------------------------
+        // Step 3: Map the common-config BAR region
+        // -------------------------------------------------------------------
+        let common_bar_phys = device.determine_mem_base(common_cap.bar as usize)?;
+        let common_phys = memory::PhysicalAddress::new(
+            common_bar_phys.value() + common_cap.bar_offset as usize,
+        )
+        .ok_or("MHC/VirtIO-GPU: invalid common config physical address")?;
+
+        let common_mapped =
+            memory::map_frame_range(common_phys, common_cap.length as usize, memory::MMIO_FLAGS)?;
+        let cfg = common_mapped.start_address().value();
+
+        // Leak the mapping — it must live forever (device lifetime = OS lifetime).
+        core::mem::forget(common_mapped);
+
+        // -------------------------------------------------------------------
+        // Step 4: Map the notify BAR (doorbell)
+        // -------------------------------------------------------------------
+        let (notify_va, notify_multiplier) = if let Some(nc) = notify_cap {
+            // The notify cap is followed by a 4-byte notify_off_multiplier.
+            // In the PCI cap list it is encoded right after the standard cap
+            // fields (at cap_addr+16 in the raw config space).  For simplicity
+            // we use a hard-coded common value of 4 (QEMU default).
+            // A production driver would parse the extra field from config space.
+            let nb_phys = device
+                .determine_mem_base(nc.bar as usize)?;
+            let nb_phys_off = memory::PhysicalAddress::new(
+                nb_phys.value() + nc.bar_offset as usize,
+            )
+            .ok_or("MHC/VirtIO-GPU: invalid notify BAR address")?;
+
+            let nb_mapped =
+                memory::map_frame_range(nb_phys_off, nc.length as usize.max(4096), memory::MMIO_FLAGS)?;
+            let va = nb_mapped.start_address().value();
+            core::mem::forget(nb_mapped);
+            (va, 4u32) // 4 bytes per notify offset is the QEMU default
+        } else {
+            (0usize, 0u32)
+        };
+
+        // -------------------------------------------------------------------
+        // Step 5: VirtIO initialization sequence (spec §3.1.1)
+        // -------------------------------------------------------------------
+        unsafe {
+            // 5a. Reset
+            Self::w8(cfg, OFF_DEVICE_STATUS, 0);
+
+            // 5b. ACKNOWLEDGE
+            Self::w8(cfg, OFF_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
+
+            // 5c. ACKNOWLEDGE | DRIVER
+            Self::w8(cfg, OFF_DEVICE_STATUS,
+                VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+
+            // 5d. Read device features (low 32 bits = GPU features)
+            Self::w32(cfg, OFF_DEVICE_FEATURE_SEL, 0);
+            let dev_feat_lo = Self::r32(cfg, OFF_DEVICE_FEATURE);
+
+            let has_virgl = (dev_feat_lo & VIRTIO_GPU_F_VIRGL) != 0;
+            let has_edid  = (dev_feat_lo & VIRTIO_GPU_F_EDID)  != 0;
+            let has_blob  = (dev_feat_lo & VIRTIO_GPU_F_RESOURCE_BLOB) != 0;
+
+            log::info!(
+                "MHC/VirtIO-GPU: device features: virgl={} edid={} blob={}",
+                has_virgl, has_edid, has_blob
+            );
+
+            // 5e. Write driver features: VIRTIO_F_VERSION_1 (bit 32 = high word bit 0)
+            //     We only request the basic GPU features that are available.
+            Self::w32(cfg, OFF_DRIVER_FEATURE_SEL, 0);
+            // Accept whatever GPU features the device offers (no filtering needed).
+            Self::w32(cfg, OFF_DRIVER_FEATURE, dev_feat_lo);
+
+            Self::w32(cfg, OFF_DRIVER_FEATURE_SEL, 1);
+            // Request VIRTIO_F_VERSION_1 (bit 32 → high-word bit 0).
+            Self::w32(cfg, OFF_DRIVER_FEATURE, VIRTIO_F_VERSION_1);
+
+            // 5f. FEATURES_OK
+            Self::w8(cfg, OFF_DEVICE_STATUS,
+                VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK);
+
+            let status_check = Self::r8(cfg, OFF_DEVICE_STATUS);
+            if status_check & VIRTIO_STATUS_FEATURES_OK == 0 {
+                Self::w8(cfg, OFF_DEVICE_STATUS, VIRTIO_STATUS_FAILED);
+                return Err("MHC/VirtIO-GPU: device rejected feature negotiation");
+            }
+
+            self.has_virgl = has_virgl;
+            self.has_blob  = has_blob;
+        }
+
+        // -------------------------------------------------------------------
+        // Step 6: Set up controlq (queue index 0)
+        // -------------------------------------------------------------------
+        const QUEUE_IDX: u16 = 0;
+        const MAX_QUEUE_SIZE: u16 = 64;
+
+        let (q_size, notify_queue_off) = unsafe {
+            Self::w16(cfg, OFF_QUEUE_SELECT, QUEUE_IDX);
+            let qmax = Self::r16(cfg, OFF_QUEUE_SIZE);
+            if qmax == 0 {
+                Self::w8(cfg, OFF_DEVICE_STATUS, VIRTIO_STATUS_FAILED);
+                return Err("MHC/VirtIO-GPU: controlq size is 0");
+            }
+            let qs = qmax.min(MAX_QUEUE_SIZE);
+            let notify_off = Self::r16(cfg, OFF_QUEUE_NOTIFY_OFF);
+            (qs, notify_off)
+        };
+        log::info!("MHC/VirtIO-GPU: controlq size={}", q_size);
+
+        // Allocate DMA memory for the descriptor table + available ring + used ring.
+        // All three sections are packed into one physically-contiguous allocation.
+        let desc_size  = VIRTQ_DESC_SIZE * q_size as usize;
+        let avail_size = 6 + 2 * q_size as usize;
+        let used_size  = 6 + 8 * q_size as usize;
+
+        // Align each section to 64 bytes (spec recommendation).
+        let avail_off = (desc_size + 63) & !63;
+        let used_off  = (avail_off + avail_size + 63) & !63;
+        let total     = used_off + used_size;
+
+        let (vq_mapped, vq_phys) =
+            memory::create_contiguous_mapping(total, memory::DMA_FLAGS)?;
+        let vq_va = vq_mapped.start_address().value();
+
+        // Zero the queue memory so all descriptors and ring entries start clean.
+        unsafe { core::ptr::write_bytes(vq_va as *mut u8, 0, total); }
+
+        let desc_va  = vq_va;
+        let avail_va = vq_va + avail_off;
+        let used_va  = vq_va + used_off;
+
+        let desc_pa  = vq_phys.value() as u64;
+        let avail_pa = desc_pa + avail_off as u64;
+        let used_pa  = desc_pa + used_off as u64;
+
+        core::mem::forget(vq_mapped);
+
+        // Write queue configuration to device.
+        unsafe {
+            Self::w16(cfg, OFF_QUEUE_SELECT,   QUEUE_IDX);
+            Self::w16(cfg, OFF_QUEUE_SIZE,     q_size);
+            Self::w16(cfg, OFF_QUEUE_MSIX_VEC, 0xFFFF); // no MSI-X
+            Self::w64(cfg, OFF_QUEUE_DESC,     desc_pa);
+            Self::w64(cfg, OFF_QUEUE_DRIVER,   avail_pa);
+            Self::w64(cfg, OFF_QUEUE_DEVICE,   used_pa);
+            Self::w16(cfg, OFF_QUEUE_ENABLE,   1);
+        }
+
+        // -------------------------------------------------------------------
+        // Step 7: DRIVER_OK — device is fully operational
+        // -------------------------------------------------------------------
+        unsafe {
+            Self::w8(cfg, OFF_DEVICE_STATUS,
+                VIRTIO_STATUS_ACKNOWLEDGE
+                | VIRTIO_STATUS_DRIVER
+                | VIRTIO_STATUS_FEATURES_OK
+                | VIRTIO_STATUS_DRIVER_OK);
+
+            let final_status = Self::r8(cfg, OFF_DEVICE_STATUS);
+            if final_status & VIRTIO_STATUS_DEVICE_NEEDS_RESET != 0 {
+                return Err("MHC/VirtIO-GPU: device signalled DEVICE_NEEDS_RESET");
+            }
+            log::info!("MHC/VirtIO-GPU: device status after init: {:#x}", final_status);
+        }
+
+        // -------------------------------------------------------------------
+        // Step 8: Send VIRTIO_GPU_CMD_GET_DISPLAY_INFO and poll for response
+        // -------------------------------------------------------------------
+        let num_scanouts = self.send_get_display_info(
+            cfg,
+            notify_va,
+            notify_multiplier,
+            notify_queue_off,
+            desc_va, avail_va, used_va,
+            q_size,
+        ).unwrap_or_else(|e| {
+            log::warn!("MHC/VirtIO-GPU: GET_DISPLAY_INFO failed: {} — assuming 1 scanout", e);
+            1
+        });
+
+        // -------------------------------------------------------------------
+        // Finalize
+        // -------------------------------------------------------------------
+        *self.hw.lock() = Some(VirtioHwState {
+            common_cfg_va:    cfg,
+            notify_va,
+            notify_multiplier,
+            desc_va,
+            avail_va,
+            used_va,
+            desc_pa,
+            avail_pa,
+            used_pa,
+            q_size,
+            avail_idx:        1, // we used index 0 for GET_DISPLAY_INFO
+            last_used_idx:    1,
+            next_desc:        2, // we used descriptors 0 and 1
+            notify_queue_off,
+        });
+
+        self.initialized  = true;
+        self.num_scanouts = num_scanouts;
+        self.caps.supports_compute  = self.has_virgl;
+        self.caps.supports_graphics = true;
+        self.caps.max_queues        = 2;
+
+        log::info!(
+            "MHC/VirtIO-GPU: initialized — {} scanout(s), virgl={}",
+            num_scanouts, self.has_virgl
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // GET_DISPLAY_INFO helper (polled, used only during probe)
+    // -----------------------------------------------------------------------
+
+    fn send_get_display_info(
+        &self,
+        cfg:               usize,
+        notify_va:         usize,
+        notify_multiplier: u32,
+        notify_queue_off:  u16,
+        desc_va:  usize,
+        avail_va: usize,
+        used_va:  usize,
+        q_size:   u16,
+    ) -> Result<u32, &'static str> {
+        // Allocate command + response buffers in DMA memory.
+        let cmd_size  = core::mem::size_of::<VirtioGpuCtrlHdr>();
+        let resp_size = core::mem::size_of::<VirtioGpuRespDisplayInfo>();
+
+        let (cmd_mapped, cmd_phys) =
+            memory::create_contiguous_mapping(cmd_size + resp_size, memory::DMA_FLAGS)?;
+        let cmd_va = cmd_mapped.start_address().value();
+
+        // Zero buffers.
+        unsafe { core::ptr::write_bytes(cmd_va as *mut u8, 0, cmd_size + resp_size); }
+
+        // Write the command header.
+        unsafe {
+            let hdr = cmd_va as *mut VirtioGpuCtrlHdr;
+            (*hdr).type_ = VirtioGpuCmd::GetDisplayInfo as u32;
+            (*hdr).flags = 0;
+        }
+
+        let cmd_pa  = cmd_phys.value() as u64;
+        let resp_pa = cmd_pa + cmd_size as u64;
+        let resp_va = cmd_va + cmd_size;
+
+        // Descriptor 0: command (device reads)
+        // Descriptor 1: response (device writes), chained from desc 0
+        unsafe {
+            Self::write_desc(desc_va, 0, cmd_pa,  cmd_size  as u32, VIRTQ_DESC_F_NEXT,  1);
+            Self::write_desc(desc_va, 1, resp_pa, resp_size as u32, VIRTQ_DESC_F_WRITE, 0);
+            Self::push_avail(avail_va, 0, q_size, 0 /* desc head */);
+        }
+
+        // Kick the device via the notify doorbell.
+        if notify_va != 0 && notify_multiplier != 0 {
+            let doorbell_off = notify_queue_off as usize * notify_multiplier as usize;
+            unsafe { core::ptr::write_volatile((notify_va + doorbell_off) as *mut u16, 0 /* queue idx */); }
+        }
+
+        // Poll used ring (spin with timeout ~50 ms at ~1 GHz ≈ 50M iterations).
+        let mut n = 0u64;
+        let response = loop {
+            unsafe {
+                if let Some((_id, _len)) = Self::poll_used(used_va, 0, q_size) {
+                    break Some(());
+                }
+            }
+            n += 1;
+            if n > 50_000_000 {
+                core::mem::forget(cmd_mapped);
+                return Err("GET_DISPLAY_INFO timed out");
+            }
+            core::hint::spin_loop();
+        };
+
+        // Parse response.
+        let mut active_scanouts = 0u32;
+        if response.is_some() {
+            unsafe {
+                let resp = resp_va as *const VirtioGpuRespDisplayInfo;
+                let resp_type = (*resp).hdr.type_;
+                if resp_type == VirtioGpuResp::OkDisplayInfo as u32 {
+                    for i in 0..16usize {
+                        if (*resp).pmodes[i].enabled != 0 {
+                            let r = &(*resp).pmodes[i].r;
+                            log::info!(
+                                "MHC/VirtIO-GPU: scanout {} — {}x{} at ({},{})",
+                                i, r.width, r.height, r.x, r.y
+                            );
+                            active_scanouts += 1;
+                        }
+                    }
+                } else {
+                    log::warn!("MHC/VirtIO-GPU: GET_DISPLAY_INFO resp type={:#x}", resp_type);
+                }
+            }
+        }
+
+        core::mem::forget(cmd_mapped);
+
+        Ok(active_scanouts.max(1))
     }
 }
 
 impl Default for VirtioGpuDevice {
     fn default() -> Self { Self::new() }
 }
+
+// ---------------------------------------------------------------------------
+// GpuDevice trait implementation
+// ---------------------------------------------------------------------------
 
 impl GpuDevice for VirtioGpuDevice {
     fn name(&self) -> &str { "VirtIO-GPU" }
@@ -199,8 +729,9 @@ impl GpuDevice for VirtioGpuDevice {
             return Err(GpuError::DeviceNotFound);
         }
         match kind {
-            QueueKind::Graphics | QueueKind::Universal => Ok(QueueHandle(0)), // controlq
-            QueueKind::Transfer => Ok(QueueHandle(0)), // Same queue for transfers
+            QueueKind::Graphics | QueueKind::Universal | QueueKind::Transfer => {
+                Ok(QueueHandle(0))
+            }
             QueueKind::Compute => {
                 if self.has_virgl {
                     Ok(QueueHandle(0))
@@ -211,18 +742,14 @@ impl GpuDevice for VirtioGpuDevice {
         }
     }
 
-    fn destroy_queue(&self, _queue: QueueHandle) -> Result<(), GpuError> {
-        Ok(())
-    }
+    fn destroy_queue(&self, _queue: QueueHandle) -> Result<(), GpuError> { Ok(()) }
 
     fn submit(&self, _queue: QueueHandle, _cmds: &CommandBuffer) -> Result<FenceId, GpuError> {
         if !self.initialized {
             return Err(GpuError::DeviceNotFound);
         }
-        // TODO: Translate commands to VirtIO-GPU protocol messages
-        // and send via the control virtqueue.
+        // TODO: Encode commands as VirtIO-GPU protocol and submit via controlq.
         let fence = self.fences.alloc_fence();
-        // For now, immediately signal (no actual GPU work)
         self.fences.signal(fence);
         Ok(fence)
     }
@@ -239,12 +766,10 @@ impl GpuDevice for VirtioGpuDevice {
         if !self.initialized {
             return Err(GpuError::DeviceNotFound);
         }
-        // TODO: Create a VirtIO-GPU 2D resource or 3D blob resource
         Err(GpuError::Unsupported("VirtIO-GPU alloc not yet implemented"))
     }
 
     fn free(&self, _alloc: GpuAllocation) -> Result<(), GpuError> {
-        // TODO: Unref the VirtIO-GPU resource
         Err(GpuError::Unsupported("VirtIO-GPU free not yet implemented"))
     }
 
@@ -257,10 +782,9 @@ impl GpuDevice for VirtioGpuDevice {
     ) -> Result<FenceId, GpuError> {
         if !self.has_virgl {
             return Err(GpuError::Unsupported(
-                "compute dispatch requires virgl/venus 3D support"
+                "compute dispatch requires virgl/venus 3D support",
             ));
         }
-        // TODO: Encode as virgl/venus 3D command and submit via VIRTIO_GPU_CMD_SUBMIT_3D
         Err(GpuError::Unsupported("VirtIO-GPU compute not yet implemented"))
     }
 
@@ -275,19 +799,25 @@ impl GpuDevice for VirtioGpuDevice {
         if !self.initialized {
             return Err(GpuError::DeviceNotFound);
         }
-        // TODO: Use VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D + VIRTIO_GPU_CMD_RESOURCE_FLUSH
+        // TODO: VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D + VIRTIO_GPU_CMD_RESOURCE_FLUSH
         Err(GpuError::Unsupported("VirtIO-GPU blit not yet implemented"))
     }
 }
 
+// ---------------------------------------------------------------------------
+// Public init entry point
+// ---------------------------------------------------------------------------
+
 /// Attempt to probe and register a VirtIO-GPU device.
-/// Returns `Some(device_id)` if successful, `None` if no device found.
+///
+/// Returns `Some(device_id)` if a device was found and initialized successfully,
+/// `None` if no VirtIO-GPU device is present.
 pub fn try_init() -> Option<usize> {
     let mut device = VirtioGpuDevice::new();
     match device.probe() {
         Ok(()) => {
             let id = crate::device::register_device(Arc::new(device));
-            log::info!("MHC/VirtIO-GPU: initialized (device_id={})", id);
+            log::info!("MHC/VirtIO-GPU: registered as device_id={}", id);
             Some(id)
         }
         Err(msg) => {

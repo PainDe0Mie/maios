@@ -38,3 +38,4 @@ vfs_node        = { path = "../vfs_node" }
 root            = { path = "../root" }
 partition_table = { path = "../partition_table" }
 partition_device = { path = "../partition_device" }
+mhc             = { path = "../mhc" }
