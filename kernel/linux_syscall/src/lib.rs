@@ -75,6 +75,13 @@ pub mod nr {
     pub const SYS_NEWFSTATAT: u64 = 262;
     pub const SYS_FACCESSAT: u64 = 269;
     pub const SYS_READLINKAT: u64 = 267;
+    pub const SYS_POLL: u64 = 7;
+    pub const SYS_WAIT4: u64 = 61;
+    pub const SYS_KILL: u64 = 62;
+    pub const SYS_EPOLL_WAIT: u64 = 232;
+    pub const SYS_EPOLL_CTL: u64 = 233;
+    pub const SYS_TGKILL: u64 = 234;
+    pub const SYS_EPOLL_CREATE1: u64 = 291;
     pub const SYS_CLOCK_GETTIME: u64 = 228;
     pub const SYS_EXIT_GROUP: u64 = 231;
     pub const SYS_OPENAT: u64 = 257;
@@ -118,6 +125,7 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[79]  = maios_syscall::nr::SYS_GETCWD;     // getcwd
     table[257] = maios_syscall::nr::SYS_OPENAT;     // openat
     table[292] = maios_syscall::nr::SYS_DUP3;       // dup3
+    table[291] = maios_syscall::nr::SYS_EPOLL_CREATE1; // epoll_create1
     table[293] = maios_syscall::nr::SYS_PIPE2;      // pipe2
 
     // Memory
@@ -130,6 +138,8 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[39]  = maios_syscall::nr::SYS_GETPID;     // getpid
     table[59]  = maios_syscall::nr::SYS_EXECVE;     // execve
     table[60]  = maios_syscall::nr::SYS_EXIT;       // exit
+    table[61]  = maios_syscall::nr::SYS_WAIT4;      // wait4
+    table[62]  = maios_syscall::nr::SYS_KILL;       // kill
     table[110] = maios_syscall::nr::SYS_GETPPID;    // getppid
     table[186] = maios_syscall::nr::SYS_GETTID;     // gettid
     table[231] = maios_syscall::nr::SYS_EXIT_GROUP;  // exit_group
@@ -139,6 +149,9 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[104] = maios_syscall::nr::SYS_GETGID;     // getgid
     table[107] = maios_syscall::nr::SYS_GETEUID;    // geteuid
     table[108] = maios_syscall::nr::SYS_GETEGID;    // getegid
+
+    // Event I/O
+    table[7]   = maios_syscall::nr::SYS_POLL;           // poll
 
     // Signals
     table[13]  = maios_syscall::nr::SYS_RT_SIGACTION;   // rt_sigaction
@@ -172,6 +185,9 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[204] = maios_syscall::nr::SYS_SCHED_GETAFFINITY; // sched_getaffinity
     table[217] = maios_syscall::nr::SYS_GETDENTS64;    // getdents64
     table[229] = maios_syscall::nr::SYS_CLOCK_GETRES;  // clock_getres
+    table[232] = maios_syscall::nr::SYS_EPOLL_WAIT;   // epoll_wait
+    table[233] = maios_syscall::nr::SYS_EPOLL_CTL;    // epoll_ctl
+    table[234] = maios_syscall::nr::SYS_TGKILL;       // tgkill
     table[262] = maios_syscall::nr::SYS_NEWFSTATAT;    // newfstatat
     table[267] = maios_syscall::nr::SYS_READLINK;      // readlinkat (simplified: ignore dirfd)
     table[269] = maios_syscall::nr::SYS_FACCESSAT;     // faccessat

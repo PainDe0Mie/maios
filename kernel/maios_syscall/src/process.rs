@@ -250,3 +250,59 @@ pub fn sys_gettimeofday(tv: u64, _tz: u64, _: u64, _: u64, _: u64, _: u64) -> Sy
     }
     Ok(0)
 }
+
+// =============================================================================
+// Process management (Phase 2)
+// =============================================================================
+
+/// sys_wait4 — wait for a child process to change state.
+///
+/// Simplified: MaiOS doesn't have real parent-child tracking yet.
+/// Returns ECHILD (no child processes) since we don't track children.
+pub fn sys_wait4(_pid: u64, _wstatus: u64, options: u64, _rusage: u64, _: u64, _: u64) -> SyscallResult {
+    let options = options as i32;
+    const WNOHANG: i32 = 1;
+
+    if options & WNOHANG != 0 {
+        // Non-blocking: no children, return 0 (nothing happened)
+        return Ok(0);
+    }
+
+    // Blocking wait: we have no children to wait for
+    Err(SyscallError::NoChild)
+}
+
+/// sys_kill — send a signal to a process.
+///
+/// Stub: since we don't deliver signals, just validate the target exists.
+/// Signal 0 is used to check if a process exists.
+pub fn sys_kill(pid: u64, sig: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    let pid = pid as i64;
+
+    if sig > 64 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Signal 0: check if process exists — always succeed
+    if sig == 0 {
+        return Ok(0);
+    }
+
+    // SIGKILL/SIGTERM to self: exit
+    if (sig == 9 || sig == 15) && (pid <= 0 || pid == task::get_my_current_task_id() as i64) {
+        return sys_exit(0, 0, 0, 0, 0, 0);
+    }
+
+    // For other signals: accept silently (we don't deliver signals yet)
+    Ok(0)
+}
+
+/// sys_tgkill — send a signal to a specific thread.
+///
+/// Stub: same as kill but with thread group awareness.
+pub fn sys_tgkill(_tgid: u64, _tid: u64, sig: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if sig > 64 {
+        return Err(SyscallError::InvalidArgument);
+    }
+    Ok(0)
+}
