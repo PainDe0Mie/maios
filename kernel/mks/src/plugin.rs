@@ -36,7 +36,7 @@ use alloc::sync::Arc;
 use alloc::collections::BTreeMap;
 use spin::Mutex;
 
-use task_struct::TaskRef;
+use task::TaskRef;
 
 // ---------------------------------------------------------------------------
 // Plugin timeout
