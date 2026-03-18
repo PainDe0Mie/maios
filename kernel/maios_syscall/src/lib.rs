@@ -32,6 +32,7 @@ pub mod process;
 pub mod time;
 pub mod system;
 pub mod event_io;
+pub mod socket;
 pub mod signals;
 pub mod trace;
 
@@ -128,6 +129,28 @@ pub mod nr {
     pub const SYS_EPOLL_WAIT: u16      = 0x040F;
     pub const SYS_WAIT4: u16           = 0x0410;
     pub const SYS_TGKILL: u16         = 0x0411;
+    pub const SYS_SYSINFO: u16         = 0x0412;
+    pub const SYS_GETRUSAGE: u16       = 0x0413;
+    pub const SYS_UMASK: u16           = 0x0414;
+    pub const SYS_FTRUNCATE: u16       = 0x0415;
+    pub const SYS_MREMAP: u16          = 0x0416;
+    pub const SYS_EVENTFD2: u16        = 0x0417;
+    pub const SYS_RENAME: u16          = 0x0418;
+    pub const SYS_SOCKET: u16          = 0x0500;
+    pub const SYS_CONNECT: u16         = 0x0501;
+    pub const SYS_SENDTO: u16          = 0x0502;
+    pub const SYS_RECVFROM: u16        = 0x0503;
+    pub const SYS_BIND: u16            = 0x0504;
+    pub const SYS_LISTEN: u16          = 0x0505;
+    pub const SYS_ACCEPT4: u16         = 0x0506;
+    pub const SYS_SETSOCKOPT: u16      = 0x0507;
+    pub const SYS_GETSOCKOPT: u16      = 0x0508;
+    pub const SYS_SHUTDOWN: u16        = 0x0509;
+    pub const SYS_GETSOCKNAME: u16     = 0x050A;
+    pub const SYS_GETPEERNAME: u16     = 0x050B;
+    pub const SYS_SOCKETPAIR: u16      = 0x050C;
+    pub const SYS_SENDMSG: u16         = 0x050D;
+    pub const SYS_RECVMSG: u16         = 0x050E;
 
     // === 0x08xx: MaiOS-specific (future) ===
     pub const SYS_CREATE_WINDOW: u16   = 0x0800;
@@ -297,6 +320,30 @@ pub fn init() {
         register(nr::SYS_KILL,        process::sys_kill,       "sys_kill",         2, 0);
         register(nr::SYS_WAIT4,       process::sys_wait4,      "sys_wait4",       4, 0);
         register(nr::SYS_TGKILL,      process::sys_tgkill,     "sys_tgkill",      3, 0);
+        register(nr::SYS_SYSINFO,     system::sys_sysinfo,     "sys_sysinfo",     1, 0);
+        register(nr::SYS_GETRUSAGE,   system::sys_getrusage,   "sys_getrusage",   2, 0);
+        register(nr::SYS_UMASK,       system::sys_umask,       "sys_umask",       1, 0);
+        register(nr::SYS_EVENTFD2,    system::sys_eventfd2,    "sys_eventfd2",    2, 0);
+        register(nr::SYS_FTRUNCATE,   file_io::sys_ftruncate,  "sys_ftruncate",   2, 0);
+        register(nr::SYS_RENAME,      file_io::sys_rename,     "sys_rename",      2, 0);
+        register(nr::SYS_MREMAP,      memory::sys_mremap,      "sys_mremap",      4, 0);
+
+        // --- Sockets (0x05xx) — stubs ---
+        register(nr::SYS_SOCKET,      socket::sys_socket,      "sys_socket",      3, 0);
+        register(nr::SYS_CONNECT,     socket::sys_connect,     "sys_connect",     3, 0);
+        register(nr::SYS_SENDTO,      socket::sys_sendto,      "sys_sendto",      6, 0);
+        register(nr::SYS_RECVFROM,    socket::sys_recvfrom,    "sys_recvfrom",    6, 0);
+        register(nr::SYS_BIND,        socket::sys_bind,        "sys_bind",        3, 0);
+        register(nr::SYS_LISTEN,      socket::sys_listen,      "sys_listen",      2, 0);
+        register(nr::SYS_ACCEPT4,     socket::sys_accept4,     "sys_accept4",     4, 0);
+        register(nr::SYS_SETSOCKOPT,  socket::sys_setsockopt,  "sys_setsockopt",  5, 0);
+        register(nr::SYS_GETSOCKOPT,  socket::sys_getsockopt,  "sys_getsockopt",  5, 0);
+        register(nr::SYS_SHUTDOWN,    socket::sys_shutdown,    "sys_shutdown",    2, 0);
+        register(nr::SYS_GETSOCKNAME, socket::sys_getsockname, "sys_getsockname", 3, 0);
+        register(nr::SYS_GETPEERNAME, socket::sys_getpeername, "sys_getpeername", 3, 0);
+        register(nr::SYS_SOCKETPAIR,  socket::sys_socketpair,  "sys_socketpair",  4, 0);
+        register(nr::SYS_SENDMSG,     socket::sys_sendmsg,     "sys_sendmsg",     3, 0);
+        register(nr::SYS_RECVMSG,     socket::sys_recvmsg,     "sys_recvmsg",     3, 0);
     }
 
     INITIALIZED.store(true, Ordering::SeqCst);
