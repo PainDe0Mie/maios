@@ -131,6 +131,15 @@ pub fn syscall_name(nr: u16) -> &'static str {
         0x0208 => "dup",
         0x0209 => "dup2",
         0x020A => "pipe",
+        0x020B => "openat",
+        0x020C => "fcntl",
+        0x020D => "writev",
+        0x020E => "readv",
+        0x020F => "pread64",
+        0x0210 => "access",
+        0x0211 => "pipe2",
+        0x0212 => "dup3",
+        0x0213 => "getcwd",
 
         // Time (0x03xx)
         0x0300 => "clock_gettime",

@@ -1,13 +1,25 @@
 //! Syscalls d'I/O fichiers unifiés pour MaiOS.
 //!
-//! Implémente read, write, open, close, stat, fstat, lseek, ioctl.
+//! Implémente read, write, open, close, stat, fstat, lseek, ioctl,
+//! openat, fcntl, writev, readv, pread64, access, getcwd, dup, dup2, dup3, pipe, pipe2.
 //! Utilise la `ResourceTable` unifiée au lieu des fd_table/HandleTable séparées.
 
 use alloc::vec;
+use alloc::string::String;
 #[allow(unused_imports)]
 use log::debug;
 use crate::error::{SyscallResult, SyscallError};
 use crate::resource::{self, Resource};
+
+/// Linux `struct iovec` layout (x86_64).
+#[repr(C)]
+struct IoVec {
+    iov_base: u64, // pointer to buffer
+    iov_len: u64,  // length
+}
+
+/// AT_FDCWD: special dirfd meaning "current working directory".
+const AT_FDCWD: i32 = -100;
 
 /// Obtenir l'ID de la tâche courante.
 fn current_task_id() -> usize {
@@ -445,4 +457,237 @@ pub fn sys_pipe(pipefd_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> Sysc
     // between two fds. Return NotImplemented until we have a proper pipe mechanism.
     // TODO: Create a Stdio buffer, wrap reader as Resource::PipeRead and writer as Resource::PipeWrite
     Err(SyscallError::NotImplemented)
+}
+
+// =============================================================================
+// Phase 1A: openat, fcntl, writev, readv, pread64, access, getcwd, pipe2, dup3
+// =============================================================================
+
+/// sys_openat — open a file relative to a directory fd.
+///
+/// When dirfd == AT_FDCWD (-100), behaves exactly like open().
+/// This is what musl/glibc actually calls instead of open().
+pub fn sys_openat(dirfd: u64, path_ptr: u64, flags: u64, mode: u64, _: u64, _: u64) -> SyscallResult {
+    let dirfd_i = dirfd as i32;
+
+    // For now, we only support AT_FDCWD (current directory = root).
+    // TODO: support real dirfd-relative paths when we have per-task cwd.
+    if dirfd_i != AT_FDCWD && dirfd_i >= 0 {
+        // Could resolve relative to the directory referred to by dirfd,
+        // but for now treat all paths as absolute from root.
+    }
+
+    // Delegate to sys_open (same logic)
+    sys_open(path_ptr, flags, mode, 0, 0, 0)
+}
+
+/// sys_fcntl — file descriptor control.
+///
+/// Supports: F_GETFL, F_SETFL, F_GETFD, F_SETFD, F_DUPFD, F_DUPFD_CLOEXEC.
+pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    const F_DUPFD: u64 = 0;
+    const F_GETFD: u64 = 1;
+    const F_SETFD: u64 = 2;
+    const F_GETFL: u64 = 3;
+    const F_SETFL: u64 = 4;
+    const F_DUPFD_CLOEXEC: u64 = 1030;
+
+    let tid = current_task_id();
+
+    match cmd {
+        F_DUPFD | F_DUPFD_CLOEXEC => {
+            // Duplicate fd to the lowest available fd >= arg
+            // Simplified: just dup (ignore the >= arg constraint for now)
+            resource::with_resources_mut(tid, |table| {
+                match table.dup(fd) {
+                    Some(new_fd) => Ok(new_fd),
+                    None => Err(SyscallError::BadFileDescriptor),
+                }
+            })
+        }
+        F_GETFD => {
+            // Return close-on-exec flag. We don't track this yet, return 0.
+            let tid = current_task_id();
+            resource::with_resources(tid, |table| {
+                if table.get(fd).is_some() { Ok(0) } else { Err(SyscallError::BadFileDescriptor) }
+            })
+        }
+        F_SETFD => {
+            // Set close-on-exec flag. We don't track this yet, just succeed.
+            let tid = current_task_id();
+            resource::with_resources(tid, |table| {
+                if table.get(fd).is_some() { Ok(0) } else { Err(SyscallError::BadFileDescriptor) }
+            })
+        }
+        F_GETFL => {
+            // Return file status flags. We don't track flags yet.
+            // Return O_RDWR (2) as default.
+            let tid = current_task_id();
+            resource::with_resources(tid, |table| {
+                if table.get(fd).is_some() { Ok(2) } else { Err(SyscallError::BadFileDescriptor) }
+            })
+        }
+        F_SETFL => {
+            // Set file status flags. We don't track flags yet, just succeed.
+            let _ = arg;
+            let tid = current_task_id();
+            resource::with_resources(tid, |table| {
+                if table.get(fd).is_some() { Ok(0) } else { Err(SyscallError::BadFileDescriptor) }
+            })
+        }
+        _ => Err(SyscallError::InvalidArgument),
+    }
+}
+
+/// sys_writev — write data from multiple buffers (scatter/gather).
+///
+/// Used by printf/glibc to write header + data in one syscall.
+pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if iov_ptr == 0 || iovcnt == 0 {
+        return if iovcnt == 0 { Ok(0) } else { Err(SyscallError::Fault) };
+    }
+    if iovcnt > 1024 {
+        return Err(SyscallError::InvalidArgument); // UIO_MAXIOV
+    }
+
+    let iovecs = unsafe {
+        core::slice::from_raw_parts(iov_ptr as *const IoVec, iovcnt as usize)
+    };
+
+    let mut total: u64 = 0;
+    for iov in iovecs {
+        if iov.iov_len == 0 {
+            continue;
+        }
+        if iov.iov_base == 0 {
+            return Err(SyscallError::Fault);
+        }
+        match sys_write(fd, iov.iov_base, iov.iov_len, 0, 0, 0) {
+            Ok(n) => total += n,
+            Err(e) => {
+                if total > 0 { return Ok(total); } // partial write
+                return Err(e);
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// sys_readv — read data into multiple buffers (scatter/gather).
+pub fn sys_readv(fd: u64, iov_ptr: u64, iovcnt: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if iov_ptr == 0 || iovcnt == 0 {
+        return if iovcnt == 0 { Ok(0) } else { Err(SyscallError::Fault) };
+    }
+    if iovcnt > 1024 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let iovecs = unsafe {
+        core::slice::from_raw_parts(iov_ptr as *const IoVec, iovcnt as usize)
+    };
+
+    let mut total: u64 = 0;
+    for iov in iovecs {
+        if iov.iov_len == 0 {
+            continue;
+        }
+        if iov.iov_base == 0 {
+            return Err(SyscallError::Fault);
+        }
+        match sys_read(fd, iov.iov_base, iov.iov_len, 0, 0, 0) {
+            Ok(0) => break, // EOF
+            Ok(n) => {
+                total += n;
+                if n < iov.iov_len { break; } // short read
+            }
+            Err(e) => {
+                if total > 0 { return Ok(total); }
+                return Err(e);
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// sys_pread64 — read from a file at a specific offset without changing the cursor.
+///
+/// Used by the dynamic linker to read ELF headers.
+pub fn sys_pread64(fd: u64, buf_ptr: u64, count: u64, offset: u64, _: u64, _: u64) -> SyscallResult {
+    if buf_ptr == 0 || count == 0 {
+        return if count == 0 { Ok(0) } else { Err(SyscallError::Fault) };
+    }
+
+    let tid = current_task_id();
+
+    resource::with_resources(tid, |table| {
+        match table.get(fd) {
+            Some(Resource::File { file, .. }) => {
+                let mut buf = vec![0u8; count as usize];
+                let mut locked = file.lock();
+                match locked.read_at(&mut buf, offset as usize) {
+                    Ok(n) => {
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(buf.as_ptr(), buf_ptr as *mut u8, n);
+                        }
+                        Ok(n as u64)
+                    }
+                    Err(_) => Err(SyscallError::IoError),
+                }
+            }
+            Some(_) => Err(SyscallError::IllegalSeek), // can't pread on stdin/stdout
+            None => Err(SyscallError::BadFileDescriptor),
+        }
+    })
+}
+
+/// sys_access — check file permissions.
+///
+/// Simplified: just checks if the file exists (ignores mode bits).
+pub fn sys_access(path_ptr: u64, _mode: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    let path_str = match unsafe { read_c_string(path_ptr) } {
+        Some(s) => s,
+        None => return Err(SyscallError::Fault),
+    };
+
+    let root_dir = root::get_root();
+    let p = path::Path::new(&path_str);
+    match p.get(root_dir) {
+        Some(_) => Ok(0),
+        None => Err(SyscallError::NotFound),
+    }
+}
+
+/// sys_getcwd — get current working directory.
+///
+/// MaiOS doesn't have per-task cwd yet, always returns "/".
+pub fn sys_getcwd(buf_ptr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if buf_ptr == 0 {
+        return Err(SyscallError::Fault);
+    }
+    if size < 2 {
+        return Err(SyscallError::BufferTooSmall);
+    }
+
+    let cwd = b"/\0";
+    unsafe {
+        core::ptr::copy_nonoverlapping(cwd.as_ptr(), buf_ptr as *mut u8, 2);
+    }
+    Ok(buf_ptr) // Linux getcwd returns the buffer pointer on success
+}
+
+/// sys_pipe2 — create a pipe with flags (O_CLOEXEC, O_NONBLOCK).
+///
+/// For now, same as pipe (stub), flags are ignored.
+pub fn sys_pipe2(pipefd_ptr: u64, _flags: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    sys_pipe(pipefd_ptr, 0, 0, 0, 0, 0)
+}
+
+/// sys_dup3 — duplicate fd with flags (O_CLOEXEC).
+///
+/// Like dup2 but with flags. We ignore flags for now.
+pub fn sys_dup3(oldfd: u64, newfd: u64, _flags: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if oldfd == newfd {
+        return Err(SyscallError::InvalidArgument); // dup3 returns EINVAL if oldfd == newfd
+    }
+    sys_dup2(oldfd, newfd, 0, 0, 0, 0)
 }
