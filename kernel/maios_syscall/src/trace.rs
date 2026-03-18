@@ -170,6 +170,12 @@ pub fn syscall_name(nr: u16) -> &'static str {
         0x0409 => "sched_getaffinity",
         0x040A => "prctl",
         0x040B => "madvise",
+        0x040C => "poll",
+        0x040D => "epoll_create1",
+        0x040E => "epoll_ctl",
+        0x040F => "epoll_wait",
+        0x0410 => "wait4",
+        0x0411 => "tgkill",
 
         // MaiOS-specific (0x08xx)
         0x0800 => "create_window",

@@ -31,6 +31,7 @@ pub mod memory;
 pub mod process;
 pub mod time;
 pub mod system;
+pub mod event_io;
 pub mod signals;
 pub mod trace;
 
@@ -121,6 +122,12 @@ pub mod nr {
     pub const SYS_SCHED_GETAFFINITY: u16 = 0x0409;
     pub const SYS_PRCTL: u16           = 0x040A;
     pub const SYS_MADVISE: u16         = 0x040B;
+    pub const SYS_POLL: u16            = 0x040C;
+    pub const SYS_EPOLL_CREATE1: u16   = 0x040D;
+    pub const SYS_EPOLL_CTL: u16       = 0x040E;
+    pub const SYS_EPOLL_WAIT: u16      = 0x040F;
+    pub const SYS_WAIT4: u16           = 0x0410;
+    pub const SYS_TGKILL: u16         = 0x0411;
 
     // === 0x08xx: MaiOS-specific (future) ===
     pub const SYS_CREATE_WINDOW: u16   = 0x0800;
@@ -283,6 +290,13 @@ pub fn init() {
         register(nr::SYS_SCHED_GETAFFINITY, system::sys_sched_getaffinity, "sys_sched_getaffinity", 3, 0);
         register(nr::SYS_PRCTL,       system::sys_prctl,       "sys_prctl",       5, 0);
         register(nr::SYS_MADVISE,     system::sys_madvise,     "sys_madvise",     3, 0);
+        register(nr::SYS_POLL,        event_io::sys_poll,      "sys_poll",        3, 0);
+        register(nr::SYS_EPOLL_CREATE1, event_io::sys_epoll_create1, "sys_epoll_create1", 1, 0);
+        register(nr::SYS_EPOLL_CTL,   event_io::sys_epoll_ctl, "sys_epoll_ctl",  4, 0);
+        register(nr::SYS_EPOLL_WAIT,  event_io::sys_epoll_wait, "sys_epoll_wait", 4, 0);
+        register(nr::SYS_KILL,        process::sys_kill,       "sys_kill",         2, 0);
+        register(nr::SYS_WAIT4,       process::sys_wait4,      "sys_wait4",       4, 0);
+        register(nr::SYS_TGKILL,      process::sys_tgkill,     "sys_tgkill",      3, 0);
     }
 
     INITIALIZED.store(true, Ordering::SeqCst);
