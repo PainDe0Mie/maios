@@ -44,12 +44,21 @@ pub mod nr {
     pub const SYS_GETPPID: u64 = 110;
     pub const SYS_ARCH_PRCTL: u64 = 158;
     pub const SYS_GETTID: u64 = 186;
-    pub const SYS_NANOSLEEP: u64 = 35;
+    pub const SYS_PREAD64: u64 = 17;
+    pub const SYS_READV: u64 = 19;
+    pub const SYS_WRITEV: u64 = 20;
+    pub const SYS_ACCESS: u64 = 21;
+    pub const SYS_PIPE: u64 = 22;
     pub const SYS_DUP: u64 = 32;
     pub const SYS_DUP2: u64 = 33;
-    pub const SYS_PIPE: u64 = 22;
+    pub const SYS_NANOSLEEP: u64 = 35;
+    pub const SYS_FCNTL: u64 = 72;
+    pub const SYS_GETCWD: u64 = 79;
     pub const SYS_CLOCK_GETTIME: u64 = 228;
     pub const SYS_EXIT_GROUP: u64 = 231;
+    pub const SYS_OPENAT: u64 = 257;
+    pub const SYS_DUP3: u64 = 292;
+    pub const SYS_PIPE2: u64 = 293;
     pub const SYS_GETRANDOM: u64 = 318;
 }
 
@@ -80,6 +89,15 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[5]   = maios_syscall::nr::SYS_FSTAT;      // fstat
     table[8]   = maios_syscall::nr::SYS_LSEEK;      // lseek
     table[16]  = maios_syscall::nr::SYS_IOCTL;      // ioctl
+    table[17]  = maios_syscall::nr::SYS_PREAD64;    // pread64
+    table[19]  = maios_syscall::nr::SYS_READV;      // readv
+    table[20]  = maios_syscall::nr::SYS_WRITEV;     // writev
+    table[21]  = maios_syscall::nr::SYS_ACCESS;     // access
+    table[72]  = maios_syscall::nr::SYS_FCNTL;      // fcntl
+    table[79]  = maios_syscall::nr::SYS_GETCWD;     // getcwd
+    table[257] = maios_syscall::nr::SYS_OPENAT;     // openat
+    table[292] = maios_syscall::nr::SYS_DUP3;       // dup3
+    table[293] = maios_syscall::nr::SYS_PIPE2;      // pipe2
 
     // Memory
     table[9]   = maios_syscall::nr::SYS_MMAP;       // mmap

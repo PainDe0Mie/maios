@@ -81,6 +81,15 @@ pub mod nr {
     pub const SYS_DUP: u16             = 0x0208;
     pub const SYS_DUP2: u16            = 0x0209;
     pub const SYS_PIPE: u16            = 0x020A;
+    pub const SYS_OPENAT: u16          = 0x020B;
+    pub const SYS_FCNTL: u16           = 0x020C;
+    pub const SYS_WRITEV: u16          = 0x020D;
+    pub const SYS_READV: u16           = 0x020E;
+    pub const SYS_PREAD64: u16         = 0x020F;
+    pub const SYS_ACCESS: u16          = 0x0210;
+    pub const SYS_PIPE2: u16           = 0x0211;
+    pub const SYS_DUP3: u16            = 0x0212;
+    pub const SYS_GETCWD: u16          = 0x0213;
 
     // === 0x03xx: Time ===
     pub const SYS_CLOCK_GETTIME: u16   = 0x0300;
@@ -214,6 +223,15 @@ pub fn init() {
         register(nr::SYS_DUP,        file_io::sys_dup,        "sys_dup",        1, 0);
         register(nr::SYS_DUP2,       file_io::sys_dup2,       "sys_dup2",       2, 0);
         register(nr::SYS_PIPE,       file_io::sys_pipe,       "sys_pipe",       1, 0);
+        register(nr::SYS_OPENAT,     file_io::sys_openat,     "sys_openat",     4, 0);
+        register(nr::SYS_FCNTL,      file_io::sys_fcntl,      "sys_fcntl",      3, 0);
+        register(nr::SYS_WRITEV,     file_io::sys_writev,     "sys_writev",     3, 0);
+        register(nr::SYS_READV,      file_io::sys_readv,      "sys_readv",      3, 0);
+        register(nr::SYS_PREAD64,    file_io::sys_pread64,    "sys_pread64",    4, 0);
+        register(nr::SYS_ACCESS,     file_io::sys_access,     "sys_access",     2, 0);
+        register(nr::SYS_PIPE2,      file_io::sys_pipe2,      "sys_pipe2",      2, 0);
+        register(nr::SYS_DUP3,       file_io::sys_dup3,       "sys_dup3",       3, 0);
+        register(nr::SYS_GETCWD,     file_io::sys_getcwd,     "sys_getcwd",     2, 0);
 
         // --- Time (0x03xx) ---
         register(nr::SYS_CLOCK_GETTIME, time::sys_clock_gettime, "sys_clock_gettime", 2, 0);
