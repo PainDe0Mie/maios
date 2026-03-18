@@ -44,6 +44,10 @@ pub mod nr {
     pub const SYS_GETPPID: u64 = 110;
     pub const SYS_ARCH_PRCTL: u64 = 158;
     pub const SYS_GETTID: u64 = 186;
+    pub const SYS_NANOSLEEP: u64 = 35;
+    pub const SYS_DUP: u64 = 32;
+    pub const SYS_DUP2: u64 = 33;
+    pub const SYS_PIPE: u64 = 22;
     pub const SYS_CLOCK_GETTIME: u64 = 228;
     pub const SYS_EXIT_GROUP: u64 = 231;
     pub const SYS_GETRANDOM: u64 = 318;
@@ -64,8 +68,8 @@ const UNMAPPED: u16 = 0xFFFF;
 /// Table de correspondance : index = numéro Linux, valeur = numéro MaiOS.
 ///
 /// Taille : 319 entrées × 2 octets = 638 octets. Lookup O(1).
-static LINUX_TO_MAIOS: [u16; 319] = {
-    let mut table = [UNMAPPED; 319];
+static LINUX_TO_MAIOS: [u16; 335] = {
+    let mut table = [UNMAPPED; 335];
 
     // File I/O
     table[0]   = maios_syscall::nr::SYS_READ;       // read
@@ -97,10 +101,18 @@ static LINUX_TO_MAIOS: [u16; 319] = {
     table[107] = maios_syscall::nr::SYS_GETEUID;    // geteuid
     table[108] = maios_syscall::nr::SYS_GETEGID;    // getegid
 
+    // Time
+    table[35]  = maios_syscall::nr::SYS_NANOSLEEP;   // nanosleep
+    table[228] = maios_syscall::nr::SYS_CLOCK_GETTIME; // clock_gettime
+
+    // File I/O extras
+    table[22]  = maios_syscall::nr::SYS_PIPE;        // pipe
+    table[32]  = maios_syscall::nr::SYS_DUP;         // dup
+    table[33]  = maios_syscall::nr::SYS_DUP2;        // dup2
+
     // System info
     table[63]  = maios_syscall::nr::SYS_UNAME;      // uname
     table[158] = maios_syscall::nr::SYS_ARCH_PRCTL;  // arch_prctl
-    table[228] = maios_syscall::nr::SYS_CLOCK_GETTIME; // clock_gettime
     table[318] = maios_syscall::nr::SYS_GETRANDOM;  // getrandom
 
     table

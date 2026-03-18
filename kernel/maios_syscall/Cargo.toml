@@ -5,6 +5,12 @@ authors = ["MaiOS Contributors"]
 description = "Unified syscall service layer for MaiOS - single implementation for all ABIs (native, Linux, Windows)"
 edition = "2021"
 
+[features]
+default = []
+## Enable to log every syscall to COM1 serial (no alloc, no locks).
+## Build with: cargo build --features maios_syscall/syscall-trace
+syscall-trace = []
+
 [dependencies]
 log = "0.4.8"
 
@@ -24,6 +30,9 @@ vfs_node = { path = "../vfs_node" }
 elf_loader = { path = "../elf_loader" }
 spawn = { path = "../spawn" }
 kernel_config = { path = "../kernel_config" }
+time = { path = "../time" }
+rtc = { path = "../rtc" }
+scheduler = { path = "../scheduler" }
 
 [lib]
 crate-type = ["rlib"]
