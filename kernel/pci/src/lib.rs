@@ -155,6 +155,37 @@ pub enum PciCapability {
     Msix = 0x11,
 }
 
+// ---------------------------------------------------------------------------
+// VirtIO PCI capability types (VirtIO 1.1 spec § 4.1.4)
+// ---------------------------------------------------------------------------
+
+/// VirtIO common configuration registers (virtqueues, device/driver status …).
+pub const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
+/// VirtIO notification registers (doorbell).
+pub const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
+/// VirtIO ISR (interrupt status) register.
+pub const VIRTIO_PCI_CAP_ISR_CFG:    u8 = 3;
+/// Device-specific configuration registers.
+pub const VIRTIO_PCI_CAP_DEVICE_CFG: u8 = 4;
+/// PCI configuration access.
+pub const VIRTIO_PCI_CAP_PCI_CFG:    u8 = 5;
+
+/// One parsed VirtIO vendor-specific PCI capability.
+///
+/// Each capability describes a window into a BAR that hosts a VirtIO
+/// register group (common config, notify, ISR, or device-specific).
+#[derive(Debug, Clone, Copy)]
+pub struct VirtioCapInfo {
+    /// Which VirtIO register group (`VIRTIO_PCI_CAP_*` constant).
+    pub cfg_type:   u8,
+    /// Index of the BAR that contains this region.
+    pub bar:        u8,
+    /// Byte offset into that BAR.
+    pub bar_offset: u32,
+    /// Length of the region in bytes.
+    pub length:     u32,
+}
+
 /// If a BAR's bits [2:1] equal this value, that BAR describes a 64-bit address.
 /// If not, that BAR describes a 32-bit address.
 const BAR_ADDRESS_IS_64_BIT: u32 = 2;
@@ -665,6 +696,57 @@ impl PciLocation {
             }
         }
         None
+    }
+
+    /// Walks the PCI vendor-specific capability list and returns every VirtIO capability.
+    ///
+    /// VirtIO modern PCI devices expose their register windows via vendor-specific
+    /// capabilities (cap ID = 0x09).  Each capability maps one VirtIO register group
+    /// onto a slice of a BAR.  Call this on a device that has `vendor_id == 0x1AF4`
+    /// to discover the common-config, notify, ISR and device-config regions.
+    pub fn get_virtio_caps(&self) -> Vec<VirtioCapInfo> {
+        const VIRTIO_VENDOR_CAP_ID: u8 = 0x09;
+        let mut caps = Vec::new();
+
+        // Capabilities are only valid when bit 4 of Status is set.
+        let status = self.pci_read_16(PCI_STATUS);
+        if status & (1 << 4) == 0 {
+            return caps;
+        }
+
+        // Byte-offset of the first capability (bottom 2 bits are reserved → mask them).
+        let first = self.pci_read_8(PCI_CAPABILITIES);
+        let mut cap_addr = first & 0xFC;
+
+        while cap_addr != 0 {
+            // Each PCI capability starts with two bytes: ID and next-pointer.
+            // Because cap_addr is always 4-byte-aligned (due to the 0xFC mask),
+            // we can use Byte0/Byte1 spans of the dword at cap_addr.
+            let cap_index = cap_addr >> 2; // dword index
+
+            let cap_id = self.pci_read_8(PciRegister { index: cap_index, span: Byte0 });
+            let next   = self.pci_read_8(PciRegister { index: cap_index, span: Byte1 });
+
+            if cap_id == VIRTIO_VENDOR_CAP_ID {
+                // VirtIO cap layout (all offsets relative to cap_addr):
+                //  +0  cap_vndr  (u8)  = 0x09
+                //  +1  cap_next  (u8)  = next pointer
+                //  +2  cap_len   (u8)  = capability length
+                //  +3  cfg_type  (u8)  = which register group
+                //  +4  bar       (u8)  = which BAR
+                //  +5..+7        padding
+                //  +8  offset    (u32) = byte offset into the BAR
+                //  +12 length    (u32) = region length in bytes
+                let cfg_type  = self.pci_read_8(PciRegister { index: cap_index,     span: Byte3 });
+                let bar       = self.pci_read_8(PciRegister { index: cap_index + 1, span: Byte0 });
+                let bar_offset= self.pci_read_32(PciRegister{ index: cap_index + 2, span: FullDword });
+                let length    = self.pci_read_32(PciRegister{ index: cap_index + 3, span: FullDword });
+                caps.push(VirtioCapInfo { cfg_type, bar, bar_offset, length });
+            }
+
+            cap_addr = next & 0xFC;
+        }
+        caps
     }
 }
 

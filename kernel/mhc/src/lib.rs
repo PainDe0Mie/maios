@@ -73,6 +73,8 @@ extern crate alloc;
 extern crate log;
 extern crate spin;
 extern crate bitflags;
+extern crate pci;
+extern crate memory;
 
 pub mod device;
 pub mod memory;
@@ -125,12 +127,11 @@ static MHC: Once<MhcState> = Once::new();
 ///
 /// Must be called once during kernel boot (typically from `captain`).
 pub fn init() -> Result<(), &'static str> {
-    // Step 1: Always register the software GPU driver
-    let sw_id = drivers::software::init();
-
-    // Step 2: Try to initialize VirtIO-GPU
-    #[cfg(feature = "virtio")]
+    // Step 1: Try VirtIO-GPU first so it becomes the primary device when present.
     let _virtio_id = drivers::virtio_gpu::try_init();
+
+    // Step 2: Software GPU fallback — always available (CPU emulation).
+    let _sw_id = drivers::software::init();
 
     // Step 3: Get the primary device
     let primary = device::primary_device()
