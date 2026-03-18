@@ -147,3 +147,101 @@ pub fn sys_getrandom(buf_ptr: u64, buf_len: u64, _flags: u64, _: u64, _: u64, _:
 
     Ok(buf_len)
 }
+
+/// sys_clock_getres — get clock resolution.
+///
+/// Returns the resolution of the specified clock. Games use this
+/// to determine timer precision for their game loops.
+pub fn sys_clock_getres(clock_id: u64, res: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if res == 0 {
+        return Ok(0); // Just checking if clock_id is valid
+    }
+
+    // All our clocks have nanosecond resolution (TSC/HPET based)
+    let (tv_sec, tv_nsec): (i64, i64) = match clock_id {
+        0 | 1 | 4 | 5 | 6 | 7 => (0, 1), // 1 nanosecond
+        _ => return Err(SyscallError::InvalidArgument),
+    };
+
+    unsafe {
+        let ptr = res as *mut [i64; 2];
+        (*ptr)[0] = tv_sec;
+        (*ptr)[1] = tv_nsec;
+    }
+    Ok(0)
+}
+
+/// sys_sched_getaffinity — get CPU affinity mask.
+///
+/// Used by SDL2/games to detect the number of CPUs.
+pub fn sys_sched_getaffinity(_pid: u64, cpusetsize: u64, mask_ptr: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if mask_ptr == 0 || cpusetsize == 0 {
+        return Err(SyscallError::Fault);
+    }
+
+    // Report 4 CPUs (matching our QEMU -smp 4 config)
+    // Affinity mask: bits 0-3 set = CPUs 0,1,2,3
+    let mask: u64 = 0b1111; // 4 CPUs
+    let bytes_to_write = core::cmp::min(cpusetsize as usize, 8);
+
+    unsafe {
+        // Zero the buffer first
+        core::ptr::write_bytes(mask_ptr as *mut u8, 0, cpusetsize as usize);
+        // Write the mask
+        core::ptr::copy_nonoverlapping(
+            &mask as *const u64 as *const u8,
+            mask_ptr as *mut u8,
+            bytes_to_write,
+        );
+    }
+    // Return the size of the cpuset
+    Ok(core::cmp::min(cpusetsize, 8))
+}
+
+/// sys_prctl — process control operations.
+///
+/// Supports PR_SET_NAME (set thread name) and basic queries.
+pub fn sys_prctl(option: u64, arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _: u64) -> SyscallResult {
+    const PR_SET_NAME: u64 = 15;
+    const PR_GET_NAME: u64 = 16;
+    const PR_SET_PDEATHSIG: u64 = 1;
+    const PR_GET_PDEATHSIG: u64 = 2;
+
+    match option {
+        PR_SET_NAME => {
+            // Accept and ignore the thread name (we don't track it yet)
+            let _ = arg2;
+            Ok(0)
+        }
+        PR_GET_NAME => {
+            // Return "maios" as thread name
+            if arg2 != 0 {
+                let name = b"maios\0";
+                unsafe {
+                    core::ptr::copy_nonoverlapping(name.as_ptr(), arg2 as *mut u8, 6);
+                }
+            }
+            Ok(0)
+        }
+        PR_SET_PDEATHSIG => Ok(0), // Ignore parent death signal
+        PR_GET_PDEATHSIG => {
+            if arg2 != 0 {
+                unsafe { *(arg2 as *mut i32) = 0; }
+            }
+            Ok(0)
+        }
+        _ => Err(SyscallError::InvalidArgument),
+    }
+}
+
+/// sys_madvise — advise kernel about memory usage patterns.
+///
+/// Stub: accept and ignore all advice. The most important one is
+/// MADV_DONTNEED (used by allocators to release pages).
+pub fn sys_madvise(_addr: u64, _length: u64, _advice: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    // Accept all advice silently. A real implementation would:
+    // - MADV_DONTNEED: zero pages and mark as lazy-allocate
+    // - MADV_WILLNEED: prefault pages
+    // - MADV_SEQUENTIAL/RANDOM: hint for readahead
+    Ok(0)
+}
