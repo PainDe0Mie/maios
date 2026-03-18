@@ -691,3 +691,148 @@ pub fn sys_dup3(oldfd: u64, newfd: u64, _flags: u64, _: u64, _: u64, _: u64) -> 
     }
     sys_dup2(oldfd, newfd, 0, 0, 0, 0)
 }
+
+// =============================================================================
+// Phase 2: Filesystem operations
+// =============================================================================
+
+/// Linux `struct linux_dirent64` layout.
+#[repr(C)]
+struct LinuxDirent64 {
+    d_ino: u64,
+    d_off: i64,
+    d_reclen: u16,
+    d_type: u8,
+    // d_name follows (variable length, null-terminated)
+}
+
+/// sys_getdents64 — read directory entries.
+///
+/// Reads entries from an open directory fd into a buffer.
+/// Returns the number of bytes written, or 0 for end-of-directory.
+pub fn sys_getdents64(fd: u64, buf_ptr: u64, buf_size: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if buf_ptr == 0 || buf_size == 0 {
+        return Err(SyscallError::Fault);
+    }
+
+    // For now, we don't support opening directories as fds.
+    // TODO: add Resource::Directory variant and implement directory reading
+    let _ = fd;
+    Err(SyscallError::NotImplemented)
+}
+
+/// sys_chdir — change current working directory.
+///
+/// MaiOS doesn't have per-task cwd yet. Stub: validate path exists, return Ok.
+pub fn sys_chdir(path_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    let path_str = match unsafe { read_c_string(path_ptr) } {
+        Some(s) => s,
+        None => return Err(SyscallError::Fault),
+    };
+
+    // Validate path exists
+    let root_dir = root::get_root();
+    let p = path::Path::new(&path_str);
+    match p.get(root_dir) {
+        Some(fs_node::FileOrDir::Dir(_)) => Ok(0),
+        Some(fs_node::FileOrDir::File(_)) => Err(SyscallError::NotADirectory),
+        None => Err(SyscallError::NotFound),
+    }
+}
+
+/// sys_mkdir — create a directory.
+///
+/// Stub: MaiOS VFS doesn't support directory creation yet.
+/// Returns EROFS (read-only filesystem) to indicate the limitation.
+pub fn sys_mkdir(_path_ptr: u64, _mode: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    // TODO: implement when VFS supports directory creation
+    Err(SyscallError::ReadOnlyFs)
+}
+
+/// sys_unlink — delete a file.
+///
+/// Stub: MaiOS VFS doesn't support file deletion yet.
+pub fn sys_unlink(_path_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    // TODO: implement when VFS supports file deletion
+    Err(SyscallError::ReadOnlyFs)
+}
+
+/// sys_readlink — read the target of a symbolic link.
+///
+/// MaiOS doesn't have symlinks. Special-case /proc/self/exe.
+pub fn sys_readlink(path_ptr: u64, buf_ptr: u64, buf_size: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if buf_ptr == 0 || buf_size == 0 {
+        return Err(SyscallError::Fault);
+    }
+
+    let path_str = match unsafe { read_c_string(path_ptr) } {
+        Some(s) => s,
+        None => return Err(SyscallError::Fault),
+    };
+
+    // Special case: /proc/self/exe — dynamic linker reads this
+    if path_str == "/proc/self/exe" {
+        let exe = b"/app";
+        let len = core::cmp::min(exe.len(), buf_size as usize);
+        unsafe {
+            core::ptr::copy_nonoverlapping(exe.as_ptr(), buf_ptr as *mut u8, len);
+        }
+        return Ok(len as u64);
+    }
+
+    // No symlinks in MaiOS
+    Err(SyscallError::InvalidArgument)
+}
+
+/// sys_newfstatat — stat relative to a directory fd.
+///
+/// Modern replacement for stat, used by musl/glibc.
+pub fn sys_newfstatat(dirfd: u64, path_ptr: u64, stat_buf: u64, _flags: u64, _: u64, _: u64) -> SyscallResult {
+    // If path is empty and AT_EMPTY_PATH flag is set, fstat the dirfd
+    let path_str = unsafe { read_c_string(path_ptr) };
+    match path_str {
+        Some(ref s) if s.is_empty() => {
+            // AT_EMPTY_PATH: stat the fd itself
+            return sys_fstat(dirfd, stat_buf, 0, 0, 0, 0);
+        }
+        None => return Err(SyscallError::Fault),
+        _ => {}
+    }
+
+    // Otherwise delegate to stat (ignoring dirfd for now, treating as AT_FDCWD)
+    sys_stat(path_ptr, stat_buf, 0, 0, 0, 0)
+}
+
+/// sys_faccessat — check file permissions relative to dirfd.
+///
+/// Modern replacement for access, used by musl/glibc.
+pub fn sys_faccessat(_dirfd: u64, path_ptr: u64, mode: u64, _flags: u64, _: u64, _: u64) -> SyscallResult {
+    sys_access(path_ptr, mode, 0, 0, 0, 0)
+}
+
+/// sys_pwrite64 — write to a file at an offset without changing the cursor.
+pub fn sys_pwrite64(fd: u64, buf_ptr: u64, count: u64, offset: u64, _: u64, _: u64) -> SyscallResult {
+    if buf_ptr == 0 || count == 0 {
+        return if count == 0 { Ok(0) } else { Err(SyscallError::Fault) };
+    }
+
+    let slice = unsafe {
+        core::slice::from_raw_parts(buf_ptr as *const u8, count as usize)
+    };
+
+    let tid = current_task_id();
+
+    resource::with_resources(tid, |table| {
+        match table.get(fd) {
+            Some(Resource::File { file, .. }) => {
+                let mut locked = file.lock();
+                match locked.write_at(slice, offset as usize) {
+                    Ok(n) => Ok(n as u64),
+                    Err(_) => Err(SyscallError::IoError),
+                }
+            }
+            Some(_) => Err(SyscallError::IllegalSeek),
+            None => Err(SyscallError::BadFileDescriptor),
+        }
+    })
+}

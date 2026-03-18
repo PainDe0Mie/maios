@@ -62,6 +62,19 @@ pub mod nr {
     pub const SYS_SET_TID_ADDRESS: u64 = 218;
     pub const SYS_SET_ROBUST_LIST: u64 = 273;
     pub const SYS_PRLIMIT64: u64 = 302;
+    pub const SYS_PWRITE64: u64 = 18;
+    pub const SYS_MADVISE: u64 = 28;
+    pub const SYS_CHDIR: u64 = 80;
+    pub const SYS_MKDIR: u64 = 83;
+    pub const SYS_UNLINK: u64 = 87;
+    pub const SYS_READLINK: u64 = 89;
+    pub const SYS_PRCTL: u64 = 157;
+    pub const SYS_SCHED_GETAFFINITY: u64 = 204;
+    pub const SYS_GETDENTS64: u64 = 217;
+    pub const SYS_CLOCK_GETRES: u64 = 229;
+    pub const SYS_NEWFSTATAT: u64 = 262;
+    pub const SYS_FACCESSAT: u64 = 269;
+    pub const SYS_READLINKAT: u64 = 267;
     pub const SYS_CLOCK_GETTIME: u64 = 228;
     pub const SYS_EXIT_GROUP: u64 = 231;
     pub const SYS_OPENAT: u64 = 257;
@@ -139,7 +152,9 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[228] = maios_syscall::nr::SYS_CLOCK_GETTIME;  // clock_gettime
 
     // File I/O extras
+    table[18]  = maios_syscall::nr::SYS_PWRITE64;    // pwrite64
     table[22]  = maios_syscall::nr::SYS_PIPE;        // pipe
+    table[28]  = maios_syscall::nr::SYS_MADVISE;     // madvise
     table[32]  = maios_syscall::nr::SYS_DUP;         // dup
     table[33]  = maios_syscall::nr::SYS_DUP2;        // dup2
 
@@ -147,6 +162,19 @@ static LINUX_TO_MAIOS: [u16; 335] = {
     table[63]  = maios_syscall::nr::SYS_UNAME;        // uname
     table[158] = maios_syscall::nr::SYS_ARCH_PRCTL;   // arch_prctl
     table[318] = maios_syscall::nr::SYS_GETRANDOM;    // getrandom
+
+    // Filesystem
+    table[80]  = maios_syscall::nr::SYS_CHDIR;         // chdir
+    table[83]  = maios_syscall::nr::SYS_MKDIR;         // mkdir
+    table[87]  = maios_syscall::nr::SYS_UNLINK;        // unlink
+    table[89]  = maios_syscall::nr::SYS_READLINK;      // readlink
+    table[157] = maios_syscall::nr::SYS_PRCTL;         // prctl
+    table[204] = maios_syscall::nr::SYS_SCHED_GETAFFINITY; // sched_getaffinity
+    table[217] = maios_syscall::nr::SYS_GETDENTS64;    // getdents64
+    table[229] = maios_syscall::nr::SYS_CLOCK_GETRES;  // clock_getres
+    table[262] = maios_syscall::nr::SYS_NEWFSTATAT;    // newfstatat
+    table[267] = maios_syscall::nr::SYS_READLINK;      // readlinkat (simplified: ignore dirfd)
+    table[269] = maios_syscall::nr::SYS_FACCESSAT;     // faccessat
 
     // Threading stubs
     table[218] = maios_syscall::nr::SYS_SET_TID_ADDRESS; // set_tid_address

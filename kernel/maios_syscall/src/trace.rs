@@ -143,6 +143,14 @@ pub fn syscall_name(nr: u16) -> &'static str {
         0x0211 => "pipe2",
         0x0212 => "dup3",
         0x0213 => "getcwd",
+        0x0214 => "getdents64",
+        0x0215 => "chdir",
+        0x0216 => "mkdir",
+        0x0217 => "unlink",
+        0x0218 => "readlink",
+        0x0219 => "newfstatat",
+        0x021A => "faccessat",
+        0x021B => "pwrite64",
 
         // Time (0x03xx)
         0x0300 => "clock_gettime",
@@ -158,6 +166,10 @@ pub fn syscall_name(nr: u16) -> &'static str {
         0x0405 => "rt_sigreturn",
         0x0406 => "sched_yield",
         0x0407 => "gettimeofday",
+        0x0408 => "clock_getres",
+        0x0409 => "sched_getaffinity",
+        0x040A => "prctl",
+        0x040B => "madvise",
 
         // MaiOS-specific (0x08xx)
         0x0800 => "create_window",

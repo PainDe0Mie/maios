@@ -94,6 +94,14 @@ pub mod nr {
     pub const SYS_PIPE2: u16           = 0x0211;
     pub const SYS_DUP3: u16            = 0x0212;
     pub const SYS_GETCWD: u16          = 0x0213;
+    pub const SYS_GETDENTS64: u16      = 0x0214;
+    pub const SYS_CHDIR: u16           = 0x0215;
+    pub const SYS_MKDIR: u16           = 0x0216;
+    pub const SYS_UNLINK: u16          = 0x0217;
+    pub const SYS_READLINK: u16        = 0x0218;
+    pub const SYS_NEWFSTATAT: u16      = 0x0219;
+    pub const SYS_FACCESSAT: u16       = 0x021A;
+    pub const SYS_PWRITE64: u16        = 0x021B;
 
     // === 0x03xx: Time ===
     pub const SYS_CLOCK_GETTIME: u16   = 0x0300;
@@ -109,6 +117,10 @@ pub mod nr {
     pub const SYS_RT_SIGRETURN: u16    = 0x0405;
     pub const SYS_SCHED_YIELD: u16     = 0x0406;
     pub const SYS_GETTIMEOFDAY: u16    = 0x0407;
+    pub const SYS_CLOCK_GETRES: u16    = 0x0408;
+    pub const SYS_SCHED_GETAFFINITY: u16 = 0x0409;
+    pub const SYS_PRCTL: u16           = 0x040A;
+    pub const SYS_MADVISE: u16         = 0x040B;
 
     // === 0x08xx: MaiOS-specific (future) ===
     pub const SYS_CREATE_WINDOW: u16   = 0x0800;
@@ -246,6 +258,14 @@ pub fn init() {
         register(nr::SYS_PIPE2,      file_io::sys_pipe2,      "sys_pipe2",      2, 0);
         register(nr::SYS_DUP3,       file_io::sys_dup3,       "sys_dup3",       3, 0);
         register(nr::SYS_GETCWD,     file_io::sys_getcwd,     "sys_getcwd",     2, 0);
+        register(nr::SYS_GETDENTS64, file_io::sys_getdents64, "sys_getdents64", 3, 0);
+        register(nr::SYS_CHDIR,      file_io::sys_chdir,      "sys_chdir",      1, 0);
+        register(nr::SYS_MKDIR,      file_io::sys_mkdir,      "sys_mkdir",      2, 0);
+        register(nr::SYS_UNLINK,     file_io::sys_unlink,     "sys_unlink",     1, 0);
+        register(nr::SYS_READLINK,   file_io::sys_readlink,   "sys_readlink",   3, 0);
+        register(nr::SYS_NEWFSTATAT, file_io::sys_newfstatat, "sys_newfstatat", 4, 0);
+        register(nr::SYS_FACCESSAT,  file_io::sys_faccessat,  "sys_faccessat",  4, 0);
+        register(nr::SYS_PWRITE64,   file_io::sys_pwrite64,   "sys_pwrite64",   4, 0);
 
         // --- Time (0x03xx) ---
         register(nr::SYS_CLOCK_GETTIME, time::sys_clock_gettime, "sys_clock_gettime", 2, 0);
@@ -259,6 +279,10 @@ pub fn init() {
         register(nr::SYS_RT_SIGACTION, signals::sys_rt_sigaction, "sys_rt_sigaction", 4, 0);
         register(nr::SYS_RT_SIGPROCMASK, signals::sys_rt_sigprocmask, "sys_rt_sigprocmask", 4, 0);
         register(nr::SYS_RT_SIGRETURN, signals::sys_rt_sigreturn, "sys_rt_sigreturn", 0, 0);
+        register(nr::SYS_CLOCK_GETRES, system::sys_clock_getres, "sys_clock_getres", 2, 0);
+        register(nr::SYS_SCHED_GETAFFINITY, system::sys_sched_getaffinity, "sys_sched_getaffinity", 3, 0);
+        register(nr::SYS_PRCTL,       system::sys_prctl,       "sys_prctl",       5, 0);
+        register(nr::SYS_MADVISE,     system::sys_madvise,     "sys_madvise",     3, 0);
     }
 
     INITIALIZED.store(true, Ordering::SeqCst);
