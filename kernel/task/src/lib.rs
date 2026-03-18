@@ -187,8 +187,6 @@ impl core::ops::Deref for TaskRef {
     fn deref(&self) -> &Task { &self.0 }
 }
 
-/// A weak reference to a `Task` (does not keep the task alive).
-#[derive(Clone, Debug)]
 /// Mutable guard returned by `TaskRef::write()`.
 ///
 /// Provides `DerefMut<Target = Task>` so MKS can mutate scheduling fields
@@ -208,6 +206,7 @@ impl<'a> core::ops::DerefMut for MksSchedGuard<'a> {
     fn deref_mut(&mut self) -> &mut Task { self.task }
 }
 
+#[derive(Clone)]
 pub struct WeakTaskRef(pub Weak<Task>);
 
 impl WeakTaskRef {

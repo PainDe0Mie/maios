@@ -66,7 +66,7 @@ pub fn inherit_priority(child: &task::TaskRef, parent: &task::TaskRef) {
     unsafe {
         (*ptr).sched.nice = parent_nice;
         (*ptr).sched.policy = parent_policy;
-        (*ptr).sched.update_weight();
+        (*ptr).update_weight();
     }
 }
 
