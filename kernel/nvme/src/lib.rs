@@ -172,9 +172,20 @@ impl Queue {
             .translate(mapped.start_address())
             .ok_or("NVMe: failed to translate queue VA→PA")?;
 
-        // Zéroïse la queue.
+        // Zéroïse la queue et initialise les Completion Queue entries avec phase tag = 1
+        // selon NVMe 2.0 spec : "Phase tag shall be initialized to '1' by the controller"
         let va = mapped.start_address().value();
         unsafe { core::ptr::write_bytes(va as *mut u8, 0, total_bytes); }
+
+        // Pour les CQ (entry_size = 16 = CQE_SIZE), initialiser status avec phase bit = 1
+        if entry_size == 16 {  // CQE_SIZE
+            for i in 0..depth {
+                let offset = i as usize * entry_size;
+                // CompletionEntry.status est aux bytes 14-15, phase tag est au bit 0
+                let status_ptr = (va + offset + 14) as *mut u16;
+                unsafe { status_ptr.write_volatile(0x0001); }  // Phase = 1
+            }
+        }
 
         Ok(Queue { pages: mapped, phys, depth, head: 0, phase: 1 })
     }
