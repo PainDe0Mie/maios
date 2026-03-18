@@ -31,6 +31,7 @@ pub mod memory;
 pub mod process;
 pub mod time;
 pub mod system;
+pub mod trace;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use error::{SyscallResult, SyscallError};
@@ -144,12 +145,12 @@ const MAX_SYSCALL_NR: usize = 0x0900;
 static mut SYSCALL_TABLE: [Option<SyscallHandler>; MAX_SYSCALL_NR] =
     [None; MAX_SYSCALL_NR];
 
+/// Parallel table storing the arg_count for each syscall (used by tracing).
+#[cfg(feature = "syscall-trace")]
+static mut SYSCALL_ARG_COUNT: [u8; MAX_SYSCALL_NR] = [0; MAX_SYSCALL_NR];
+
 /// Whether the syscall table has been initialized.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
-
-/// Syscall descriptors for tracing (parallel array to SYSCALL_TABLE).
-// Note: SYSCALL_DESCS pourrait être ajouté plus tard pour le tracing.
-// Pour l'instant, on utilise uniquement SYSCALL_TABLE pour le dispatch.
 
 // ---------------------------------------------------------------------------
 // Registration & initialization
@@ -163,6 +164,10 @@ unsafe fn register(nr: u16, handler: SyscallHandler, _name: &'static str, _arg_c
     let idx = nr as usize;
     debug_assert!(idx < MAX_SYSCALL_NR, "syscall number {:#x} exceeds table size", nr);
     SYSCALL_TABLE[idx] = Some(handler);
+    #[cfg(feature = "syscall-trace")]
+    {
+        SYSCALL_ARG_COUNT[idx] = _arg_count;
+    }
 }
 
 /// Initialize the unified syscall table.
@@ -206,9 +211,13 @@ pub fn init() {
         register(nr::SYS_FSTAT,      file_io::sys_fstat,      "sys_fstat",      2, 0);
         register(nr::SYS_LSEEK,      file_io::sys_lseek,      "sys_lseek",      3, 0);
         register(nr::SYS_IOCTL,      file_io::sys_ioctl,      "sys_ioctl",      3, 0);
+        register(nr::SYS_DUP,        file_io::sys_dup,        "sys_dup",        1, 0);
+        register(nr::SYS_DUP2,       file_io::sys_dup2,       "sys_dup2",       2, 0);
+        register(nr::SYS_PIPE,       file_io::sys_pipe,       "sys_pipe",       1, 0);
 
         // --- Time (0x03xx) ---
         register(nr::SYS_CLOCK_GETTIME, time::sys_clock_gettime, "sys_clock_gettime", 2, 0);
+        register(nr::SYS_NANOSLEEP,     time::sys_nanosleep,     "sys_nanosleep",     2, 0);
         register(nr::SYS_PERF_COUNTER,  time::sys_perf_counter,  "sys_perf_counter",  2, 0);
 
         // --- System Info (0x04xx) ---
@@ -250,18 +259,29 @@ pub fn dispatch(nr: u16, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -
     // and is only read after initialization.
     let handler = unsafe { SYSCALL_TABLE[idx] };
 
-    match handler {
+    #[cfg(feature = "syscall-trace")]
+    let arg_count = unsafe { SYSCALL_ARG_COUNT[idx] };
+    #[cfg(feature = "syscall-trace")]
+    {
+        let args = [a0, a1, a2, a3, a4, a5];
+        trace::trace_entry(nr, &args, arg_count);
+    }
+
+    let result = match handler {
         Some(f) => f(a0, a1, a2, a3, a4, a5),
         None => {
             warn!("maios_syscall: unimplemented syscall {:#06x}", nr);
             Err(SyscallError::NotImplemented)
         }
-    }
+    };
+
+    #[cfg(feature = "syscall-trace")]
+    trace::trace_exit(nr, &result);
+
+    result
 }
 
 /// Get the name of a syscall by its number, for tracing purposes.
-#[allow(dead_code)]
-pub fn syscall_name(_nr: u16) -> &'static str {
-    // TODO: implémenter avec une table de descripteurs
-    "unknown"
+pub fn syscall_name(nr: u16) -> &'static str {
+    trace::syscall_name(nr)
 }

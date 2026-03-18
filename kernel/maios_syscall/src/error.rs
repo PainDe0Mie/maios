@@ -64,6 +64,35 @@ pub enum SyscallError {
 pub type SyscallResult = Result<u64, SyscallError>;
 
 impl SyscallError {
+    /// Short string name for trace output (no alloc).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotImplemented    => "ENOSYS",
+            Self::InvalidArgument   => "EINVAL",
+            Self::BadFileDescriptor => "EBADF",
+            Self::PermissionDenied  => "EACCES",
+            Self::NotFound          => "ENOENT",
+            Self::OutOfMemory       => "ENOMEM",
+            Self::IoError           => "EIO",
+            Self::NotADirectory     => "ENOTDIR",
+            Self::IsADirectory      => "EISDIR",
+            Self::FileExists        => "EEXIST",
+            Self::NotExecutable     => "ENOEXEC",
+            Self::NoDevice          => "ENODEV",
+            Self::NotATerminal      => "ENOTTY",
+            Self::Busy              => "EBUSY",
+            Self::WouldBlock        => "EAGAIN",
+            Self::Fault             => "EFAULT",
+            Self::NoSpace           => "ENOSPC",
+            Self::IllegalSeek       => "ESPIPE",
+            Self::Interrupted       => "EINTR",
+            Self::ReadOnlyFs        => "EROFS",
+            Self::BufferTooSmall    => "ERANGE",
+            Self::NoChild           => "ECHILD",
+            Self::NotPermitted      => "EPERM",
+        }
+    }
+
     /// Convert to a Linux negative errno value.
     pub fn to_linux_errno(self) -> i64 {
         match self {

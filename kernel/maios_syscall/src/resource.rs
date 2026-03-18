@@ -142,6 +142,51 @@ impl ResourceTable {
         self.resources.get_mut(&handle)
     }
 
+    /// Duplicate a resource entry (for dup/dup2 syscalls).
+    ///
+    /// Returns Some(new_fd) on success, None if the source handle doesn't
+    /// exist or isn't duplicable (e.g., Memory resources).
+    pub fn dup(&mut self, src_handle: u64) -> Option<u64> {
+        let dup_resource = match self.resources.get(&src_handle)? {
+            Resource::Stdin => Some(Resource::Stdin),
+            Resource::Stdout => Some(Resource::Stdout),
+            Resource::Stderr => Some(Resource::Stderr),
+            Resource::File { file, offset } => Some(Resource::File {
+                file: file.clone(),
+                offset: *offset,
+            }),
+            Resource::Memory { .. } => None, // Cannot dup memory mappings
+        }?;
+        Some(self.alloc_fd(dup_resource))
+    }
+
+    /// Duplicate a resource entry onto a specific target fd (for dup2).
+    ///
+    /// If `target_fd` already exists, it is closed first.
+    /// Returns the target fd on success, None if source isn't duplicable.
+    pub fn dup2(&mut self, src_handle: u64, target_fd: u64) -> Option<u64> {
+        if src_handle == target_fd {
+            // dup2(fd, fd) is a no-op if fd is valid
+            return if self.resources.contains_key(&src_handle) { Some(target_fd) } else { None };
+        }
+        let dup_resource = match self.resources.get(&src_handle)? {
+            Resource::Stdin => Some(Resource::Stdin),
+            Resource::Stdout => Some(Resource::Stdout),
+            Resource::Stderr => Some(Resource::Stderr),
+            Resource::File { file, offset } => Some(Resource::File {
+                file: file.clone(),
+                offset: *offset,
+            }),
+            Resource::Memory { .. } => None,
+        }?;
+        // Close target if it exists (ignore if it's stdio)
+        if !Self::is_stdio(target_fd) {
+            self.resources.remove(&target_fd);
+        }
+        self.resources.insert(target_fd, dup_resource);
+        Some(target_fd)
+    }
+
     /// Find a handle by matching a predicate on the resource.
     ///
     /// Used for operations like NtFreeVirtualMemory where we need to find

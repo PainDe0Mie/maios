@@ -402,3 +402,47 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64, _: u64, _: u64, _: u64) -> Sys
 
     Err(SyscallError::NotATerminal)
 }
+
+/// sys_dup — duplicate a file descriptor.
+///
+/// Returns the new fd (lowest available number).
+pub fn sys_dup(fd: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    let tid = current_task_id();
+    resource::with_resources_mut(tid, |table| {
+        match table.dup(fd) {
+            Some(new_fd) => Ok(new_fd),
+            None => Err(SyscallError::BadFileDescriptor),
+        }
+    })
+}
+
+/// sys_dup2 — duplicate a file descriptor onto a specific target.
+///
+/// If newfd is already open, it is silently closed first.
+pub fn sys_dup2(oldfd: u64, newfd: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    let tid = current_task_id();
+    resource::with_resources_mut(tid, |table| {
+        match table.dup2(oldfd, newfd) {
+            Some(fd) => Ok(fd),
+            None => Err(SyscallError::BadFileDescriptor),
+        }
+    })
+}
+
+/// sys_pipe — create a unidirectional pipe.
+///
+/// Creates a pair of file descriptors: pipefd[0] for reading, pipefd[1] for writing.
+/// The pipe uses a MaiOS `Stdio` ring buffer internally.
+///
+/// # Arguments
+/// - `pipefd_ptr`: pointer to `[i32; 2]` where the fd pair is written
+pub fn sys_pipe(pipefd_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    if pipefd_ptr == 0 {
+        return Err(SyscallError::Fault);
+    }
+
+    // For now, pipe is not fully supported — we'd need a shared Stdio buffer
+    // between two fds. Return NotImplemented until we have a proper pipe mechanism.
+    // TODO: Create a Stdio buffer, wrap reader as Resource::PipeRead and writer as Resource::PipeWrite
+    Err(SyscallError::NotImplemented)
+}
