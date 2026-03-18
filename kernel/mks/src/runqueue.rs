@@ -13,7 +13,8 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
-use task_struct::{TaskRef, RunState, SchedClass};
+use task::TaskRef;
+use task_struct::{RunState, SchedClass};
 use crate::eevdf::EevdfRunQueue;
 use crate::realtime::{RtRunQueue, DeadlineRunQueue};
 use crate::stats::CpuStats;
@@ -244,8 +245,8 @@ impl SchedClassExt for SchedClass {
     fn class(&self) -> SchedClassId {
         match self {
             SchedClass::Deadline { .. } => SchedClassId::Deadline,
-            SchedClass::Compute { .. } => SchedClassId::Compute,
-            SchedClass::Fifo(_) | SchedClass::RoundRobin(_) => SchedClassId::RealTime,
+            SchedClass::Compute => SchedClassId::Compute,
+            SchedClass::Fifo | SchedClass::RoundRobin(_) => SchedClassId::RealTime,
             SchedClass::Normal => SchedClassId::Normal,
             SchedClass::Batch => SchedClassId::Batch,
             SchedClass::Idle => SchedClassId::Idle,

@@ -12,7 +12,8 @@
 //!             same-priority tasks round-robin.
 
 use alloc::collections::BTreeMap;
-use task_struct::{TaskRef, SchedClass};
+use task::TaskRef;
+use task_struct::SchedClass;
 
 /// Number of RT priority levels.
 pub const RT_PRIO_LEVELS: usize = 100;
@@ -122,7 +123,7 @@ impl RtRunQueue {
                     true
                 }
             }
-            SchedClass::Fifo(_) => false, // FIFO never preempts on time.
+            SchedClass::Fifo => false, // FIFO never preempts on time.
             _ => false,
         }
     }
@@ -189,11 +190,11 @@ impl DeadlineRunQueue {
     ///
     /// Returns `Err` if admission control would exceed bandwidth limit.
     pub fn enqueue(&mut self, task: TaskRef, now_ns: u64) -> Result<(), &'static str> {
-        let (runtime, deadline, period, task_id) = {
+        let (runtime, period, task_id) = {
             let t = task.read();
             match t.sched.policy {
-                SchedClass::Deadline { runtime, deadline, period } => {
-                    (runtime, deadline, period, t.id)
+                SchedClass::Deadline { period_ns, runtime_ns } => {
+                    (runtime_ns, period_ns, t.id)
                 }
                 _ => return Err("MKS/DL: task is not SCHED_DEADLINE"),
             }
@@ -212,7 +213,8 @@ impl DeadlineRunQueue {
         }
         self.admitted_bandwidth = new_bw;
 
-        let abs_deadline = now_ns + deadline;
+        // In SCHED_DEADLINE, deadline defaults to period.
+        let abs_deadline = now_ns + period;
         let entry = DlTask {
             task,
             abs_deadline,
@@ -230,11 +232,11 @@ impl DeadlineRunQueue {
         if let Some(key) = self.tasks.keys().find(|k| k.1 == task_id).cloned() {
             if let Some(entry) = self.tasks.remove(&key) {
                 // Reclaim bandwidth.
-                let (runtime, _, period) = {
+                let (runtime, period) = {
                     let t = entry.task.read();
                     match t.sched.policy {
-                        SchedClass::Deadline { runtime, deadline, period } => (runtime, deadline, period),
-                        _ => (0, 0, 1),
+                        SchedClass::Deadline { period_ns, runtime_ns } => (runtime_ns, period_ns),
+                        _ => (0, 1),
                     }
                 };
                 let bw = runtime * 1000 / period.max(1);
@@ -252,10 +254,10 @@ impl DeadlineRunQueue {
 
         // If budget is exhausted, throttle: re-insert with next period.
         if entry.budget_remaining == 0 {
-            let (runtime, _, period) = {
+            let (runtime, period) = {
                 let t = entry.task.read();
                 match t.sched.policy {
-                    SchedClass::Deadline { runtime, deadline, period } => (runtime, deadline, period),
+                    SchedClass::Deadline { period_ns, runtime_ns } => (runtime_ns, period_ns),
                     _ => return None,
                 }
             };
