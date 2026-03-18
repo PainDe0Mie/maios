@@ -2,19 +2,15 @@
 name = "windows_syscall"
 version = "0.1.0"
 authors = ["MaiOS Contributors"]
-description = "Windows NT syscall compatibility layer for MaiOS - implements Windows ABI syscalls natively"
+description = "Windows NT syscall translation layer - maps NT ABI numbers to MaiOS unified syscall table"
 edition = "2021"
 
 [dependencies]
 log = "0.4.8"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-memory = { path = "../memory" }
-memory_structs = { path = "../memory_structs" }
-pte_flags = { path = "../pte_flags" }
-task = { path = "../task" }
-app_io = { path = "../app_io" }
-spin = "0.9.4"
+maios_syscall = { path = "../maios_syscall" }
+kernel_config = { path = "../kernel_config" }
 
 [lib]
 crate-type = ["rlib"]

@@ -1,0 +1,29 @@
+[package]
+name = "maios_syscall"
+version = "0.1.0"
+authors = ["MaiOS Contributors"]
+description = "Unified syscall service layer for MaiOS - single implementation for all ABIs (native, Linux, Windows)"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+spin = "0.9.4"
+lazy_static = { version = "1.4", features = ["spin_no_std"] }
+memory = { path = "../memory" }
+memory_structs = { path = "../memory_structs" }
+pte_flags = { path = "../pte_flags" }
+task = { path = "../task" }
+app_io = { path = "../app_io" }
+fs_node = { path = "../fs_node" }
+root = { path = "../root" }
+path = { path = "../path" }
+io = { path = "../io" }
+vfs_node = { path = "../vfs_node" }
+elf_loader = { path = "../elf_loader" }
+spawn = { path = "../spawn" }
+kernel_config = { path = "../kernel_config" }
+
+[lib]
+crate-type = ["rlib"]

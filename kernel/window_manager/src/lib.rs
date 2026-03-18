@@ -27,7 +27,6 @@ extern crate spawn;
 extern crate window_inner;
 extern crate mgi;
 extern crate cpu;
-extern crate preemption;
 extern crate keyboard;
 
 use alloc::collections::VecDeque;
@@ -766,12 +765,6 @@ pub fn init() -> Result<(Queue<Event>, Queue<Event>), &'static str> {
 fn window_manager_loop(
     (key_consumer, mouse_consumer): (Queue<Event>, Queue<Event>),
 ) -> Result<(), &'static str> {
-    // The WM loop must not be preempted while holding the WINDOW_MANAGER lock.
-    // Keep the guard alive for the entire loop so timer interrupts cannot
-    // context-switch away while a spinlock is held (which causes deadlock on
-    // single-CPU or when the preempted task holds the lock another task wants).
-    let _preemption_guard = preemption::hold_preemption();
-
     loop {
         let mut need_present = false;
 
