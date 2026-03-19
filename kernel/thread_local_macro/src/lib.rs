@@ -103,7 +103,14 @@ pub fn take_current_tls_destructors() -> Vec<TlsObjectDestructor> {
 /// Currently the only value of `dtor` that is used is a type-specific monomorphized
 /// version of the above [`fast::destroy_value()`] function.
 fn register_dtor(object_ptr: *mut u8, dtor: unsafe extern "C" fn(*mut u8)) {
-    TLS_DESTRUCTORS.borrow_mut().push(TlsObjectDestructor { object_ptr, dtor });
+    // Use `try_borrow_mut` to avoid a double-panic when an exception
+    // handler (e.g. GPF during TLB shootdown) initialises a TLS variable
+    // while TLS_DESTRUCTORS is already borrowed by an outer frame.
+    // The worst outcome of a failed registration is a memory leak of that
+    // TLS object — far better than a kernel panic.
+    if let Ok(mut v) = TLS_DESTRUCTORS.try_borrow_mut() {
+        v.push(TlsObjectDestructor { object_ptr, dtor });
+    }
 }
 
 
