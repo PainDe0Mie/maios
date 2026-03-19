@@ -3909,6 +3909,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "syscall_trace"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "maios_syscall",
+]
+
+[[package]]
 name = "target-lexicon"
 version = "0.12.5"
 source = "git+https://github.com/theseus-os/target-lexicon?branch=theseus#75d36cc66df0ac4569df1b20a16ca914f417b85a"

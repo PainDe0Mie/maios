@@ -230,6 +230,29 @@ pub fn syscall_name(nr: u16) -> &'static str {
     }
 }
 
+/// Decide whether a syscall should be traced.
+///
+/// Skips high-frequency syscalls that would flood the serial port and
+/// starve the GUI/scheduler:
+/// - 0x08xx: MaiOS GUI syscalls (present, get_event @ 60fps)
+/// - 0x0300: clock_gettime (called constantly by timers)
+/// - 0x0406: sched_yield (called in spin loops)
+#[inline]
+pub fn should_trace(nr: u16) -> bool {
+    let category = nr >> 8;
+    // Skip MaiOS-specific GUI syscalls (0x08xx)
+    if category == 0x08 {
+        return false;
+    }
+    // Skip very high-frequency syscalls
+    match nr {
+        0x0300 => false, // clock_gettime
+        0x0406 => false, // sched_yield
+        0x0600 => false, // futex (spin-yield generates tons of these)
+        _ => true,
+    }
+}
+
 /// Log a syscall entry (before execution).
 ///
 /// Format: `[SYSCALL] name(arg0, arg1, ...) [nr=0xNNNN]`
