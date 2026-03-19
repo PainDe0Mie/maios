@@ -75,5 +75,11 @@ path = "../../kernel/scheduler"
 [dependencies.cpu]
 path = "../../kernel/cpu"
 
+[dependencies.time]
+path = "../../kernel/time"
+
 [dependencies.keyboard]
 path = "../../kernel/keyboard"
+
+[dependencies.mhc]
+path = "../../kernel/mhc"

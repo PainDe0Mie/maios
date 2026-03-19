@@ -39,3 +39,4 @@ root            = { path = "../root" }
 partition_table = { path = "../partition_table" }
 partition_device = { path = "../partition_device" }
 mhc             = { path = "../mhc" }
+mgi             = { path = "../mgi" }

@@ -5,6 +5,7 @@ extern crate alloc;
 extern crate log;
 
 #[cfg(target_arch = "x86_64")] extern crate mhc;
+#[cfg(target_arch = "x86_64")] extern crate mgi;
 #[cfg(target_arch = "x86_64")] extern crate nvme;
 #[cfg(target_arch = "x86_64")] extern crate ahci;
 #[cfg(target_arch = "x86_64")] extern crate fat32;
@@ -182,8 +183,20 @@ pub fn init(
     // device registry. Falls back to a CPU software GPU if no hardware is found.
     #[cfg(target_arch = "x86_64")]
     match mhc::init() {
-        Ok(())  => info!("MHC: GPU subsystem initialized"),
-        Err(e)  => warn!("MHC: init failed: {}", e),
+        Ok(()) => {
+            info!("MHC: GPU subsystem initialized");
+            // Wire MHC VirtIO-GPU as the active display output.
+            // Get the display resolution from MGI (already initialized by window_manager).
+            #[cfg(target_arch = "x86_64")]
+            if let Some(mgi_ref) = mgi::MGI.get() {
+                let (w, h) = mgi_ref.lock().resolution();
+                match mhc::setup_display(w as u32, h as u32) {
+                    Ok(())  => info!("MHC: VirtIO-GPU display output ready ({}x{})", w, h),
+                    Err(e)  => info!("MHC: VirtIO-GPU display not available: {}", e),
+                }
+            }
+        }
+        Err(e) => warn!("MHC: init failed: {}", e),
     }
 
     #[cfg(target_arch = "x86_64")]

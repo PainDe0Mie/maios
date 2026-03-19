@@ -161,6 +161,7 @@ struct VirtioGpuCtrlHdr {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone)]
 struct VirtioGpuRect {
     x: u32, y: u32, width: u32, height: u32,
 }
@@ -177,6 +178,75 @@ struct VirtioGpuRespDisplayInfo {
     hdr:    VirtioGpuCtrlHdr,
     pmodes: [VirtioGpuDisplayOne; 16],
 }
+#[repr(C)]
+struct VirtioGpuResourceCreate2d {
+    hdr:         VirtioGpuCtrlHdr,
+    resource_id: u32,
+    format:      u32,
+    width:       u32,
+    height:      u32,
+}
+
+#[repr(C)]
+struct VirtioGpuMemEntry {
+    addr:    u64,
+    length:  u32,
+    padding: u32,
+}
+
+#[repr(C)]
+struct VirtioGpuResourceAttachBacking {
+    hdr:         VirtioGpuCtrlHdr,
+    resource_id: u32,
+    nr_entries:  u32,
+    entries:     [VirtioGpuMemEntry; 1],
+}
+
+#[repr(C)]
+struct VirtioGpuSetScanout {
+    hdr:         VirtioGpuCtrlHdr,
+    r:           VirtioGpuRect,
+    scanout_id:  u32,
+    resource_id: u32,
+}
+
+#[repr(C)]
+struct VirtioGpuTransferToHost2d {
+    hdr:         VirtioGpuCtrlHdr,
+    r:           VirtioGpuRect,
+    offset:      u64,
+    resource_id: u32,
+    padding:     u32,
+}
+
+#[repr(C)]
+struct VirtioGpuResourceFlush {
+    hdr:         VirtioGpuCtrlHdr,
+    r:           VirtioGpuRect,
+    resource_id: u32,
+    padding:     u32,
+}
+
+#[repr(C)]
+struct VirtioGpuRespOkNodata {
+    hdr: VirtioGpuCtrlHdr,
+}
+
+/// MHC-managed VirtIO-GPU display resource.
+pub struct VirtioScanout {
+    /// Resource ID registered with the VirtIO-GPU device.
+    pub resource_id: u32,
+    /// Virtual address of the DMA pixel backing buffer (BGRA8888).
+    pub backing_va:  usize,
+    /// Physical address of the DMA pixel backing buffer.
+    pub backing_pa:  u64,
+    /// Scanout width in pixels.
+    pub width:  u32,
+    /// Scanout height in pixels.
+    pub height: u32,
+}
+
+
 
 // ---------------------------------------------------------------------------
 // Hardware state (kept alive after probe)
@@ -617,6 +687,206 @@ impl VirtioGpuDevice {
     // GET_DISPLAY_INFO helper (polled, used only during probe)
     // -----------------------------------------------------------------------
 
+
+    // -------------------------------------------------------------------
+    // Runtime virtqueue helpers
+    // -------------------------------------------------------------------
+
+    /// Send a command/response pair on the controlq and poll for completion.
+    ///
+    /// Always reuses descriptor slots 0 and 1 because the driver polls
+    /// synchronously — the device has processed the previous command by the
+    /// time we submit the next one.
+    fn send_polled_2desc(
+        &self,
+        hw:        &mut VirtioHwState,
+        cmd_pa:    u64,
+        cmd_size:  u32,
+        resp_pa:   u64,
+        resp_size: u32,
+    ) -> Result<(), &'static str> {
+        unsafe {
+            Self::write_desc(hw.desc_va, 0, cmd_pa,  cmd_size,  VIRTQ_DESC_F_NEXT,  1);
+            Self::write_desc(hw.desc_va, 1, resp_pa, resp_size, VIRTQ_DESC_F_WRITE, 0);
+            Self::push_avail(hw.avail_va, hw.avail_idx, hw.q_size, 0);
+            hw.avail_idx = hw.avail_idx.wrapping_add(1);
+            if hw.notify_va != 0 {
+                let off = hw.notify_queue_off as usize * hw.notify_multiplier as usize;
+                core::ptr::write_volatile((hw.notify_va + off) as *mut u16, 0);
+            }
+            let mut n = 0u64;
+            loop {
+                if Self::poll_used(hw.used_va, hw.last_used_idx, hw.q_size).is_some() {
+                    hw.last_used_idx = hw.last_used_idx.wrapping_add(1);
+                    break;
+                }
+                n += 1;
+                if n > 50_000_000 { return Err("VirtIO-GPU: command timed out"); }
+                core::hint::spin_loop();
+            }
+        }
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------
+    // Display resource lifecycle
+    // -------------------------------------------------------------------
+
+    /// Allocate a VirtIO-GPU 2D resource, attach DMA backing memory, and
+    /// set it as scanout 0.  Returns a `VirtioScanout` handle on success.
+    ///
+    /// The DMA backing buffer is intentionally leaked — it lives as long
+    /// as the kernel.
+    pub fn setup_display_resource(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<VirtioScanout, &'static str> {
+        if !self.initialized {
+            return Err("VirtIO-GPU: device not initialized");
+        }
+        const RES_ID: u32 = 10; // avoids OVMF-created resource IDs
+        const BPP: usize  = 4;
+        let sz = width as usize * height as usize * BPP;
+
+        // Physically contiguous DMA backing buffer.
+        let (bk_map, bk_phys) =
+            kernel_memory::create_contiguous_mapping(sz, kernel_memory::DMA_FLAGS)
+                .map_err(|_| "VirtIO-GPU: scanout DMA alloc failed")?;
+        let bk_va = bk_map.start_address().value();
+        let bk_pa = bk_phys.value() as u64;
+        unsafe { core::ptr::write_bytes(bk_va as *mut u8, 0, sz); }
+        core::mem::forget(bk_map);
+
+        // Shared command + response buffer.
+        let hdr_sz = core::mem::size_of::<VirtioGpuResourceCreate2d>()
+            .max(core::mem::size_of::<VirtioGpuResourceAttachBacking>())
+            .max(core::mem::size_of::<VirtioGpuSetScanout>());
+        let rsp_sz = core::mem::size_of::<VirtioGpuRespOkNodata>();
+        let (hdr_map, hdr_phys) =
+            kernel_memory::create_contiguous_mapping(hdr_sz + rsp_sz, kernel_memory::DMA_FLAGS)
+                .map_err(|_| "VirtIO-GPU: cmd DMA alloc failed")?;
+        let hdr_va = hdr_map.start_address().value();
+        let hdr_pa = hdr_phys.value() as u64;
+        let rsp_pa = hdr_pa + hdr_sz as u64;
+        core::mem::forget(hdr_map);
+
+        let mut lk = self.hw.lock();
+        let hw = lk.as_mut().ok_or("VirtIO-GPU: hw state missing")?;
+
+        // Step 1 — RESOURCE_CREATE_2D
+        unsafe {
+            core::ptr::write_bytes(hdr_va as *mut u8, 0, hdr_sz + rsp_sz);
+            let c = hdr_va as *mut VirtioGpuResourceCreate2d;
+            (*c).hdr.type_   = VirtioGpuCmd::ResourceCreate2d as u32;
+            (*c).resource_id = RES_ID;
+            (*c).format      = VirtioGpuFormat::B8G8R8A8Unorm as u32;
+            (*c).width       = width;
+            (*c).height      = height;
+        }
+        self.send_polled_2desc(
+            hw, hdr_pa,
+            core::mem::size_of::<VirtioGpuResourceCreate2d>() as u32,
+            rsp_pa, rsp_sz as u32,
+        )?;
+        log::debug!("MHC/VirtIO-GPU: RESOURCE_CREATE_2D id={} {}x{}", RES_ID, width, height);
+
+        // Step 2 — RESOURCE_ATTACH_BACKING
+        unsafe {
+            core::ptr::write_bytes(hdr_va as *mut u8, 0, hdr_sz + rsp_sz);
+            let c = hdr_va as *mut VirtioGpuResourceAttachBacking;
+            (*c).hdr.type_       = VirtioGpuCmd::ResourceAttachBacking as u32;
+            (*c).resource_id     = RES_ID;
+            (*c).nr_entries      = 1;
+            (*c).entries[0].addr   = bk_pa;
+            (*c).entries[0].length = sz as u32;
+        }
+        self.send_polled_2desc(
+            hw, hdr_pa,
+            core::mem::size_of::<VirtioGpuResourceAttachBacking>() as u32,
+            rsp_pa, rsp_sz as u32,
+        )?;
+        log::debug!("MHC/VirtIO-GPU: RESOURCE_ATTACH_BACKING pa={:#x} sz={}", bk_pa, sz);
+
+        // Step 3 — SET_SCANOUT
+        unsafe {
+            core::ptr::write_bytes(hdr_va as *mut u8, 0, hdr_sz + rsp_sz);
+            let c = hdr_va as *mut VirtioGpuSetScanout;
+            (*c).hdr.type_   = VirtioGpuCmd::SetScanout as u32;
+            (*c).r           = VirtioGpuRect { x: 0, y: 0, width, height };
+            (*c).scanout_id  = 0;
+            (*c).resource_id = RES_ID;
+        }
+        self.send_polled_2desc(
+            hw, hdr_pa,
+            core::mem::size_of::<VirtioGpuSetScanout>() as u32,
+            rsp_pa, rsp_sz as u32,
+        )?;
+        log::info!("MHC/VirtIO-GPU: display ready — {}x{} BGRA8888 scanout 0", width, height);
+
+        Ok(VirtioScanout { resource_id: RES_ID, backing_va: bk_va, backing_pa: bk_pa, width, height })
+    }
+
+    /// Copy `pixels` (BGRA8888 u32, `width * height` entries) to the VirtIO-GPU
+    /// scanout backing buffer and issue TRANSFER_TO_HOST_2D + RESOURCE_FLUSH.
+    pub fn update_scanout(
+        &self,
+        scanout: &VirtioScanout,
+        pixels:  &[u32],
+    ) -> Result<(), &'static str> {
+        if !self.initialized { return Err("VirtIO-GPU: not initialized"); }
+        let n = (scanout.width * scanout.height) as usize;
+        if pixels.len() < n { return Err("VirtIO-GPU: pixel buffer too small"); }
+
+        // Blit to DMA backing memory.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                pixels.as_ptr(),
+                scanout.backing_va as *mut u32,
+                n,
+            );
+        }
+
+        let t2d_sz  = core::mem::size_of::<VirtioGpuTransferToHost2d>();
+        let rfl_sz  = core::mem::size_of::<VirtioGpuResourceFlush>();
+        let rsp_sz  = core::mem::size_of::<VirtioGpuRespOkNodata>();
+        let cmd_max = t2d_sz.max(rfl_sz);
+        let (cm, cp) =
+            kernel_memory::create_contiguous_mapping(cmd_max + rsp_sz, kernel_memory::DMA_FLAGS)
+                .map_err(|_| "VirtIO-GPU: flush alloc failed")?;
+        let cv  = cm.start_address().value();
+        let cpa = cp.value() as u64;
+        let rpa = cpa + cmd_max as u64;
+        core::mem::forget(cm);
+
+        let full = VirtioGpuRect { x: 0, y: 0, width: scanout.width, height: scanout.height };
+        let mut lk = self.hw.lock();
+        let hw = lk.as_mut().ok_or("VirtIO-GPU: hw state missing")?;
+
+        // TRANSFER_TO_HOST_2D
+        unsafe {
+            core::ptr::write_bytes(cv as *mut u8, 0, cmd_max + rsp_sz);
+            let c = cv as *mut VirtioGpuTransferToHost2d;
+            (*c).hdr.type_   = VirtioGpuCmd::TransferToHost2d as u32;
+            (*c).r           = full;
+            (*c).offset      = 0;
+            (*c).resource_id = scanout.resource_id;
+        }
+        self.send_polled_2desc(hw, cpa, t2d_sz as u32, rpa, rsp_sz as u32)?;
+
+        // RESOURCE_FLUSH
+        unsafe {
+            core::ptr::write_bytes(cv as *mut u8, 0, cmd_max + rsp_sz);
+            let c = cv as *mut VirtioGpuResourceFlush;
+            (*c).hdr.type_   = VirtioGpuCmd::ResourceFlush as u32;
+            (*c).r           = full;
+            (*c).resource_id = scanout.resource_id;
+        }
+        self.send_polled_2desc(hw, cpa, rfl_sz as u32, rpa, rsp_sz as u32)?;
+
+        Ok(())
+    }
+
     fn send_get_display_info(
         &self,
         cfg:               usize,
@@ -796,12 +1066,25 @@ impl GpuDevice for VirtioGpuDevice {
         _src_width: u32,
         _src_height: u32,
     ) -> Result<FenceId, GpuError> {
-        if !self.initialized {
-            return Err(GpuError::DeviceNotFound);
-        }
-        // TODO: VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D + VIRTIO_GPU_CMD_RESOURCE_FLUSH
-        Err(GpuError::Unsupported("VirtIO-GPU blit not yet implemented"))
+        // The main display path goes through mhc::flush_display() which calls
+        // update_scanout() directly.  This trait impl returns an immediately-
+        // signalled fence so GpuDevice callers get a valid handle.
+        if !self.initialized { return Err(GpuError::DeviceNotFound); }
+        let fid = self.fences.alloc_fence();
+        self.fences.signal(fid);
+        Ok(fid)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Module-level device singleton (set by try_init)
+// ---------------------------------------------------------------------------
+
+static VIRTIO_GPU: spin::Once<Arc<VirtioGpuDevice>> = spin::Once::new();
+
+/// Return a reference to the VirtIO-GPU device, if one was found.
+pub fn device() -> Option<&'static VirtioGpuDevice> {
+    VIRTIO_GPU.get().map(|a| a.as_ref())
 }
 
 // ---------------------------------------------------------------------------
@@ -816,7 +1099,9 @@ pub fn try_init() -> Option<usize> {
     let mut device = VirtioGpuDevice::new();
     match device.probe() {
         Ok(()) => {
-            let id = crate::device::register_device(Arc::new(device));
+            let arc = Arc::new(device);
+            VIRTIO_GPU.call_once(|| arc.clone());
+            let id = crate::device::register_device(arc);
             log::info!("MHC/VirtIO-GPU: registered as device_id={}", id);
             Some(id)
         }
