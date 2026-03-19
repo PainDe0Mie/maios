@@ -1,0 +1,13 @@
+[package]
+name = "uptime"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.task]
+path = "../../kernel/task"
+
+[dependencies.time]
+path = "../../kernel/time"

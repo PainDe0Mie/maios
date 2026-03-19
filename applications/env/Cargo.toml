@@ -1,0 +1,13 @@
+[package]
+name = "env"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+getopts = "0.2.21"
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.task]
+path = "../../kernel/task"
