@@ -33,7 +33,9 @@ fn status_str(status: i64) -> &'static str {
 }
 
 pub fn main(_args: Vec<String>) -> isize {
+    log::warn!("test_win_compat: main() entered");
     println!("=== Windows NT Syscall Compatibility Test ===");
+    log::warn!("test_win_compat: first println done");
 
     println!("");
 

@@ -6,7 +6,7 @@
 extern crate memory_swap;
 extern crate memory_x86_64;
 
-use log::{warn, debug, trace};
+use log::{error, warn, debug, trace};
 use memory::{VirtualAddress, Page};
 use signal_handler::{Signal, SignalContext, ErrorCode};
 use x86_64::{
@@ -383,6 +383,7 @@ extern "x86-interrupt" fn stack_segment_fault_handler(stack_frame: InterruptStac
 
 /// exception 0x0D
 extern "x86-interrupt" fn general_protection_fault_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    error!("GPF at RIP={:#x} err_code={:#x}", stack_frame.instruction_pointer.as_u64(), error_code);
     println_both!("\nEXCEPTION: GENERAL PROTECTION FAULT\n{:#X?}\nError code: {:#b}", stack_frame, error_code);
     kill_and_halt(0xD, &stack_frame, Some(error_code.into()), true)
 }
@@ -393,6 +394,8 @@ extern "x86-interrupt" fn page_fault_handler(
     error_code: PageFaultErrorCode,
 ) {
     let accessed_vaddr = Cr2::read_raw() as usize;
+    error!("PAGE FAULT at RIP={:#x} accessing {:#x} err={:?}",
+        stack_frame.instruction_pointer.as_u64(), accessed_vaddr, error_code);
     if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
         let vaddr_aligned = accessed_vaddr & !(memory_swap::PAGE_SIZE - 1);
         let vaddr_obj = VirtualAddress::new_canonical(vaddr_aligned);
