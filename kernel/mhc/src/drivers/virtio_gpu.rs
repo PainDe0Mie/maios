@@ -244,6 +244,12 @@ pub struct VirtioScanout {
     pub width:  u32,
     /// Scanout height in pixels.
     pub height: u32,
+    /// Pre-allocated DMA command buffer (virtual address).
+    cmd_va:  usize,
+    /// Pre-allocated DMA command buffer (physical address).
+    cmd_pa:  u64,
+    /// Size of the pre-allocated command buffer.
+    cmd_len: usize,
 }
 
 
@@ -824,11 +830,32 @@ impl VirtioGpuDevice {
         )?;
         log::info!("MHC/VirtIO-GPU: display ready — {}x{} BGRA8888 scanout 0", width, height);
 
-        Ok(VirtioScanout { resource_id: RES_ID, backing_va: bk_va, backing_pa: bk_pa, width, height })
+        // Pre-allocate a persistent DMA buffer for runtime commands
+        // (TRANSFER_TO_HOST_2D, RESOURCE_FLUSH).  Reused every frame.
+        let rt_cmd_max = core::mem::size_of::<VirtioGpuTransferToHost2d>()
+            .max(core::mem::size_of::<VirtioGpuResourceFlush>());
+        let rt_rsp_sz = core::mem::size_of::<VirtioGpuRespOkNodata>();
+        let rt_total  = rt_cmd_max + rt_rsp_sz;
+        let (rt_map, rt_phys) =
+            kernel_memory::create_contiguous_mapping(rt_total, kernel_memory::DMA_FLAGS)
+                .map_err(|_| "VirtIO-GPU: runtime cmd DMA alloc failed")?;
+        let rt_va = rt_map.start_address().value();
+        let rt_pa = rt_phys.value() as u64;
+        core::mem::forget(rt_map);
+
+        Ok(VirtioScanout {
+            resource_id: RES_ID,
+            backing_va: bk_va, backing_pa: bk_pa,
+            width, height,
+            cmd_va: rt_va, cmd_pa: rt_pa, cmd_len: rt_total,
+        })
     }
 
     /// Copy `pixels` (BGRA8888 u32, `width * height` entries) to the VirtIO-GPU
     /// scanout backing buffer and issue TRANSFER_TO_HOST_2D + RESOURCE_FLUSH.
+    ///
+    /// Uses the pre-allocated DMA command buffer stored in `scanout` — no
+    /// per-frame allocations.
     pub fn update_scanout(
         &self,
         scanout: &VirtioScanout,
@@ -851,13 +878,11 @@ impl VirtioGpuDevice {
         let rfl_sz  = core::mem::size_of::<VirtioGpuResourceFlush>();
         let rsp_sz  = core::mem::size_of::<VirtioGpuRespOkNodata>();
         let cmd_max = t2d_sz.max(rfl_sz);
-        let (cm, cp) =
-            kernel_memory::create_contiguous_mapping(cmd_max + rsp_sz, kernel_memory::DMA_FLAGS)
-                .map_err(|_| "VirtIO-GPU: flush alloc failed")?;
-        let cv  = cm.start_address().value();
-        let cpa = cp.value() as u64;
+
+        // Reuse pre-allocated DMA command buffer from scanout.
+        let cv  = scanout.cmd_va;
+        let cpa = scanout.cmd_pa;
         let rpa = cpa + cmd_max as u64;
-        core::mem::forget(cm);
 
         let full = VirtioGpuRect { x: 0, y: 0, width: scanout.width, height: scanout.height };
         let mut lk = self.hw.lock();

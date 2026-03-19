@@ -97,6 +97,8 @@ pub struct WindowManager {
     mouse_btn_right:     bool,
     /// Saved floating border rectangle (cleared when drag ends).
     repositioned_border: Option<Rectangle>,
+    /// Cached flag: whether a VirtIO-GPU display output is active.
+    has_virtio_display:  bool,
     /// Desktop background framebuffer.
     bottom_fb:           Framebuffer<AlphaPixel>,
     /// Overlay framebuffer: floating border + cursor.
@@ -374,7 +376,8 @@ impl WindowManager {
             let mut mgi_guard = mgi.lock();
             mgi_guard.present();
             // Mirror to VirtIO-GPU scanout if MHC display is configured.
-            if mhc::has_display() {
+            // Check the cached flag first (no lock), refresh it periodically.
+            if self.has_virtio_display {
                 let pixels_u32 = unsafe {
                     core::slice::from_raw_parts(
                         mgi_guard.frontbuffer_ptr() as *const u32,
@@ -384,6 +387,11 @@ impl WindowManager {
                 mhc::flush_display(pixels_u32, w as u32, h as u32);
             }
         }
+    }
+
+    /// Tell the window manager that a VirtIO-GPU display output is available.
+    pub fn set_virtio_display(&mut self, active: bool) {
+        self.has_virtio_display = active;
     }
 
     // ── Mouse ─────────────────────────────────────────────────────────────────
@@ -758,6 +766,7 @@ pub fn init() -> Result<(Queue<Event>, Queue<Event>), &'static str> {
         mouse_btn_left:  false,
         mouse_btn_right: false,
         repositioned_border: None,
+            has_virtio_display: false,
         bottom_fb,
         top_fb,
     }));

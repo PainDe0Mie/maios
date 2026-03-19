@@ -6,6 +6,7 @@ extern crate log;
 
 #[cfg(target_arch = "x86_64")] extern crate mhc;
 #[cfg(target_arch = "x86_64")] extern crate mgi;
+#[cfg(target_arch = "x86_64")] extern crate window_manager;
 #[cfg(target_arch = "x86_64")] extern crate nvme;
 #[cfg(target_arch = "x86_64")] extern crate ahci;
 #[cfg(target_arch = "x86_64")] extern crate fat32;
@@ -191,7 +192,13 @@ pub fn init(
             if let Some(mgi_ref) = mgi::MGI.get() {
                 let (w, h) = mgi_ref.lock().resolution();
                 match mhc::setup_display(w as u32, h as u32) {
-                    Ok(())  => info!("MHC: VirtIO-GPU display output ready ({}x{})", w, h),
+                    Ok(()) => {
+                        info!("MHC: VirtIO-GPU display output ready ({}x{})", w, h);
+                        // Tell the window manager to mirror frames to VirtIO-GPU.
+                        if let Some(wm) = window_manager::WINDOW_MANAGER.get() {
+                            wm.lock().set_virtio_display(true);
+                        }
+                    }
                     Err(e)  => info!("MHC: VirtIO-GPU display not available: {}", e),
                 }
             }
