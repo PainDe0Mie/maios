@@ -12,9 +12,10 @@
 
 #![no_std]
 
-extern crate alloc;
+#[macro_use] extern crate alloc;
 
-use log::warn;
+use alloc::string::{String, ToString};
+use log::{warn, debug};
 use maios_syscall::error::{SyscallResult, SyscallError, result_to_ntstatus};
 
 /// Codes NTSTATUS Windows.
@@ -26,8 +27,8 @@ pub mod ntstatus {
     pub const STATUS_NO_MEMORY: i64 = 0xC000_0017_u32 as i32 as i64;
     #[allow(dead_code)]
     pub const STATUS_ACCESS_DENIED: i64 = 0xC000_0022_u32 as i32 as i64;
-    #[allow(dead_code)]
     pub const STATUS_OBJECT_NAME_NOT_FOUND: i64 = 0xC000_0034_u32 as i32 as i64;
+    pub const STATUS_OBJECT_NAME_COLLISION: i64 = 0xC000_0035_u32 as i32 as i64;
     #[allow(dead_code)]
     pub const STATUS_BUFFER_TOO_SMALL: i64 = 0xC000_0023_u32 as i32 as i64;
 }
@@ -187,6 +188,211 @@ fn adapt_nt_perf_counter(counter_out: u64, frequency_out: u64) -> i64 {
 }
 
 // =============================================================================
+// Utilitaires NT → VFS
+// =============================================================================
+
+/// Convertit un chemin NT en chemin VFS MaiOS.
+///
+/// `\Device\HarddiskVolumeN\foo` → `/foo`
+/// `\??\C:\foo` → `/foo`
+/// `\\.\foo` → `/foo`
+/// Normalise `\` → `/`.
+fn nt_path_to_vfs(nt_path: &str) -> String {
+    let mut path = nt_path.replace('\\', "/");
+
+    // Strip common NT prefixes
+    if let Some(rest) = path.strip_prefix("/Device/HarddiskVolume") {
+        // Skip the volume number digit(s) and the following slash
+        if let Some(pos) = rest.find('/') {
+            path = rest[pos..].to_string();
+        } else {
+            path = String::from("/");
+        }
+    } else if let Some(rest) = path.strip_prefix("/??/") {
+        // \??\C:\foo → strip drive letter too
+        if rest.len() >= 2 && rest.as_bytes()[1] == b':' {
+            path = rest[2..].to_string();
+        } else {
+            path = format!("/{}", rest);
+        }
+    } else if let Some(rest) = path.strip_prefix("//./") {
+        path = format!("/{}", rest);
+    }
+
+    if path.is_empty() {
+        path = String::from("/");
+    }
+    path
+}
+
+/// Lire une UNICODE_STRING NT depuis la mémoire du processus.
+///
+/// NT UNICODE_STRING: { Length: u16, MaxLength: u16, Buffer: *u16 }
+unsafe fn read_nt_unicode_string(ptr: u64) -> Option<String> {
+    if ptr == 0 {
+        return None;
+    }
+    let length = *(ptr as *const u16) as usize; // Length in bytes
+    let _max_length = *((ptr + 2) as *const u16);
+    let buffer_ptr = *((ptr + 8) as *const u64); // offset 8 on x86_64 (padding)
+
+    if buffer_ptr == 0 || length == 0 {
+        return None;
+    }
+
+    let char_count = length / 2;
+    let mut result = String::with_capacity(char_count);
+    for i in 0..char_count {
+        let wchar = *((buffer_ptr as *const u16).add(i));
+        if wchar < 0x80 {
+            result.push(wchar as u8 as char);
+        } else {
+            result.push('?'); // Non-ASCII: placeholder
+        }
+    }
+    Some(result)
+}
+
+/// NT CreateDisposition values
+mod create_disposition {
+    pub const FILE_SUPERSEDE: u64 = 0;
+    pub const FILE_OPEN: u64 = 1;
+    pub const FILE_CREATE: u64 = 2;
+    pub const FILE_OPEN_IF: u64 = 3;
+    pub const FILE_OVERWRITE: u64 = 4;
+    pub const FILE_OVERWRITE_IF: u64 = 5;
+}
+
+/// NT IO_STATUS_BLOCK information values
+mod io_information {
+    pub const FILE_SUPERSEDED: u64 = 0;
+    pub const FILE_OPENED: u64 = 1;
+    pub const FILE_CREATED: u64 = 2;
+    pub const FILE_OVERWRITTEN: u64 = 3;
+}
+
+/// Adaptateur pour NtCreateFile.
+///
+/// a0 = FileHandle*          (out)
+/// a1 = DesiredAccess
+/// a2 = ObjectAttributes*    { Length, RootDir, ObjectName*, ... }
+/// a3 = IoStatusBlock*       (out)
+/// a4 = AllocationSize*      (optional)
+/// a5 = FileAttributes | (ShareAccess << 32)  — packed due to 6-arg limit
+///
+/// Note: CreateDisposition et CreateOptions sont passés via les bits supérieurs
+/// de a1 (DesiredAccess) pour contourner la limite de 6 arguments.
+/// Bits [63:40] de a1 = CreateDisposition (3 bits) | CreateOptions (21 bits restants)
+///
+/// Alternative simple : on encode CreateDisposition dans les bits [35:32] de a5.
+fn adapt_nt_create_file(
+    file_handle_ptr: u64,
+    desired_access: u64,
+    object_attributes_ptr: u64,
+    io_status_block_ptr: u64,
+    _allocation_size_ptr: u64,
+    extra: u64, // bits [2:0] = CreateDisposition, bits [31:3] = FileAttributes
+) -> i64 {
+    if file_handle_ptr == 0 || object_attributes_ptr == 0 {
+        return ntstatus::STATUS_INVALID_PARAMETER;
+    }
+
+    // Lire ObjectAttributes.ObjectName (offset 16 sur x86_64)
+    let object_name_ptr = unsafe { *((object_attributes_ptr + 16) as *const u64) };
+    let nt_path = match unsafe { read_nt_unicode_string(object_name_ptr) } {
+        Some(p) => p,
+        None => return ntstatus::STATUS_INVALID_PARAMETER,
+    };
+
+    let vfs_path = nt_path_to_vfs(&nt_path);
+    debug!("NtCreateFile: NT path=\"{}\" → VFS path=\"{}\"", nt_path, vfs_path);
+
+    let disposition = extra & 0x7;
+    let _ = desired_access; // TODO: map access flags
+
+    // Construire un chemin C-string pour sys_open
+    let mut path_bytes: alloc::vec::Vec<u8> = vfs_path.into_bytes();
+    path_bytes.push(0); // null terminator
+    let path_ptr = path_bytes.as_ptr() as u64;
+
+    // Flags pour sys_open : 0 = read-only open existing
+    // On mappe le disposition pour décider si on crée ou ouvre
+    let flags: u64 = match disposition {
+        create_disposition::FILE_OPEN => 0,           // O_RDONLY, must exist
+        create_disposition::FILE_CREATE => 0x0241,    // O_WRONLY | O_CREAT | O_EXCL
+        create_disposition::FILE_OPEN_IF => 0x0042,   // O_RDWR | O_CREAT
+        create_disposition::FILE_OVERWRITE => 0x0201, // O_WRONLY | O_TRUNC
+        create_disposition::FILE_OVERWRITE_IF => 0x0242, // O_WRONLY | O_CREAT | O_TRUNC
+        create_disposition::FILE_SUPERSEDE => 0x0242, // same as OVERWRITE_IF
+        _ => 0,
+    };
+
+    let result = maios_syscall::dispatch(
+        maios_syscall::nr::SYS_OPEN,
+        path_ptr,
+        flags,
+        0, 0, 0, 0,
+    );
+
+    // Ensure path_bytes lives until after dispatch reads the pointer
+    let _ = &path_bytes;
+
+    match result {
+        Ok(handle) => {
+            unsafe { *(file_handle_ptr as *mut u64) = handle; }
+            if io_status_block_ptr != 0 {
+                unsafe {
+                    *(io_status_block_ptr as *mut i64) = ntstatus::STATUS_SUCCESS;
+                    let info = match disposition {
+                        create_disposition::FILE_CREATE => io_information::FILE_CREATED,
+                        create_disposition::FILE_OPEN => io_information::FILE_OPENED,
+                        _ => io_information::FILE_OPENED,
+                    };
+                    *((io_status_block_ptr + 8) as *mut u64) = info;
+                }
+            }
+            ntstatus::STATUS_SUCCESS
+        }
+        Err(SyscallError::NotFound) => {
+            ntstatus::STATUS_OBJECT_NAME_NOT_FOUND
+        }
+        Err(SyscallError::FileExists) => {
+            ntstatus::STATUS_OBJECT_NAME_COLLISION
+        }
+        Err(_) => {
+            ntstatus::STATUS_INVALID_PARAMETER
+        }
+    }
+}
+
+/// Stub minimal pour NtQueryInformationFile.
+///
+/// Retourne STATUS_SUCCESS avec des données vides pour ne pas crasher
+/// les appels type GetFileSize() / GetFileType().
+fn adapt_nt_query_information_file(
+    _file_handle: u64,
+    io_status_block_ptr: u64,
+    file_info_ptr: u64,
+    length: u64,
+    _info_class: u64,
+) -> i64 {
+    // Zéro-fill le buffer de sortie
+    if file_info_ptr != 0 && length > 0 {
+        let len = length as usize;
+        unsafe {
+            core::ptr::write_bytes(file_info_ptr as *mut u8, 0, len);
+        }
+    }
+    if io_status_block_ptr != 0 {
+        unsafe {
+            *(io_status_block_ptr as *mut i64) = ntstatus::STATUS_SUCCESS;
+            *((io_status_block_ptr + 8) as *mut u64) = 0;
+        }
+    }
+    ntstatus::STATUS_SUCCESS
+}
+
+// =============================================================================
 // Point d'entrée
 // =============================================================================
 
@@ -228,6 +434,12 @@ pub fn handle_syscall(
         }
         nr::NT_QUERY_PERFORMANCE_COUNTER => {
             return adapt_nt_perf_counter(arg0, arg1);
+        }
+        nr::NT_CREATE_FILE => {
+            return adapt_nt_create_file(arg0, arg1, arg2, arg3, arg4, arg5);
+        }
+        nr::NT_QUERY_INFORMATION_FILE => {
+            return adapt_nt_query_information_file(arg0, arg1, arg2, arg3, arg4);
         }
         nr::NT_TERMINATE_PROCESS => {
             // NtTerminateProcess : handle -1 = processus courant

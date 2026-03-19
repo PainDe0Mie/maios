@@ -183,6 +183,8 @@ struct Shell {
     aliases: BTreeMap<String, String>,
     /// Hostname for the system
     hostname: String,
+    /// Exit code of the last completed job (for $?)
+    last_exit_code: isize,
 }
 
 impl Shell {
@@ -223,6 +225,7 @@ impl Shell {
             terminal,
             aliases: BTreeMap::new(),
             hostname: String::from("MaiOS"),
+            last_exit_code: 0,
         })
     }
 
@@ -622,6 +625,13 @@ impl Shell {
                 // Resolve alias: replace command name if it matches an alias
                 self.resolve_alias();
 
+                // Expand variables in the command line for internal commands
+                {
+                    let tokens = Self::tokenize_cmdline(&self.cmdline);
+                    let expanded = self.expand_variables(tokens);
+                    self.cmdline = expanded.join(" ");
+                }
+
                 if self.is_internal_command() { // shell executes internal commands
                     self.execute_internal()?;
                     self.clear_cmdline(false)?;
@@ -754,6 +764,180 @@ impl Shell {
 
     /// Parse redirections from a list of arguments.
     /// Returns (cleaned_args, stdin_file, stdout_file, stdout_append_file).
+    /// Tokenize a command string, respecting double and single quotes.
+    /// "hello world" → one token, 'literal $VAR' → one token (no expansion).
+    fn tokenize_cmdline(input: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        let mut current = String::new();
+        let mut chars = input.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => {
+                    // Double-quoted string: preserve spaces, allow \"
+                    loop {
+                        match chars.next() {
+                            Some('\\') => {
+                                if let Some(&next) = chars.peek() {
+                                    if next == '"' || next == '\\' {
+                                        current.push(chars.next().unwrap());
+                                    } else {
+                                        current.push('\\');
+                                    }
+                                } else {
+                                    current.push('\\');
+                                }
+                            }
+                            Some('"') => break,
+                            Some(ch) => current.push(ch),
+                            None => break, // unterminated quote
+                        }
+                    }
+                }
+                '\'' => {
+                    // Single-quoted string: completely literal
+                    loop {
+                        match chars.next() {
+                            Some('\'') => break,
+                            Some(ch) => current.push(ch),
+                            None => break,
+                        }
+                    }
+                }
+                ' ' | '\t' => {
+                    if !current.is_empty() {
+                        tokens.push(current.clone());
+                        current.clear();
+                    }
+                }
+                _ => current.push(c),
+            }
+        }
+        if !current.is_empty() {
+            tokens.push(current);
+        }
+        tokens
+    }
+
+    /// Expand $VAR and ${VAR} references in each token.
+    fn expand_variables(&self, args: Vec<String>) -> Vec<String> {
+        let env = self.env.lock();
+        args.into_iter().map(|arg| {
+            if !arg.contains('$') {
+                return arg;
+            }
+            let mut result = String::new();
+            let mut chars = arg.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '$' {
+                    if chars.peek() == Some(&'?') {
+                        chars.next();
+                        result.push_str(&format!("{}", self.last_exit_code));
+                    } else if chars.peek() == Some(&'{') {
+                        chars.next(); // skip '{'
+                        let mut varname = String::new();
+                        loop {
+                            match chars.next() {
+                                Some('}') | None => break,
+                                Some(ch) => varname.push(ch),
+                            }
+                        }
+                        if let Some(val) = env.get(&varname) {
+                            result.push_str(val);
+                        }
+                    } else {
+                        let mut varname = String::new();
+                        while let Some(&ch) = chars.peek() {
+                            if ch.is_alphanumeric() || ch == '_' {
+                                varname.push(ch);
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                        if varname.is_empty() {
+                            result.push('$');
+                        } else if let Some(val) = env.get(&varname) {
+                            result.push_str(val);
+                        }
+                    }
+                } else {
+                    result.push(c);
+                }
+            }
+            result
+        }).collect()
+    }
+
+    /// Expand glob patterns (* and ?) in tokens by listing the VFS directory.
+    fn expand_globs(&self, args: Vec<String>) -> Vec<String> {
+        let cwd = self.env.lock().working_dir.clone();
+        args.into_iter().flat_map(|arg| {
+            if !arg.contains('*') && !arg.contains('?') {
+                return alloc::vec![arg];
+            }
+            // Split into directory part and pattern part
+            let (dir_ref, pattern) = if let Some(slash_pos) = arg.rfind('/') {
+                let dir_path = &arg[..slash_pos];
+                let pat = &arg[slash_pos + 1..];
+                let p: &path::Path = dir_path.as_ref();
+                match p.get(&cwd) {
+                    Some(FileOrDir::Dir(d)) => (d, pat.to_string()),
+                    _ => return alloc::vec![arg],
+                }
+            } else {
+                (cwd.clone(), arg.clone())
+            };
+
+            let locked = dir_ref.lock();
+            let mut matches: Vec<String> = locked.list().iter().filter_map(|name| {
+                if Self::glob_match(&pattern, name) {
+                    if arg.contains('/') {
+                        let prefix = &arg[..arg.rfind('/').unwrap() + 1];
+                        Some(format!("{}{}", prefix, name))
+                    } else {
+                        Some(name.clone())
+                    }
+                } else {
+                    None
+                }
+            }).collect();
+
+            if matches.is_empty() {
+                alloc::vec![arg] // no match: return pattern as-is (bash behavior)
+            } else {
+                matches.sort();
+                matches
+            }
+        }).collect()
+    }
+
+    /// Match a glob pattern against a name. Supports * (0+ chars) and ? (1 char).
+    fn glob_match(pattern: &str, name: &str) -> bool {
+        let p: Vec<char> = pattern.chars().collect();
+        let n: Vec<char> = name.chars().collect();
+        let (plen, nlen) = (p.len(), n.len());
+        // dp[i][j] = pattern[0..i] matches name[0..j]
+        // Use two rows to save memory
+        let mut prev = alloc::vec![false; nlen + 1];
+        let mut curr = alloc::vec![false; nlen + 1];
+        prev[0] = true;
+        for i in 1..=plen {
+            curr[0] = if p[i - 1] == '*' { prev[0] } else { false };
+            for j in 1..=nlen {
+                if p[i - 1] == '*' {
+                    curr[j] = prev[j] || curr[j - 1];
+                } else if p[i - 1] == '?' || p[i - 1] == n[j - 1] {
+                    curr[j] = prev[j - 1];
+                } else {
+                    curr[j] = false;
+                }
+            }
+            core::mem::swap(&mut prev, &mut curr);
+            for v in curr.iter_mut() { *v = false; }
+        }
+        prev[nlen]
+    }
+
     fn parse_redirections(args: &[String]) -> (Vec<String>, Option<String>, Option<String>, Option<String>) {
         let mut cleaned = Vec::new();
         let mut stdin_file = None;
@@ -815,7 +999,10 @@ impl Shell {
         }
 
         for single_task_cmd in cmdline.split('|') {
-            let mut args: Vec<String> = single_task_cmd.split_whitespace().map(|s| s.to_string()).collect();
+            let mut args = Self::tokenize_cmdline(single_task_cmd.trim());
+            if args.is_empty() {
+                continue;
+            }
             let command = args.remove(0);
 
             // If the last arg is `&`, remove it.
@@ -824,6 +1011,11 @@ impl Shell {
                     args.pop();
                 }
             }
+
+            // Expand variables ($VAR, ${VAR}, $?)
+            let args = self.expand_variables(args);
+            // Expand globs (* and ?)
+            let args = self.expand_globs(args);
 
             // Parse redirections from args
             let (clean_args, stdin_f, stdout_f, append_f) = Self::parse_redirections(&args);
@@ -1216,23 +1408,26 @@ impl Shell {
                             // here: the task ran to completion successfully, so it has an exit value.
                             // we know the return type of this task is `isize`.
                             info!("terminal: task [{}] returned exit value: {:?}", exited_task_id, exit_status);
+                            self.last_exit_code = exit_status as isize;
                             self.terminal.lock().print_to_terminal(
                                 format!("task [{exited_task_id}] exited with code {exit_status} ({exit_status:#X})\n")
                             );
                         },
 
                         Ok(ExitValue::Killed(KillReason::Requested)) => {
-                            // Nothing to do. We have already print "^C" while handling keyboard event.
+                            self.last_exit_code = 130; // SIGINT convention
                         },
 
                         // If the user manually aborts the task
                         Ok(ExitValue::Killed(kill_reason)) => {
+                            self.last_exit_code = 137; // killed
                             warn!("task [{}] was killed because {:?}", exited_task_id, kill_reason);
                             self.terminal.lock().print_to_terminal(
                                 format!("task [{exited_task_id}] was killed because {kill_reason:?}\n")
                             );
                         }
                         Err(_e) => {
+                            self.last_exit_code = 1;
                             let err_msg = format!("Failed to `join` task [{exited_task_id}] {task_ref:?}, error: {_e:?}",
                             );
                             error!("{}", err_msg);
