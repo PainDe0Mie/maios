@@ -42,7 +42,11 @@ impl Action {
     fn act(self) {
         match self {
             Action::Sync(task) => {
-                task.unblock().expect("failed to unblock sleeping task");
+                // The task may have exited or already been unblocked (race
+                // between add_to_delayed_tasklist and block in sleep()).
+                // Silently ignore the error instead of panicking in the
+                // timer interrupt handler.
+                let _ = task.unblock();
             },
             Action::Async(waker) => waker.wake(),
         }
@@ -96,17 +100,26 @@ fn add_to_delayed_tasklist(new_node: SleepingTaskNode) {
     }
 }
 
-/// Remove the next task from the delayed task list and unblock that task
+/// Remove the next task from the delayed task list and unblock that task.
+///
+/// The action (task unblock) is performed AFTER releasing the DELAYED_TASKLIST
+/// lock to avoid a nested lock dependency: action.act() → task.unblock() →
+/// scheduler::add_task() → SCHEDULERS.lock(). If SCHEDULERS is held by a
+/// preempted task and we're in an interrupt context with IRQs disabled, this
+/// would deadlock.
 fn remove_next_task_from_delayed_tasklist() {
-    let mut delayed_tasklist = DELAYED_TASKLIST.lock();
-    if let Some(SleepingTaskNode { action, .. }) = delayed_tasklist.pop() {
-        action.act();
-
+    let action = {
+        let mut delayed_tasklist = DELAYED_TASKLIST.lock();
+        let action = delayed_tasklist.pop().map(|node| node.action);
         match delayed_tasklist.peek() {
-            Some(SleepingTaskNode { resume_time, .. }) => 
+            Some(SleepingTaskNode { resume_time, .. }) =>
                 NEXT_DELAYED_TASK_UNBLOCK_TIME.store(*resume_time),
             None => NEXT_DELAYED_TASK_UNBLOCK_TIME.store(Instant::MAX),
         }
+        action
+    }; // DELAYED_TASKLIST lock released here, IRQs restored
+    if let Some(action) = action {
+        action.act();
     }
 }
 

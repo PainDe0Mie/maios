@@ -2,7 +2,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::ptr;
 
 use cpu::CpuId;
-use spin::Mutex;
+use sync_irq::IrqSafeMutex;
 use sync_preemption::PreemptionSafeMutex;
 use log::{error, trace, debug};
 
@@ -13,10 +13,10 @@ use crate::TaskRef;
 /// This is primarily used for spawning tasks, either to find the least busy CPU
 /// or spawn a task pinned to a particular CPU.
 ///
-/// The outer mutex does not need to be preemption-safe, because it is never
-/// accessed from `schedule`. In fact, ideally it would be a blocking mutex, but
-/// that leads to circular dependencies.
-static SCHEDULERS: Mutex<Vec<(CpuId, Arc<ConcurrentScheduler>)>> = Mutex::new(Vec::new());
+/// This mutex MUST be IRQ-safe because `add_task` is called from the timer
+/// interrupt handler (via `sleep::unblock_sleeping_tasks` → `task.unblock()`).
+/// A regular spin::Mutex would deadlock if the timer fires while a task holds it.
+static SCHEDULERS: IrqSafeMutex<Vec<(CpuId, Arc<ConcurrentScheduler>)>> = IrqSafeMutex::new(Vec::new());
 
 /// A reference to the current CPUs scheduler.
 ///

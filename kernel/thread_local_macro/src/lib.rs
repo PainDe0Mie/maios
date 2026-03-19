@@ -77,7 +77,18 @@ const _: () = assert!(!core::mem::needs_drop::<TlsObjectDestructor>());
 /// after the current task has exited.
 #[doc(hidden)]
 pub fn take_current_tls_destructors() -> Vec<TlsObjectDestructor> {
-    TLS_DESTRUCTORS.take()
+    // Use `try_borrow_mut` instead of `take` to avoid panicking if the
+    // RefCell is already mutably borrowed.  This can happen when a task
+    // panics while `register_dtor` holds the borrow and Theseus's
+    // unwinding mechanism fails to drop the RefMut guard properly.
+    match TLS_DESTRUCTORS.try_borrow_mut() {
+        Ok(mut v) => core::mem::take(&mut *v),
+        // The RefCell is already borrowed — a task panicked during TLS
+        // `register_dtor` and unwinding failed to drop the RefMut guard.
+        // Return an empty list instead of double-panicking; worst case is
+        // a small memory leak of un-destructed TLS objects.
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Adds the given destructor callback to the current task's list of

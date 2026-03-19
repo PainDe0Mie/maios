@@ -28,7 +28,6 @@ extern crate window_inner;
 extern crate mgi;
 extern crate mhc;
 extern crate cpu;
-extern crate preemption;
 extern crate keyboard;
 extern crate time;
 extern crate sleep;
@@ -809,8 +808,6 @@ fn window_manager_loop(
         for _ in 0..16 {
             match key_consumer.pop() {
                 Some(Event::KeyboardEvent(ref e)) => {
-                    // Hold preemption only while we touch shared state.
-                    let _guard = preemption::hold_preemption();
                     handle_keyboard(e.key_event)?;
                     need_present = true;
                 }
@@ -838,7 +835,6 @@ fn window_manager_loop(
         }
 
         if let Some(m) = last_mouse {
-            let _guard = preemption::hold_preemption();
             if let Some(wm) = WINDOW_MANAGER.get() {
                 let mut wm = wm.lock();
                 wm.mouse_btn_left  = m.buttons.left();
@@ -863,25 +859,17 @@ fn window_manager_loop(
 
         if need_present {
             if mgi::is_exclusive_fullscreen() {
-                // Mode fullscreen exclusif : copie directe du buffer app → frontbuffer,
-                // bypass complet du compositeur WM.
                 mgi::present_exclusive();
             } else {
-                // Composite under preemption guard (fast, in-memory blit).
-                {
-                    let _guard = preemption::hold_preemption();
-                    if let Some(wm) = WINDOW_MANAGER.get() {
-                        wm.lock().present();
+                if let Some(wm) = WINDOW_MANAGER.get() {
+                    if let Some(mut wm_guard) = wm.try_lock() {
+                        wm_guard.present();
                     }
                 }
             }
-            // VirtIO-GPU flush WITHOUT preemption held — the polled I/O
-            // can take a while in TCG mode and must not starve timers.
             if let Some(wm) = WINDOW_MANAGER.get() {
                 wm.lock().flush_to_virtio();
             }
-            // Incrémenter le compteur VSync global pour signaler aux apps
-            // qu'un nouveau frame a été affiché.
             mgi::vsync_tick();
         }
 

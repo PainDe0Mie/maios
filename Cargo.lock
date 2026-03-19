@@ -5291,7 +5291,6 @@ dependencies = [
  "mouse_data",
  "mpmc",
  "path",
- "preemption",
  "scheduler",
  "shapes",
  "sleep",
