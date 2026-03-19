@@ -31,6 +31,7 @@ extern crate cpu;
 extern crate preemption;
 extern crate keyboard;
 extern crate time;
+extern crate sleep;
 
 use alloc::collections::VecDeque;
 use alloc::string::ToString;
@@ -786,15 +787,14 @@ pub fn init() -> Result<(Queue<Event>, Queue<Event>), &'static str> {
 fn window_manager_loop(
     (key_consumer, mouse_consumer): (Queue<Event>, Queue<Event>),
 ) -> Result<(), &'static str> {
-    // The WM loop must not be preempted while holding the WINDOW_MANAGER lock.
-    // Keep the guard alive for the entire loop so timer interrupts cannot
-    // context-switch away while a spinlock is held (which causes deadlock on
-    // single-CPU or when the preempted task holds the lock another task wants).
-    let _preemption_guard = preemption::hold_preemption();
+    // Target: ~60 fps → present at least every 16 ms.
+    const FRAME_INTERVAL: sleep::Duration = sleep::Duration::from_millis(16);
+    // Polling interval — we sleep briefly between iterations so the
+    // timer subsystem can wake us back up.  1 ms keeps latency low while
+    // avoiding a 100 % CPU busy-loop.
+    const POLL_INTERVAL: sleep::Duration = sleep::Duration::from_millis(1);
 
-    /// Target: ~60 fps → present every 16 ms regardless of input events.
-    const FRAME_INTERVAL_MS: u64 = 16;
-    let mut last_frame: time::Instant = time::now::<time::Monotonic>();
+    let mut last_frame: time::Instant = time::Instant::now();
 
     loop {
         let mut need_present = false;
@@ -803,6 +803,8 @@ fn window_manager_loop(
         for _ in 0..16 {
             match key_consumer.pop() {
                 Some(Event::KeyboardEvent(ref e)) => {
+                    // Hold preemption only while we touch shared state.
+                    let _guard = preemption::hold_preemption();
                     handle_keyboard(e.key_event)?;
                     need_present = true;
                 }
@@ -813,7 +815,8 @@ fn window_manager_loop(
         // Process any deferred keyboard LED updates (toggled Lock keys).
         keyboard::process_deferred_led_update();
 
-        // Coalesce mouse movement: accumulate deltas, keep only the last event for button state.
+        // Coalesce mouse movement: accumulate deltas, keep only the last
+        // event for button state.
         let mut dx = 0isize;
         let mut dy = 0isize;
         let mut last_mouse: Option<MouseEvent> = None;
@@ -829,6 +832,7 @@ fn window_manager_loop(
         }
 
         if let Some(m) = last_mouse {
+            let _guard = preemption::hold_preemption();
             if let Some(wm) = WINDOW_MANAGER.get() {
                 let mut wm = wm.lock();
                 wm.mouse_btn_left  = m.buttons.left();
@@ -841,22 +845,28 @@ fn window_manager_loop(
             handle_mouse(m)?;
         }
 
-        // Periodic refresh: force a present if the frame deadline has passed,
-        // even when no input events arrived (needed for animations, blinking
-        // cursors, window redraws triggered by app threads, etc.).
-        let now: time::Instant = time::now::<time::Monotonic>();
-        if now.duration_since(last_frame).as_millis() >= FRAME_INTERVAL_MS as u128 {
+        // Periodic refresh: force a present when the frame deadline has
+        // elapsed, even if no input events arrived.  This is what makes
+        // animations, blinking cursors, and app-driven redraws work
+        // without requiring the user to move the mouse.
+        let now = time::Instant::now();
+        if now.duration_since(last_frame) >= FRAME_INTERVAL {
             need_present = true;
             last_frame = now;
         }
 
         if need_present {
+            let _guard = preemption::hold_preemption();
             if let Some(wm) = WINDOW_MANAGER.get() {
                 wm.lock().present();
             }
         }
 
-        scheduler::schedule();
+        // Sleep briefly so we yield the CPU *and* guarantee a timely
+        // wake-up.  Unlike `scheduler::schedule()` which parks the task
+        // indefinitely, `sleep` registers a timer that fires after
+        // POLL_INTERVAL and puts us back on the run-queue.
+        let _ = sleep::sleep(POLL_INTERVAL);
     }
 }
 
