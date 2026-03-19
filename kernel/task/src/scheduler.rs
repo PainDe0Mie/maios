@@ -4,7 +4,7 @@ use core::ptr;
 use cpu::CpuId;
 use sync_irq::IrqSafeMutex;
 use sync_preemption::PreemptionSafeMutex;
-use log::{error, trace, debug};
+use log::{trace, debug};
 
 use crate::TaskRef;
 
@@ -56,8 +56,6 @@ pub fn schedule() -> bool {
 
     let (did_switch, recovered_preemption_guard) =
         super::task_switch(next_task, cpu_id, preemption_guard);
-
-    // log::trace!("AFTER TASK_SWITCH CALL (CPU {}) new current: {:?}, interrupts are {}", cpu_id, super::get_my_current_task(), irq_safety::interrupts_enabled());
 
     drop(recovered_preemption_guard);
     did_switch

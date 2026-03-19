@@ -46,6 +46,12 @@ impl task::scheduler::Scheduler for Scheduler {
     }
 
     fn add(&mut self, task: TaskRef) {
+        // Prevent duplicate scheduling: if this task is already in the queue,
+        // don't add it again. Double-queueing causes two CPUs to run the same
+        // task on the same stack, leading to catastrophic corruption.
+        if self.queue.iter().any(|t| t.id == task.id) {
+            return;
+        }
         self.queue.push_back(task);
     }
 

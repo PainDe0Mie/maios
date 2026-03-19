@@ -115,6 +115,10 @@ impl task::scheduler::Scheduler for Scheduler {
     }
 
     fn add(&mut self, task: TaskRef) {
+        // Prevent duplicate scheduling
+        if self.queue.iter().any(|t| t.task.id == task.id) {
+            return;
+        }
         info!("EpochScheduler::add: task {} ({})", task.id, task.name);
         self.queue.push_back(EpochTaskRef::new(task));
     }

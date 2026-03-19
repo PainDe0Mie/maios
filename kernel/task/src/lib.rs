@@ -246,10 +246,11 @@ pub fn task_switch(next: TaskRef, cpu_id: CpuId, preemption_guard: PreemptionGua
         return (false, preemption_guard);
     }
 
-    // *** DEBUG GUARD: Vérifier si saved_sp est suspect (trop bas) ***
+    // Safety guard: reject tasks with suspiciously low saved_sp
     if next.saved_sp < 0x10000 {
-        log::error!("CRITICAL BUG: task_switch: attempting to switch to task '{}' (id {}) with suspicious saved_sp: {:#X}", next.name, next.id, next.saved_sp);
-        // On pourrait panic! ici, mais le log nous aidera à identifier la tâche coupable.
+        log::error!("task_switch: rejecting task '{}' (id {}) with suspicious saved_sp: {:#X}",
+            next.name, next.id, next.saved_sp);
+        return (false, preemption_guard);
     }
 
     // *** GUARD: Check if the task is already dead ***
@@ -263,6 +264,14 @@ pub fn task_switch(next: TaskRef, cpu_id: CpuId, preemption_guard: PreemptionGua
         return (false, preemption_guard);
     }
 
+    // *** CRITICAL: Prevent double-scheduling ***
+    // If another CPU is already running this task, we must NOT switch to it.
+    // Two CPUs on the same stack causes catastrophic corruption.
+    let running_on: Option<CpuId> = next.running_on_cpu.load().into();
+    if running_on.is_some() {
+        return (false, preemption_guard);
+    }
+
     curr.running_on_cpu.store(Option::<CpuId>::None.into());
     next.running_on_cpu.store(Option::<CpuId>::Some(cpu_id).into());
     CURRENT_TASK.set(Some(next.clone()));
@@ -271,23 +280,16 @@ pub fn task_switch(next: TaskRef, cpu_id: CpuId, preemption_guard: PreemptionGua
         unsafe { new_space.switch_to(); }
     }
 
-    // unsafe {
-    //     let old_sp_ptr = &mut (*curr.0.as_ptr()).saved_sp as *mut usize;
-    //     let new_sp_val = next.saved_sp;
-    //     mai_context_switch(old_sp_ptr, new_sp_val);
-    // }
-
     unsafe {
         let old_sp_ptr = &curr.saved_sp as *const usize as *mut usize;
         let new_sp_val = next.saved_sp;
-        // By using the context_switch function from the `context_switch` crate,
-        // we ensure that the registers saved/restored here match the `Context`
-        // struct that is created in the `spawn` crate, as both crates depend
-        // on the `context_switch` crate.
-        // The previous implementation defined its own `mai_context_switch` function
-        // which was out of sync with the `Context` struct, causing stack corruption.
         context_switch::context_switch(old_sp_ptr, new_sp_val);
     }
+
+    // After context_switch, we are on a DIFFERENT task's stack.
+    // The recovered preemption_guard may be from a different CPU (task migration).
+    // This is benign: PreemptionGuard::drop operates on the CURRENT CPU's
+    // PREEMPTION_COUNT (via CLS) regardless of the guard's stored cpu_id.
 
     (true, preemption_guard)
 }

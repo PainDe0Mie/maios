@@ -74,6 +74,10 @@ impl task::scheduler::Scheduler for Scheduler {
     }
 
     fn add(&mut self, task: TaskRef) {
+        // Prevent duplicate scheduling
+        if self.queue.iter().any(|t| t.task.id == task.id) {
+            return;
+        }
         // New tasks start with `last_ran = Instant::ZERO` so they are treated
         // as having waited the longest among tasks of the same priority.
         self.queue.push(PriorityTaskRef::new(task, DEFAULT_PRIORITY));

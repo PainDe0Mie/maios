@@ -114,21 +114,12 @@ impl PreemptionGuard {
 
 impl Drop for PreemptionGuard {
     fn drop(&mut self) {
-        let cpu_id = cpu::current_cpu();
-        if self.cpu_id != cpu_id {
-            // Task migrated between CPUs while holding a PreemptionGuard.
-            // This is a bug, but panicking in Drop causes a double-panic
-            // → triple fault → system halt. Silently tolerate and operate
-            // on the CURRENT CPU to avoid corrupting the wrong CPU's state.
-        }
-
         let prev_val = PREEMPTION_COUNT.fetch_sub(1);
 
         // If the previous counter value was 1, that means the current value is 0,
         // which means we are transitioning from preemption being disabled to enabled on this CPU.
         // Thus, we re-enable the local timer interrupt used for preemptive task switching.
         if prev_val == 1 {
-            // log::trace!("CPU {}: re-enabling local timer interrupt", cpu_id);
             #[cfg(target_arch = "x86_64")]
             apic::get_my_apic()
                 .expect("BUG: PreemptionGuard::drop() couldn't get local APIC")
@@ -136,6 +127,7 @@ impl Drop for PreemptionGuard {
                 .enable_lvt_timer(true);
         } else if prev_val == 0 {
             // Underflow occurred and the counter value wrapped around, which is a bug.
+            let cpu_id = cpu::current_cpu();
             panic!("BUG: Underflow occurred in the preemption counter for CPU {}", cpu_id);
         }
     }
