@@ -21,19 +21,19 @@ param(
 $ErrorActionPreference = "Stop"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
-function Write-Step($msg)  { Write-Host "`n>> $msg" -ForegroundColor Cyan }
-function Write-OK($msg)    { Write-Host "   [OK] $msg"   -ForegroundColor Green }
-function Write-Warn($msg)  { Write-Host "   [!] $msg"   -ForegroundColor Yellow }
-function Write-Err($msg)   { Write-Host "   [ERROR] $msg"   -ForegroundColor Red }
-function Write-Info($msg)  { Write-Host "   ... $msg"   -ForegroundColor DarkGray }
+function Write-Step($msg) { Write-Host "`n>> $msg" -ForegroundColor Cyan }
+function Write-OK($msg) { Write-Host "   [OK] $msg"   -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "   [!] $msg"   -ForegroundColor Yellow }
+function Write-Err($msg) { Write-Host "   [ERROR] $msg"   -ForegroundColor Red }
+function Write-Info($msg) { Write-Host "   ... $msg"   -ForegroundColor DarkGray }
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-$ProjectDir   = Split-Path $PSScriptRoot -Leaf
-$WorkDir      = $PSScriptRoot
-$QemuBin      = "C:\Program Files\qemu\qemu-system-x86_64.exe"
-$IsoPath      = Join-Path $WorkDir "build\MaiOS.iso"
-$DiskImage    = Join-Path $WorkDir "fat32.img"
-$NasmPath     = "C:\Program Files\NASM"
+$ProjectDir = Split-Path $PSScriptRoot -Leaf
+$WorkDir = $PSScriptRoot
+$QemuBin = "C:\Program Files\qemu\qemu-system-x86_64.exe"
+$IsoPath = Join-Path $WorkDir "build\MaiOS.iso"
+$DiskImage = Join-Path $WorkDir "fat32.img"
+$NasmPath = "C:\Program Files\NASM"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "     MaiOS - Build & Run Launcher       " -ForegroundColor Cyan
@@ -69,11 +69,11 @@ Write-OK "WSL: Available"
 if (-not $RunOnly) {
     Write-Step "Building MaiOS..."
 
-    $wslProjectPath = wsl wslpath -u ($WorkDir -replace '\\','/')
+    $wslProjectPath = wsl wslpath -u ($WorkDir -replace '\\', '/')
 
     # Build with explicit NASM path for WSL
     # Use single-line command to avoid line-ending issues
-    $buildCmd = "cd '$wslProjectPath' && export PATH=""/c/Program Files/NASM:`$PATH"" && make iso 2>&1"
+    $buildCmd = "cd '$wslProjectPath' && export PATH=""`$HOME/.cargo/bin:/c/Program Files/NASM:`$PATH"" && make iso 2>&1"
 
     Write-Info "Running: make iso"
     Write-Info ""
@@ -109,8 +109,9 @@ if (-not $BuildOnly) {
 
     $isoSize = [math]::Round((Get-Item $IsoPath).Length / 1MB, 1)
     Write-Info "ISO: $IsoPath ($isoSize MB)"
-    Write-Info "RAM: 512 MB"
-    Write-Info "CPUs: 4"
+    Write-Info "RAM: 4 GB"
+    Write-Info "CPUs: 4 (SMP)"
+    Write-Info "Machine: Q35"
     Write-Info "Boot: CD-ROM"
 
     if (Test-Path $DiskImage) {
@@ -120,18 +121,24 @@ if (-not $BuildOnly) {
 
     Write-Host ""
     Write-Host "Starting QEMU..." -ForegroundColor Green
-    Write-Host "Press Ctrl+A then X to quit" -ForegroundColor DarkGray
+    Write-Host "Serial output below (this window)." -ForegroundColor DarkGray
+    Write-Host "Monitor QEMU : ouvre un autre PowerShell et lance .\qemu-monitor.ps1" -ForegroundColor DarkGray
+    Write-Host "Quitter QEMU : .\qemu-monitor.ps1 -Cmd quit" -ForegroundColor DarkGray
     Write-Host ""
 
     $qemuArgs = @(
+        "-M", "q35"
         "-cdrom", $IsoPath
         "-boot", "d"
         "-cpu", "Broadwell"
-        "-m", "512M"
+        "-m", "4G"
         "-smp", "4"
         "-no-reboot"
         "-no-shutdown"
-        "-serial", "mon:stdio"
+        "-serial", "stdio"
+        "-monitor", "telnet:localhost:55555,server,nowait"
+        "-net", "none"
+        "-display", "sdl,gl=on"
         "-s"
     )
 

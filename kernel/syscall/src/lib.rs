@@ -2,28 +2,36 @@
 //!
 //! This crate sets up the x86_64 `SYSCALL`/`SYSRET` mechanism via MSRs
 //! and provides the low-level entry point that dispatches to either
-//! the Linux or Windows syscall handler based on the calling convention.
+//! the Linux, Windows, or native MaiOS syscall handler based on the
+//! task's execution mode.
 //!
 //! ## Architecture
 //!
-//! MaiOS supports two syscall ABIs natively:
+//! MaiOS supports three syscall ABIs:
 //!
-//! - **Linux ABI**: Uses `syscall` instruction with syscall number in RAX.
-//!   Arguments in RDI, RSI, RDX, R10, R8, R9.
+//! - **Native MaiOS ABI**: Uses MaiOS syscall numbers, dispatched directly
+//!   to the unified `maios_syscall` table. Arguments in RDI, RSI, RDX, R10, R8, R9.
 //!
-//! - **Windows NT ABI**: Uses `syscall` instruction with syscall number in RAX.
-//!   Arguments on the stack (shadow space convention) or in RCX, RDX, R8, R9.
-//!   NT syscall numbers have a service table index in bits 12..13.
+//! - **Linux ABI**: Syscall number in RAX. Arguments in RDI, RSI, RDX, R10, R8, R9.
+//!   Translated via `linux_syscall` mapper to MaiOS numbers.
 //!
-//! The dispatcher determines which ABI to use based on the task's registered
-//! execution mode (set when loading a Linux ELF or Windows PE binary).
+//! - **Windows NT ABI**: Syscall number in RAX (service table index in bits 12..13).
+//!   Arguments in R10 (original RCX), RDX, R8, R9.
+//!   Translated via `windows_syscall` mapper to MaiOS numbers.
+//!
+//! ## Performance
+//!
+//! ExecMode is stored as an `AtomicU8` directly in the Task struct —
+//! zero lock contention on the syscall hot path.
 
 #![no_std]
 #![feature(naked_functions)]
 #![feature(asm_const)]
 
+extern crate alloc;
+
 use log::{info, debug};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// Whether the syscall subsystem has been initialized.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -31,64 +39,44 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// The execution mode of a userspace process, determining which syscall ABI it uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecMode {
-    /// Native MaiOS application (direct kernel calls, no syscall translation).
-    Native,
+    /// Native MaiOS application — uses MaiOS syscall numbers directly.
+    Native = 0,
     /// Linux ELF binary — uses Linux syscall ABI.
-    Linux,
+    Linux = 1,
     /// Windows PE binary — uses Windows NT syscall ABI.
-    Windows,
+    Windows = 2,
 }
 
 /// Saved register state from a syscall entry.
-///
-/// This struct captures the userspace register context when a syscall is invoked
-/// via the `SYSCALL` instruction. It is passed to the high-level dispatcher.
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct SyscallFrame {
-    /// RAX — syscall number
     pub rax: u64,
-    /// RDI — arg0 (Linux ABI)
     pub rdi: u64,
-    /// RSI — arg1 (Linux ABI)
     pub rsi: u64,
-    /// RDX — arg2 (Linux/Windows ABI)
     pub rdx: u64,
-    /// R10 — arg3 (Linux ABI, replaces RCX which is clobbered by SYSCALL)
     pub r10: u64,
-    /// R8  — arg4
     pub r8: u64,
-    /// R9  — arg5
     pub r9: u64,
-    /// RCX — saved RIP (set by SYSCALL instruction)
     pub rcx: u64,
-    /// R11 — saved RFLAGS (set by SYSCALL instruction)
     pub r11: u64,
-    /// RSP — userspace stack pointer (must be saved manually)
     pub rsp: u64,
 }
 
 /// Initialize the syscall subsystem.
 ///
-/// This sets up the x86_64 Model-Specific Registers (MSRs) required for
-/// the `SYSCALL`/`SYSRET` instruction pair:
-///
-/// - `IA32_STAR` (0xC0000081): Segment selectors for SYSCALL/SYSRET
-/// - `IA32_LSTAR` (0xC0000082): RIP target for SYSCALL (64-bit)
-/// - `IA32_FMASK` (0xC0000084): RFLAGS mask on SYSCALL entry
-/// - `IA32_EFER` (0xC0000080): Enable SCE (syscall extensions) bit
+/// Sets up the x86_64 MSRs for SYSCALL/SYSRET and initializes
+/// the unified syscall table.
 pub fn init() -> Result<(), &'static str> {
     if INITIALIZED.load(Ordering::SeqCst) {
         return Ok(());
     }
 
+    // Initialize the unified syscall table first
+    maios_syscall::init();
+
     info!("Initializing syscall subsystem...");
 
-    // Get the kernel and user segment selectors from the GDT.
-    // STAR MSR format:
-    //   [63:48] = SYSRET CS/SS base (user CS = this + 16, user SS = this + 8)
-    //   [47:32] = SYSCALL CS/SS base (kernel CS = this, kernel SS = this + 8)
-    //   [31:0]  = Reserved (SYSCALL EIP for 32-bit, unused in 64-bit)
     let kernel_cs = gdt::AvailableSegmentSelector::KernelCode
         .get()
         .ok_or("syscall::init: kernel code selector not available")?;
@@ -123,7 +111,7 @@ pub fn init() -> Result<(), &'static str> {
 unsafe fn setup_syscall_msrs(kernel_cs_index: u16, user_cs_index: u16) {
     use core::arch::asm;
 
-    // IA32_EFER (0xC0000080): Set SCE bit (bit 0) to enable SYSCALL/SYSRET
+    // IA32_EFER (0xC0000080): Set SCE bit (bit 0)
     let efer_lo: u32;
     let efer_hi: u32;
     asm!(
@@ -133,7 +121,7 @@ unsafe fn setup_syscall_msrs(kernel_cs_index: u16, user_cs_index: u16) {
         out("edx") efer_hi,
     );
     let efer = ((efer_hi as u64) << 32) | (efer_lo as u64);
-    let new_efer = efer | 1; // Set SCE (bit 0)
+    let new_efer = efer | 1;
     asm!(
         "wrmsr",
         in("ecx") 0xC000_0080u32,
@@ -142,13 +130,6 @@ unsafe fn setup_syscall_msrs(kernel_cs_index: u16, user_cs_index: u16) {
     );
 
     // IA32_STAR (0xC0000081): Set segment selectors
-    // [63:48] = sysret_cs_ss_base — For SYSRET: CS = base+16 (64-bit), SS = base+8
-    // [47:32] = syscall_cs_ss_base — For SYSCALL: CS = base, SS = base+8
-    //
-    // The user_cs_index should point to the 32-bit user code segment.
-    // SYSRET in 64-bit mode adds 16 to get the 64-bit CS.
-    // So we need: sysret_base = user_cs_64 - 16 (in selector units)
-    // Since selectors are in units of 8 bytes, subtract 2 selector entries.
     let sysret_base = (user_cs_index & !0x3).wrapping_sub(16);
     let syscall_base = kernel_cs_index & !0x3;
     let star_value: u64 = ((sysret_base as u64) << 48) | ((syscall_base as u64) << 32);
@@ -168,9 +149,8 @@ unsafe fn setup_syscall_msrs(kernel_cs_index: u16, user_cs_index: u16) {
         in("edx") (handler_addr >> 32) as u32,
     );
 
-    // IA32_FMASK (0xC0000084): Mask RFLAGS on SYSCALL entry
-    // Clear IF (bit 9) to disable interrupts, clear DF (bit 10), clear TF (bit 8)
-    let fmask: u64 = (1 << 9) | (1 << 10) | (1 << 8); // IF | DF | TF
+    // IA32_FMASK (0xC0000084): Mask IF, DF, TF on entry
+    let fmask: u64 = (1 << 9) | (1 << 10) | (1 << 8);
     asm!(
         "wrmsr",
         in("ecx") 0xC000_0084u32,
@@ -179,74 +159,42 @@ unsafe fn setup_syscall_msrs(kernel_cs_index: u16, user_cs_index: u16) {
     );
 }
 
-/// The naked assembly entry point for SYSCALL.
-///
-/// On SYSCALL entry:
-/// - RCX = saved RIP (return address)
-/// - R11 = saved RFLAGS
-/// - CS/SS are set to kernel segments
-/// - RSP is NOT changed (still points to user stack!)
-///
-/// We must:
-/// 1. Switch to the kernel stack (from TSS RSP0)
-/// 2. Save user registers
-/// 3. Call the Rust dispatcher
-/// 4. Restore registers and SYSRET back
+/// Naked assembly entry point for SYSCALL.
 #[naked]
 unsafe extern "C" fn syscall_entry_naked() {
     core::arch::asm!(
-        // Swap to kernel stack: save user RSP in a scratch register,
-        // then load kernel RSP from the per-CPU area.
-        // For now, we use SWAPGS to access per-CPU data if available,
-        // or we can use a dedicated memory location.
-        //
-        // Simple approach: use a per-CPU scratch area via GS base.
-        // TODO: Implement proper per-CPU storage. For now, use a
-        // simple global scratch space (single-core safe).
+        "mov gs:[0x0], rsp",
+        "mov rsp, gs:[0x8]",
 
-        // Save user RSP to a scratch location
-        "mov gs:[0x0], rsp",       // Save user RSP to per-CPU scratch
+        "push 0",
+        "push r11",
+        "push rcx",
+        "push r9",
+        "push r8",
+        "push r10",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push rax",
 
-        // Load kernel RSP (TODO: proper per-CPU kernel stack pointer)
-        // For now we use a temporary kernel stack area
-        "mov rsp, gs:[0x8]",       // Load kernel RSP from per-CPU area
-
-        // Build SyscallFrame on kernel stack
-        "push 0",                   // placeholder for rsp (will fill from gs:[0x0])
-        "push r11",                 // saved RFLAGS
-        "push rcx",                 // saved RIP
-        "push r9",                  // arg5
-        "push r8",                  // arg4
-        "push r10",                 // arg3 (Linux) / original RCX (Windows)
-        "push rdx",                 // arg2
-        "push rsi",                 // arg1
-        "push rdi",                 // arg0
-        "push rax",                 // syscall number
-
-        // Fill in the saved user RSP from scratch area
         "mov rax, gs:[0x0]",
-        "mov [rsp + 72], rax",     // offset 9*8 = 72 for rsp field
+        "mov [rsp + 72], rax",
 
-        // Call the Rust dispatcher with pointer to SyscallFrame
-        "mov rdi, rsp",            // first arg = pointer to SyscallFrame
+        "mov rdi, rsp",
         "call {dispatcher}",
 
-        // Return value is in RAX (syscall result)
-        // Restore registers from SyscallFrame
-        "mov rax, [rsp + 0]",     // restore RAX (now contains return value, set by dispatcher)
+        "mov rax, [rsp + 0]",
         "mov rdi, [rsp + 8]",
         "mov rsi, [rsp + 16]",
         "mov rdx, [rsp + 24]",
         "mov r10, [rsp + 32]",
         "mov r8, [rsp + 40]",
         "mov r9, [rsp + 48]",
-        "mov rcx, [rsp + 56]",    // saved RIP for SYSRET
-        "mov r11, [rsp + 64]",    // saved RFLAGS for SYSRET
+        "mov rcx, [rsp + 56]",
+        "mov r11, [rsp + 64]",
 
-        // Restore user RSP
         "mov rsp, [rsp + 72]",
 
-        // Return to userspace
         "sysretq",
 
         dispatcher = sym syscall_dispatcher,
@@ -254,47 +202,95 @@ unsafe extern "C" fn syscall_entry_naked() {
     );
 }
 
+/// Register the execution mode for a task.
+///
+/// Should be called when loading a binary (ELF → Linux, PE → Windows).
+/// Uses AtomicU8 in the Task struct — zero lock contention.
+pub fn set_task_exec_mode(task_id: usize, mode: ExecMode) {
+    debug!("Setting ExecMode::{:?} for task {}", mode, task_id);
+    if let Some(task_ref) = task::get_task(task_id) {
+        task_ref.0.exec_mode.store(mode as u8, Ordering::Release);
+    }
+}
+
+/// Remove the execution mode for a task (reset to Native on task exit).
+pub fn remove_task_exec_mode(task_id: usize) {
+    if let Some(task_ref) = task::get_task(task_id) {
+        task_ref.0.exec_mode.store(ExecMode::Native as u8, Ordering::Release);
+    }
+}
+
+/// Get the execution mode for the current task.
+///
+/// Lock-free: reads an AtomicU8 from the Task struct.
+/// Single instruction, zero contention.
+fn current_exec_mode() -> ExecMode {
+    let mode = task::with_current_task(|t| {
+        t.0.exec_mode.load(Ordering::Relaxed)
+    }).unwrap_or(ExecMode::Linux as u8);
+
+    match mode {
+        0 => ExecMode::Native,
+        1 => ExecMode::Linux,
+        2 => ExecMode::Windows,
+        _ => ExecMode::Linux, // fallback
+    }
+}
+
 /// High-level syscall dispatcher called from assembly.
 ///
 /// Determines the execution mode of the calling task and routes
-/// the syscall to the appropriate handler (Linux or Windows).
-///
-/// Returns the syscall result in the frame's RAX field.
+/// the syscall to the appropriate handler.
 #[no_mangle]
 extern "C" fn syscall_dispatcher(frame: &mut SyscallFrame) {
     let syscall_num = frame.rax;
 
-    // TODO: Determine exec mode from the current task's metadata.
-    // For now, we detect based on syscall number ranges:
-    // - Linux syscalls: 0..~450 (standard Linux x86_64 syscall table)
-    // - Windows NT syscalls: numbers with service table bits set,
-    //   or we check task metadata.
-    //
-    // The proper approach is to check the task's ExecMode field,
-    // which is set when the binary is loaded (ELF → Linux, PE → Windows).
+    let result = match current_exec_mode() {
+        ExecMode::Windows => {
+            // Windows NT ABI: R10=arg0, RDX=arg1, R8=arg2, R9=arg3
+            windows_syscall::handle_syscall(
+                syscall_num,
+                frame.r10,
+                frame.rdx,
+                frame.r8,
+                frame.r9,
+                0,
+                0,
+            )
+        }
+        ExecMode::Linux => {
+            // Linux ABI: RDI=arg0, RSI=arg1, RDX=arg2, R10=arg3, R8=arg4, R9=arg5
+            linux_syscall::handle_syscall(
+                syscall_num,
+                frame.rdi,
+                frame.rsi,
+                frame.rdx,
+                frame.r10,
+                frame.r8,
+                frame.r9,
+            )
+        }
+        ExecMode::Native => {
+            // MaiOS native: syscall number is a MaiOS number directly.
+            // Uses Linux register convention for arguments.
+            let nr = syscall_num as u16;
+            let result = maios_syscall::dispatch(
+                nr,
+                frame.rdi,
+                frame.rsi,
+                frame.rdx,
+                frame.r10,
+                frame.r8,
+                frame.r9,
+            );
+            maios_syscall::error::result_to_linux(result)
+        }
+    };
 
-    // For the initial implementation, default to Linux ABI detection
-    // since it's the most common use case.
-
-    // Try Linux first (most common case for compatibility)
-    let result = linux_syscall::handle_syscall(
-        syscall_num,
-        frame.rdi,
-        frame.rsi,
-        frame.rdx,
-        frame.r10,
-        frame.r8,
-        frame.r9,
-    );
-
-    // Store result back
     frame.rax = result as u64;
 }
 
 /// Initialize the syscall subsystem for an Application Processor (AP).
-///
-/// Each CPU core needs its own SYSCALL MSR configuration since
-/// IA32_LSTAR and other MSRs are per-core.
 pub fn init_ap() -> Result<(), &'static str> {
     if !INITIALIZED.load(Ordering::SeqCst) {
         return Err("syscall::init_ap: BSP has not initialized syscall subsystem yet");

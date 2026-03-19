@@ -23,7 +23,44 @@ use log::{error, warn};
 /// 
 /// Returns `Ok(())` if everything ran successfully, and `Err` otherwise.
 pub fn panic_wrapper(panic_info: &PanicInfo) -> Result<(), &'static str> {
-    trace!("at top of panic_wrapper: {:?}", panic_info);
+    // Write directly to COM1 (0x3F8) bypassing ALL software layers.
+    #[inline(never)]
+    fn raw_serial_byte(b: u8) {
+        unsafe {
+            loop {
+                let status: u8;
+                core::arch::asm!("in al, dx", out("al") status, in("dx") 0x3FDu16);
+                if status & 0x20 != 0 { break; }
+            }
+            core::arch::asm!("out dx, al", in("al") b, in("dx") 0x3F8u16);
+        }
+    }
+    fn raw_serial_str(s: &str) {
+        for b in s.bytes() { raw_serial_byte(b); }
+    }
+    fn raw_serial_u32(mut n: u32) {
+        if n == 0 { raw_serial_byte(b'0'); return; }
+        let mut buf = [0u8; 10];
+        let mut i = 0;
+        while n > 0 { buf[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
+        while i > 0 { i -= 1; raw_serial_byte(buf[i]); }
+    }
+
+    raw_serial_str("\r\n!!! PANIC at ");
+    if let Some(loc) = panic_info.location() {
+        raw_serial_str(loc.file());
+        raw_serial_byte(b':');
+        raw_serial_u32(loc.line());
+    } else {
+        raw_serial_str("(unknown location)");
+    }
+    raw_serial_str("\r\n");
+    if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+        raw_serial_str("  message: ");
+        raw_serial_str(s);
+        raw_serial_str("\r\n");
+    }
+
     log_panic_entry (panic_info);
     // fault_log::print_fault_log();
 
