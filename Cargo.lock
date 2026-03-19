@@ -933,6 +933,8 @@ dependencies = [
  "log",
  "logger",
  "memory",
+ "mgi",
+ "mhc",
  "mlx5",
  "mouse",
  "mpmc",
@@ -1830,6 +1832,7 @@ dependencies = [
  "log",
  "mpmc",
  "once_cell",
+ "port_io",
  "ps2",
  "spin 0.9.4",
  "x86_64",
@@ -2250,7 +2253,6 @@ dependencies = [
  "framebuffer",
  "framebuffer_drawer",
  "log",
- "mhc",
  "shapes",
  "spin 0.9.4",
 ]
@@ -2261,6 +2263,8 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.4.1",
  "log",
+ "memory",
+ "pci",
  "spin 0.9.4",
  "task_struct",
 ]
@@ -2292,6 +2296,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "spin 0.9.4",
+ "task",
  "task_struct",
 ]
 
@@ -2401,6 +2406,7 @@ dependencies = [
  "log",
  "mouse_data",
  "mpmc",
+ "port_io",
  "ps2",
  "spin 0.9.4",
  "x86_64",
@@ -4322,7 +4328,6 @@ dependencies = [
  "test_tls",
  "test_wait_queue",
  "test_wasmtime",
- "test_win_compat",
  "theseus_std",
  "unified_channel",
  "unwind_test",
@@ -4952,10 +4957,12 @@ dependencies = [
  "framebuffer",
  "framebuffer_compositor",
  "framebuffer_drawer",
+ "keyboard",
  "keycodes_ascii",
  "lazy_static",
  "log",
  "mgi",
+ "mhc",
  "mod_mgmt",
  "mouse_data",
  "mpmc",
@@ -4966,6 +4973,7 @@ dependencies = [
  "sleep",
  "spawn",
  "spin 0.9.4",
+ "time",
  "window_inner",
 ]
 
@@ -4973,7 +4981,11 @@ dependencies = [
 name = "windows_syscall"
 version = "0.1.0"
 dependencies = [
+ "app_io",
  "log",
+ "memory",
+ "spin 0.9.4",
+ "task",
 ]
 
 [[package]]

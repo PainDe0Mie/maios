@@ -26,9 +26,11 @@ extern crate scheduler;
 extern crate spawn;
 extern crate window_inner;
 extern crate mgi;
+extern crate mhc;
 extern crate cpu;
 extern crate preemption;
 extern crate keyboard;
+extern crate time;
 
 use alloc::collections::VecDeque;
 use alloc::string::ToString;
@@ -361,8 +363,26 @@ impl WindowManager {
     }
 
     /// Flush the composed image to the display.
+    ///
+    /// Composites the MGI backbuffer → UEFI frontbuffer, then — if a
+    /// VirtIO-GPU display has been set up via MHC — copies the same pixels
+    /// to the VirtIO-GPU scanout so both outputs stay in sync.
     pub fn present(&mut self) {
-        if let Some(mgi) = MGI.get() { mgi.lock().present(); }
+        let (w, h) = self.get_screen_size();
+        if let Some(mgi) = MGI.get() {
+            let mut mgi_guard = mgi.lock();
+            mgi_guard.present();
+            // Mirror to VirtIO-GPU scanout if MHC display is configured.
+            if mhc::has_display() {
+                let pixels_u32 = unsafe {
+                    core::slice::from_raw_parts(
+                        mgi_guard.frontbuffer_ptr() as *const u32,
+                        w * h,
+                    )
+                };
+                mhc::flush_display(pixels_u32, w as u32, h as u32);
+            }
+        }
     }
 
     // ── Mouse ─────────────────────────────────────────────────────────────────
@@ -772,6 +792,10 @@ fn window_manager_loop(
     // single-CPU or when the preempted task holds the lock another task wants).
     let _preemption_guard = preemption::hold_preemption();
 
+    /// Target: ~60 fps → present every 16 ms regardless of input events.
+    const FRAME_INTERVAL_MS: u64 = 16;
+    let mut last_frame: time::Instant = time::now::<time::Monotonic>();
+
     loop {
         let mut need_present = false;
 
@@ -815,6 +839,15 @@ fn window_manager_loop(
                 }
             }
             handle_mouse(m)?;
+        }
+
+        // Periodic refresh: force a present if the frame deadline has passed,
+        // even when no input events arrived (needed for animations, blinking
+        // cursors, window redraws triggered by app threads, etc.).
+        let now: time::Instant = time::now::<time::Monotonic>();
+        if now.duration_since(last_frame).as_millis() >= FRAME_INTERVAL_MS as u128 {
+            need_present = true;
+            last_frame = now;
         }
 
         if need_present {

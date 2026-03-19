@@ -102,6 +102,10 @@ pub trait GraphicsProvider {
     fn resolution(&self) -> (usize, usize);
     /// Invalide la totalité de l'écran (force un repaint complet).
     fn invalidate_all(&mut self);
+    /// Raw pointer to the beginning of the composed (front) pixel buffer.
+    /// Pixels are stored as BGRA8888 (4 bytes each).  The caller must ensure
+    /// the buffer is not written to while reading it.
+    fn frontbuffer_ptr(&self) -> *const u8;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -140,6 +144,13 @@ impl Mgi {
     #[inline]
     pub fn invalidate_all(&mut self) {
         self.provider.invalidate_all();
+    }
+
+    /// Raw pointer to the composed frontbuffer pixels (BGRA8888).
+    /// Intended for use by MHC to mirror the display to VirtIO-GPU.
+    #[inline]
+    pub fn frontbuffer_ptr(&self) -> *const u8 {
+        self.provider.frontbuffer_ptr()
     }
 }
 
@@ -569,5 +580,9 @@ impl GraphicsProvider for SoftwareGraphicsProvider {
 
     fn invalidate_all(&mut self) {
         self.tilemap.mark_all();
+    }
+
+    fn frontbuffer_ptr(&self) -> *const u8 {
+        self.frontbuffer.buffer().as_ptr() as *const u8
     }
 }
