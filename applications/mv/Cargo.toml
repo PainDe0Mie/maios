@@ -1,0 +1,24 @@
+[package]
+name = "mv"
+version = "0.1.0"
+authors = ["MaiOS"]
+
+[dependencies]
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.task]
+path = "../../kernel/task"
+
+[dependencies.path]
+path = "../../kernel/path"
+
+[dependencies.fs_node]
+path = "../../kernel/fs_node"
+
+[dependencies.heapfile]
+path = "../../kernel/heapfile"
+
+[lib]
+crate-type = ["rlib"]

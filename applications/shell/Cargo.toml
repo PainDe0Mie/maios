@@ -65,5 +65,14 @@ path = "../../kernel/fs_node"
 [dependencies.mod_mgmt]
 path = "../../kernel/mod_mgmt"
 
+[dependencies.rtc]
+path = "../../kernel/rtc"
+
+[dependencies.heapfile]
+path = "../../kernel/heapfile"
+
+[dependencies.time]
+path = "../../kernel/time"
+
 [lib]
 crate-type = ["rlib"]

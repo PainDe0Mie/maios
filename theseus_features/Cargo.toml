@@ -15,13 +15,18 @@ first_application = { path = "../kernel/first_application", optional = true }
 ## Regular applications.
 cat = { path = "../applications/cat", optional = true }
 cd = { path = "../applications/cd", optional = true }
+cp = { path = "../applications/cp", optional = true }
 date = { path = "../applications/date", optional = true }
 deps = { path = "../applications/deps", optional = true }
+find = { path = "../applications/find", optional = true }
+grep = { path = "../applications/grep", optional = true }
+head = { path = "../applications/head", optional = true }
 hull = { path = "../applications/hull", optional = true }
 kill = { path = "../applications/kill", optional = true }
 loadc = { path = "../applications/loadc", optional = true }
 ls = { path = "../applications/ls", optional = true }
 mkdir = { path = "../applications/mkdir", optional = true }
+mv = { path = "../applications/mv", optional = true }
 ns = { path = "../applications/ns", optional = true }
 ping = { path = "../applications/ping", optional = true }
 pmu_sample_start = { path = "../applications/pmu_sample_start", optional = true }
@@ -33,8 +38,11 @@ rq = { path = "../applications/rq", optional = true }
 serial_echo = { path = "../applications/serial_echo", optional = true }
 shell = { path = "../applications/shell", optional = true }
 swap = { path = "../applications/swap", optional = true }
+tail = { path = "../applications/tail", optional = true }
+touch = { path = "../applications/touch", optional = true }
 upd = { path = "../applications/upd", optional = true }
 wasm = { path = "../applications/wasm", optional = true }
+wc = { path = "../applications/wc", optional = true }
 
 
 ## Kernel crates used for only testing purposes.
@@ -110,13 +118,18 @@ wasmtime = [ "test_wasmtime" ]
 theseus_apps = [
     "cat",
     "cd",
+    "cp",
     "date",
     "deps",
+    "find",
+    "grep",
+    "head",
     "hull",
     "kill",
     "loadc",
     "ls",
     "mkdir",
+    "mv",
     "ns",
     "ping",
     "pmu_sample_start",
@@ -128,8 +141,11 @@ theseus_apps = [
     "serial_echo",
     "shell",
     "swap",
+    "tail",
+    "touch",
     "upd",
     "wasm",
+    "wc",
 ]
 
 ## Includes all benchmark application crates in the build.

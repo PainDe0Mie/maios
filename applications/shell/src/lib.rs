@@ -10,7 +10,7 @@ extern crate spin;
 extern crate dfqueue;
 extern crate spawn;
 extern crate task;
-extern crate event_types; 
+extern crate event_types;
 extern crate window_manager;
 extern crate path;
 extern crate root;
@@ -24,6 +24,9 @@ extern crate environment;
 extern crate libterm;
 extern crate cpu;
 extern crate mod_mgmt;
+extern crate rtc;
+extern crate time;
+extern crate heapfile;
 
 #[macro_use] extern crate alloc;
 #[macro_use] extern crate log;
@@ -88,7 +91,13 @@ struct Job {
     /// The output reader of the job. It is the reader of `pipe_queues[N]`.
     stdout_reader: StdioReader,
     /// Command line that was used to create the job.
-    cmd: String
+    cmd: String,
+    /// If set, redirect stdout to this file (overwrite).
+    stdout_redirect: Option<String>,
+    /// If set, redirect stdout to this file (append).
+    stdout_append: Option<String>,
+    /// Buffer for collecting stdout when redirecting to a file.
+    redirect_buffer: Vec<u8>,
 }
 
 /// A main function that spawns a new shell and waits for the shell loop to exit before returning an exit value
@@ -157,7 +166,6 @@ struct Shell {
     /// Vector that stores the history of commands that the user has entered
     command_history: Vec<String>,
     /// Variable used to track the net number of times the user has pressed up/down to cycle through the commands
-    /// ex. if the user has pressed up twice and down once, then command shift = # ups - # downs = 1 (cannot be negative)
     history_index: usize,
     /// When someone enters some commands, but before pressing `enter` it presses `up` to see previous commands,
     /// we must push it to command_history. We don't want to push it twice.
@@ -170,7 +178,11 @@ struct Shell {
     /// The terminal's current environment
     env: Arc<Mutex<Environment>>,
     /// the terminal that is bind with the shell instance
-    terminal: Arc<Mutex<Terminal>>
+    terminal: Arc<Mutex<Terminal>>,
+    /// Command aliases (alias name -> command string)
+    aliases: BTreeMap<String, String>,
+    /// Hostname for the system
+    hostname: String,
 }
 
 impl Shell {
@@ -208,7 +220,9 @@ impl Shell {
             print_consumer,
             print_producer,
             env: Arc::new(Mutex::new(env)),
-            terminal
+            terminal,
+            aliases: BTreeMap::new(),
+            hostname: String::from("MaiOS"),
         })
     }
 
@@ -305,6 +319,39 @@ impl Shell {
     /// Move the cursor to the very end of the input command line.
     fn move_cursor_rightmost(&mut self) -> Result<(), &'static str> {
         self.update_cursor_pos(0)?;
+        Ok(())
+    }
+
+    /// Delete the word before the cursor (Ctrl+W behavior).
+    fn delete_previous_word(&mut self) -> Result<(), &'static str> {
+        let offset_from_end = self.terminal.lock().get_cursor_offset_from_end();
+        let cursor_pos = self.cmdline.len() - offset_from_end;
+        if cursor_pos == 0 {
+            return Ok(());
+        }
+        // Skip trailing spaces
+        let mut start = cursor_pos;
+        while start > 0 && self.cmdline.as_bytes()[start - 1] == b' ' {
+            start -= 1;
+        }
+        // Skip the word
+        while start > 0 && self.cmdline.as_bytes()[start - 1] != b' ' {
+            start -= 1;
+        }
+        let chars_to_delete = cursor_pos - start;
+        for _ in 0..chars_to_delete {
+            self.remove_char_from_cmdline(true, true)?;
+        }
+        Ok(())
+    }
+
+    /// Delete everything before the cursor (Ctrl+U behavior).
+    fn delete_line_before_cursor(&mut self) -> Result<(), &'static str> {
+        let offset_from_end = self.terminal.lock().get_cursor_offset_from_end();
+        let cursor_pos = self.cmdline.len() - offset_from_end;
+        for _ in 0..cursor_pos {
+            self.remove_char_from_cmdline(true, true)?;
+        }
         Ok(())
     }
 
@@ -484,6 +531,47 @@ impl Shell {
             return Ok(());
         }
 
+        // Ctrl+L: clear screen (like bash)
+        if keyevent.modifiers.is_control() && keyevent.keycode == Keycode::L {
+            if self.fg_job_num.is_none() {
+                self.terminal.lock().clear();
+                self.redisplay_prompt();
+            }
+            return Ok(());
+        }
+
+        // Ctrl+A: move cursor to beginning of line
+        if keyevent.modifiers.is_control() && keyevent.keycode == Keycode::A {
+            if self.fg_job_num.is_none() {
+                return self.move_cursor_leftmost();
+            }
+            return Ok(());
+        }
+
+        // Ctrl+E: move cursor to end of line
+        if keyevent.modifiers.is_control() && keyevent.keycode == Keycode::E {
+            if self.fg_job_num.is_none() {
+                return self.move_cursor_rightmost();
+            }
+            return Ok(());
+        }
+
+        // Ctrl+W: delete previous word
+        if keyevent.modifiers.is_control() && keyevent.keycode == Keycode::W {
+            if self.fg_job_num.is_none() {
+                self.delete_previous_word()?;
+            }
+            return Ok(());
+        }
+
+        // Ctrl+U: delete line before cursor
+        if keyevent.modifiers.is_control() && keyevent.keycode == Keycode::U {
+            if self.fg_job_num.is_none() {
+                self.delete_line_before_cursor()?;
+            }
+            return Ok(());
+        }
+
         // Perform command line auto completion.
         if keyevent.keycode == Keycode::Tab {
             if self.fg_job_num.is_none() {
@@ -530,6 +618,9 @@ impl Shell {
                 self.command_history.push(cmdline);
                 self.command_history.dedup(); // Removes any duplicates
                 self.history_index = 0;
+
+                // Resolve alias: replace command name if it matches an alias
+                self.resolve_alias();
 
                 if self.is_internal_command() { // shell executes internal commands
                     self.execute_internal()?;
@@ -661,13 +752,62 @@ impl Shell {
         Ok(taskref)
     }
 
+    /// Parse redirections from a list of arguments.
+    /// Returns (cleaned_args, stdin_file, stdout_file, stdout_append_file).
+    fn parse_redirections(args: &[String]) -> (Vec<String>, Option<String>, Option<String>, Option<String>) {
+        let mut cleaned = Vec::new();
+        let mut stdin_file = None;
+        let mut stdout_file = None;
+        let mut stdout_append = None;
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == ">>" {
+                if i + 1 < args.len() {
+                    stdout_append = Some(args[i + 1].clone());
+                    i += 2;
+                    continue;
+                }
+            } else if args[i] == ">" {
+                if i + 1 < args.len() {
+                    stdout_file = Some(args[i + 1].clone());
+                    i += 2;
+                    continue;
+                }
+            } else if args[i] == "<" {
+                if i + 1 < args.len() {
+                    stdin_file = Some(args[i + 1].clone());
+                    i += 2;
+                    continue;
+                }
+            } else if args[i].starts_with(">>") {
+                stdout_append = Some(args[i][2..].to_string());
+                i += 1;
+                continue;
+            } else if args[i].starts_with('>') {
+                stdout_file = Some(args[i][1..].to_string());
+                i += 1;
+                continue;
+            } else if args[i].starts_with('<') {
+                stdin_file = Some(args[i][1..].to_string());
+                i += 1;
+                continue;
+            }
+            cleaned.push(args[i].clone());
+            i += 1;
+        }
+        (cleaned, stdin_file, stdout_file, stdout_append)
+    }
+
     /// Evaluate the command line. It creates a sequence of jobs, which forms a chain of applications that
     /// pipe the output from one to the next, and finally back to the shell. If any task fails to start up,
     /// all tasks that have already been spawned will be killed immeidately before returning error.
-    fn eval_cmdline(&mut self) -> Result<Vec<JoinableTaskRef>, AppErr> {
+    fn eval_cmdline(&mut self) -> Result<(Vec<JoinableTaskRef>, Option<String>, Option<String>, Option<String>), AppErr> {
 
         let cmdline = self.cmdline.trim().to_string();
         let mut task_refs = Vec::new();
+        let mut stdin_redirect = None;
+        let mut stdout_redirect = None;
+        let mut stdout_append = None;
 
         // If the command line is empty or starts with '|', return 'AppErr'
         if cmdline.is_empty() || cmdline.starts_with('|') {
@@ -684,7 +824,14 @@ impl Shell {
                     args.pop();
                 }
             }
-            match self.create_single_task(command, args) {
+
+            // Parse redirections from args
+            let (clean_args, stdin_f, stdout_f, append_f) = Self::parse_redirections(&args);
+            if stdin_f.is_some() { stdin_redirect = stdin_f; }
+            if stdout_f.is_some() { stdout_redirect = stdout_f; }
+            if append_f.is_some() { stdout_append = append_f; }
+
+            match self.create_single_task(command, clean_args) {
                 Ok(task_ref) => task_refs.push(task_ref),
 
                 // Once we run into an error, we must kill all previously spawned tasks in this command line.
@@ -698,13 +845,13 @@ impl Shell {
                 }
             }
         }
-        Ok(task_refs)
+        Ok((task_refs, stdin_redirect, stdout_redirect, stdout_append))
     }
 
     /// Start a new job in the shell by the command line.
     fn build_new_job(&mut self) -> Result<isize, &'static str> {
         match self.eval_cmdline() {
-            Ok(task_refs) => {
+            Ok((task_refs, stdin_redirect, stdout_redirect, stdout_append)) => {
 
                 let mut task_ids = Vec::new();
                 let mut pipe_queues = Vec::new();
@@ -738,6 +885,28 @@ impl Shell {
 
                 let job_stdout_reader = previous_queue_reader;
 
+                // Handle stdin redirection: read file content and feed it to the job's stdin
+                if let Some(ref input_file) = stdin_redirect {
+                    let input_path: &path::Path = input_file.as_ref();
+                    let cwd = self.env.lock().working_dir.clone();
+                    match input_path.get(&cwd) {
+                        Some(FileOrDir::File(file)) => {
+                            let mut file_locked = file.lock();
+                            let file_size = file_locked.len();
+                            let mut buf = alloc::vec![0u8; file_size];
+                            if let Ok(bytes_read) = file_locked.read_at(&mut buf, 0) {
+                                let _ = job_stdin_writer.lock().write_all(&buf[..bytes_read]);
+                            }
+                            job_stdin_writer.lock().set_eof();
+                        },
+                        _ => {
+                            self.terminal.lock().print_to_terminal(
+                                format!("shell: {}: No such file\n", input_file)
+                            );
+                        }
+                    }
+                }
+
                 let new_job = Job {
                     tasks: task_refs,
                     task_ids,
@@ -746,7 +915,10 @@ impl Shell {
                     stderr_queues,
                     stdin_writer: job_stdin_writer,
                     stdout_reader: job_stdout_reader,
-                    cmd: self.cmdline.clone()
+                    cmd: self.cmdline.clone(),
+                    stdout_redirect,
+                    stdout_append,
+                    redirect_buffer: Vec::new(),
                 };
 
                 // All IO streams have been set up for the new tasks. Safe to unblock them now.
@@ -799,11 +971,22 @@ impl Shell {
     /// Try to match the incomplete command against all internal commands. Returns a
     /// vector that contains all matching results.
     fn find_internal_cmd_match(&mut self, incomplete_cmd: &String) -> Result<Vec<String>, &'static str> {
-        let internal_cmds = ["fg", "bg", "jobs", "ps", "tasks", "tasklist", "clear", "help", "echo", "whoami", "uname"];
+        let internal_cmds = [
+            "fg", "bg", "jobs", "ps", "tasks", "tasklist", "clear", "cls",
+            "help", "echo", "whoami", "uname", "ver",
+            "cd", "pwd", "export", "env", "set", "alias", "unalias",
+            "history", "exit", "date", "uptime", "hostname", "type",
+        ];
         let mut match_cmds = Vec::new();
         for cmd in internal_cmds.iter() {
             if cmd.starts_with(incomplete_cmd) {
                 match_cmds.push(cmd.to_string());
+            }
+        }
+        // Also match alias names
+        for alias_name in self.aliases.keys() {
+            if alias_name.starts_with(incomplete_cmd.as_str()) {
+                match_cmds.push(alias_name.clone());
             }
         }
         Ok(match_cmds)
@@ -1152,6 +1335,51 @@ impl Shell {
         // remove the queues in app_io.
         for finished_job_num in job_to_be_removed {
             if let Some(job) = self.jobs.remove(&finished_job_num) {
+                // Handle stdout redirection: write collected output to file
+                if !job.redirect_buffer.is_empty() {
+                    let cwd = self.env.lock().working_dir.clone();
+                    if let Some(ref filename) = job.stdout_redirect {
+                        // Overwrite: create new file with the buffer content
+                        match heapfile::HeapFile::from_vec(
+                            job.redirect_buffer.clone(),
+                            filename.clone(),
+                            &cwd,
+                        ) {
+                            Ok(_) => {},
+                            Err(e) => {
+                                self.terminal.lock().print_to_terminal(
+                                    format!("shell: cannot create {}: {}\n", filename, e)
+                                );
+                            }
+                        }
+                    } else if let Some(ref filename) = job.stdout_append {
+                        // Append: read existing file, append, write back
+                        let file_path: &path::Path = filename.as_ref();
+                        match file_path.get(&cwd) {
+                            Some(FileOrDir::File(file)) => {
+                                let mut file_locked = file.lock();
+                                let offset = file_locked.len();
+                                let _ = file_locked.write_at(&job.redirect_buffer, offset);
+                            },
+                            _ => {
+                                // File doesn't exist, create it
+                                match heapfile::HeapFile::from_vec(
+                                    job.redirect_buffer.clone(),
+                                    filename.clone(),
+                                    &cwd,
+                                ) {
+                                    Ok(_) => {},
+                                    Err(e) => {
+                                        self.terminal.lock().print_to_terminal(
+                                            format!("shell: cannot create {}: {}\n", filename, e)
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 for task_id in job.task_ids {
                     self.task_to_job.remove(&task_id);
                     app_io::remove_child_streams(task_id);
@@ -1166,7 +1394,11 @@ impl Shell {
     fn redisplay_prompt(&mut self) {
         let curr_env = self.env.lock();
         let prompt_path = curr_env.working_dir.lock().get_absolute_path();
-        let prompt = format!("MaiOS:{}> ", prompt_path);
+        // Colored prompt: green hostname, cyan path, white separator
+        let prompt = format!(
+            "\x1b[1;32m{}\x1b[0m:\x1b[1;36m{}\x1b[0m> ",
+            self.hostname, prompt_path
+        );
         self.terminal.lock().print_to_terminal(prompt);
         self.terminal.lock().print_to_terminal(self.cmdline.clone());
     }
@@ -1188,16 +1420,22 @@ impl Shell {
         let mut buf: [u8; 256] = [0; 256];
 
         // iterate through all jobs to see if they have something to print
-        for (_job_num, job) in self.jobs.iter() {
+        for (_job_num, job) in self.jobs.iter_mut() {
 
             // Deal with all stdout output.
+            let has_redirect = job.stdout_redirect.is_some() || job.stdout_append.is_some();
             let mut stdout = job.stdout_reader.lock();
             match stdout.try_read(&mut buf) {
                 Ok(cnt) => {
                     mem::drop(stdout);
-                    let s = String::from_utf8_lossy(&buf[0..cnt]);
-                    let mut locked_terminal = self.terminal.lock();
-                    locked_terminal.print_to_terminal(s.to_string());
+                    if has_redirect {
+                        // Accumulate in redirect buffer instead of printing
+                        job.redirect_buffer.extend_from_slice(&buf[0..cnt]);
+                    } else {
+                        let s = String::from_utf8_lossy(&buf[0..cnt]);
+                        let mut locked_terminal = self.terminal.lock();
+                        locked_terminal.print_to_terminal(s.to_string());
+                    }
                     if cnt != 0 { need_refresh = true; }
                 },
                 Err(_) => {
@@ -1339,21 +1577,34 @@ impl Shell {
 
 /// Shell internal command related methods.
 impl Shell {
+    /// Resolve alias: if the first word of cmdline matches an alias, replace it.
+    fn resolve_alias(&mut self) {
+        let first_word = match self.cmdline.split_whitespace().next() {
+            Some(w) => w.to_string(),
+            None => return,
+        };
+        if let Some(replacement) = self.aliases.get(&first_word).cloned() {
+            let rest = self.cmdline[first_word.len()..].to_string();
+            self.cmdline = format!("{}{}", replacement, rest);
+        }
+    }
+
     /// Check if the current command line is a shell internal command.
     fn is_internal_command(&self) -> bool {
         let mut iter = self.cmdline.split_whitespace();
         if let Some(cmd) = iter.next() {
-            match cmd {
-                "jobs" | "ps" | "tasks" | "tasklist" | "fg" | "bg" | "clear" | "cls" | "help" | "echo" | "whoami" | "uname" | "ver" => true,
-                _ => false
-            }
+            matches!(cmd,
+                "jobs" | "ps" | "tasks" | "tasklist" | "fg" | "bg" |
+                "clear" | "cls" | "help" | "echo" | "whoami" | "uname" | "ver" |
+                "cd" | "pwd" | "export" | "env" | "set" | "alias" | "unalias" |
+                "history" | "exit" | "date" | "uptime" | "hostname" | "type"
+            )
         } else {
             false
         }
     }
 
-    /// Execute the command line as an internal command. If the current command line fails to
-    /// be a shell internal command, this function does nothing.
+    /// Execute the command line as an internal command.
     fn execute_internal(&mut self) -> Result<(), &'static str> {
         let cmdline_copy = self.cmdline.clone();
         let mut iter = cmdline_copy.split_whitespace();
@@ -1367,7 +1618,19 @@ impl Shell {
                 "help" => self.execute_internal_help(),
                 "echo" => self.execute_internal_echo(&cmdline_copy),
                 "whoami" => self.execute_internal_whoami(),
-                "uname" | "ver" => self.execute_internal_uname(),
+                "uname" | "ver" => self.execute_internal_uname(&cmdline_copy),
+                "cd" => self.execute_internal_cd(&cmdline_copy),
+                "pwd" => self.execute_internal_pwd(),
+                "export" => self.execute_internal_export(&cmdline_copy),
+                "env" | "set" => self.execute_internal_env(),
+                "alias" => self.execute_internal_alias(&cmdline_copy),
+                "unalias" => self.execute_internal_unalias(&cmdline_copy),
+                "history" => self.execute_internal_history(),
+                "exit" => self.execute_internal_exit(),
+                "date" => self.execute_internal_date(),
+                "uptime" => self.execute_internal_uptime(),
+                "hostname" => self.execute_internal_hostname(&cmdline_copy),
+                "type" => self.execute_internal_type(&cmdline_copy),
                 _ => Ok(())
             }
         } else {
@@ -1379,7 +1642,7 @@ impl Shell {
         let mut term = self.terminal.lock();
         term.print_to_terminal(format!("{:<6} | {:<5} | {}\n", "PID", "CPU", "TASK NAME"));
         term.print_to_terminal("-------+-------+--------------------------\n".to_string());
-        
+
         let all_tasks = task::scheduler::tasks();
         let mut total_tasks = 0;
 
@@ -1391,7 +1654,7 @@ impl Shell {
         }
         term.print_to_terminal(format!("Total active tasks: {}\n", total_tasks));
         drop(term);
-        
+
         self.clear_cmdline(false)?;
         self.redisplay_prompt();
         Ok(())
@@ -1404,7 +1667,7 @@ impl Shell {
         Ok(())
     }
 
-    /// Execute `bg` command. It takes a job number and runs the in the background.
+    /// Execute `bg` command.
     fn execute_internal_bg(&mut self) -> Result<(), &'static str> {
         let cmdline_copy = self.cmdline.clone();
         let mut iter = cmdline_copy.split_whitespace();
@@ -1437,7 +1700,7 @@ impl Shell {
         Ok(())
     }
 
-    /// Execute `fg` command. It takes a job number and runs the job in the foreground.
+    /// Execute `fg` command.
     fn execute_internal_fg(&mut self) -> Result<(), &'static str> {
         let cmdline_copy = self.cmdline.clone();
         let mut iter = cmdline_copy.split_whitespace();
@@ -1469,7 +1732,7 @@ impl Shell {
         Ok(())
     }
 
-    /// Execute `jobs` command. It lists all jobs.
+    /// Execute `jobs` command.
     fn execute_internal_jobs(&mut self) -> Result<(), &'static str> {
         for (job_num, job_ref) in self.jobs.iter() {
             let status = match &job_ref.status {
@@ -1486,42 +1749,128 @@ impl Shell {
         Ok(())
     }
 
-    /// Execute `help` command. Shows available commands.
+    /// Execute `help` command with categorized output.
     fn execute_internal_help(&mut self) -> Result<(), &'static str> {
-        self.terminal.lock().print_to_terminal("===========================================================\n".to_string());
-        self.terminal.lock().print_to_terminal("Mai OS - Terminal v1.0.0\n".to_string());
-        self.terminal.lock().print_to_terminal("===========================================================\n\n".to_string());
-        self.terminal.lock().print_to_terminal("Internal Commands:\n".to_string());
-        self.terminal.lock().print_to_terminal("  help                     - Show this help message\n".to_string());
-        self.terminal.lock().print_to_terminal("  clear / cls              - Clear the screen\n".to_string());
-        self.terminal.lock().print_to_terminal("  echo                     - Print text to the terminal\n".to_string());
-        self.terminal.lock().print_to_terminal("  whoami                   - Print current user (root)\n".to_string());
-        self.terminal.lock().print_to_terminal("  uname / ver              - Print system information\n".to_string());
-        self.terminal.lock().print_to_terminal("  jobs                     - List running/stopped jobs\n".to_string());
-        self.terminal.lock().print_to_terminal("  ps / tasks / tasklist    - List running/stopped jobs\n".to_string());
-        self.terminal.lock().print_to_terminal("  fg %N                    - Bring job N to foreground\n".to_string());
-        self.terminal.lock().print_to_terminal("  bg %N                    - Send job N to background\n".to_string());
-        self.terminal.lock().print_to_terminal("===========================================================\n".to_string());
+        let mut term = self.terminal.lock();
+        term.print_to_terminal("===========================================================\n".to_string());
+        term.print_to_terminal("\x1b[1;32mMai OS\x1b[0m - Terminal v2.0.0\n".to_string());
+        term.print_to_terminal("===========================================================\n\n".to_string());
+
+        term.print_to_terminal("\x1b[1;33mShell Builtins:\x1b[0m\n".to_string());
+        term.print_to_terminal("  help                     - Show this help message\n".to_string());
+        term.print_to_terminal("  clear / cls              - Clear the screen\n".to_string());
+        term.print_to_terminal("  echo [-e] TEXT            - Print text (-e: escape sequences)\n".to_string());
+        term.print_to_terminal("  whoami                   - Print current user\n".to_string());
+        term.print_to_terminal("  uname [-a/-s/-r/-m]      - Print system information\n".to_string());
+        term.print_to_terminal("  date                     - Print current date and time\n".to_string());
+        term.print_to_terminal("  uptime                   - Print system uptime\n".to_string());
+        term.print_to_terminal("  hostname [NAME]          - Show/set hostname\n".to_string());
+        term.print_to_terminal("  history                  - Show command history\n".to_string());
+        term.print_to_terminal("  exit                     - Exit the shell\n".to_string());
+        term.print_to_terminal("  type COMMAND             - Show command type\n".to_string());
+
+        term.print_to_terminal("\n\x1b[1;33mNavigation:\x1b[0m\n".to_string());
+        term.print_to_terminal("  cd [PATH]                - Change directory\n".to_string());
+        term.print_to_terminal("  pwd                      - Print working directory\n".to_string());
+
+        term.print_to_terminal("\n\x1b[1;33mEnvironment:\x1b[0m\n".to_string());
+        term.print_to_terminal("  export VAR=VALUE         - Set environment variable\n".to_string());
+        term.print_to_terminal("  env / set                - Show all environment variables\n".to_string());
+        term.print_to_terminal("  alias NAME=CMD           - Create command alias\n".to_string());
+        term.print_to_terminal("  unalias NAME             - Remove command alias\n".to_string());
+
+        term.print_to_terminal("\n\x1b[1;33mJob Control:\x1b[0m\n".to_string());
+        term.print_to_terminal("  jobs                     - List running/stopped jobs\n".to_string());
+        term.print_to_terminal("  ps / tasks / tasklist    - List all active tasks\n".to_string());
+        term.print_to_terminal("  fg %N                    - Bring job N to foreground\n".to_string());
+        term.print_to_terminal("  bg %N                    - Send job N to background\n".to_string());
+
+        term.print_to_terminal("\n\x1b[1;33mFile Operations (external):\x1b[0m\n".to_string());
+        term.print_to_terminal("  ls [-s] [PATH]           - List directory contents\n".to_string());
+        term.print_to_terminal("  cat [FILE...]            - Display file contents\n".to_string());
+        term.print_to_terminal("  mkdir DIR...             - Create directories\n".to_string());
+        term.print_to_terminal("  rm [-r] PATH...          - Remove files/directories\n".to_string());
+        term.print_to_terminal("  cp [-r] SRC DEST         - Copy files/directories\n".to_string());
+        term.print_to_terminal("  mv SRC DEST              - Move/rename files\n".to_string());
+        term.print_to_terminal("  touch FILE               - Create empty file\n".to_string());
+        term.print_to_terminal("  head [-n N] FILE         - Show first N lines\n".to_string());
+        term.print_to_terminal("  tail [-n N] FILE         - Show last N lines\n".to_string());
+        term.print_to_terminal("  wc [-lwc] [FILE...]      - Count lines/words/bytes\n".to_string());
+        term.print_to_terminal("  grep [-inv] PAT [FILE..] - Search text patterns\n".to_string());
+        term.print_to_terminal("  find [PATH] -name PAT    - Find files by name\n".to_string());
+
+        term.print_to_terminal("\n\x1b[1;33mSystem (external):\x1b[0m\n".to_string());
+        term.print_to_terminal("  kill [-r] PID...         - Kill tasks by PID\n".to_string());
+        term.print_to_terminal("  ping [-c N] HOST         - Ping a host\n".to_string());
+        term.print_to_terminal("  lspci                    - List PCI devices\n".to_string());
+
+        term.print_to_terminal("\n\x1b[1;33mKeyboard Shortcuts:\x1b[0m\n".to_string());
+        term.print_to_terminal("  Ctrl+C                   - Kill foreground job\n".to_string());
+        term.print_to_terminal("  Ctrl+Z                   - Suspend foreground job\n".to_string());
+        term.print_to_terminal("  Ctrl+D                   - Send EOF\n".to_string());
+        term.print_to_terminal("  Ctrl+L                   - Clear screen\n".to_string());
+        term.print_to_terminal("  Ctrl+A / Home            - Move cursor to start\n".to_string());
+        term.print_to_terminal("  Ctrl+E / End             - Move cursor to end\n".to_string());
+        term.print_to_terminal("  Ctrl+W                   - Delete previous word\n".to_string());
+        term.print_to_terminal("  Ctrl+U                   - Delete line before cursor\n".to_string());
+        term.print_to_terminal("  Tab                      - Auto-complete\n".to_string());
+        term.print_to_terminal("  Up/Down                  - Command history\n".to_string());
+        term.print_to_terminal("  cmd | cmd                - Pipe commands\n".to_string());
+        term.print_to_terminal("  cmd &                    - Run in background\n".to_string());
+        term.print_to_terminal("===========================================================\n".to_string());
+        drop(term);
         self.clear_cmdline(false)?;
         self.redisplay_prompt();
         Ok(())
     }
 
-    /// Execute `echo` command. Echoes arguments to the terminal.
+    /// Execute `echo` command with optional -e flag for escape sequences.
     fn execute_internal_echo(&mut self, cmdline: &str) -> Result<(), &'static str> {
         let parts: Vec<&str> = cmdline.splitn(2, ' ').collect();
-        let text = if parts.len() > 1 {
-            parts[1]
+        let text = if parts.len() > 1 { parts[1] } else { "" };
+
+        // Check for -e flag
+        let (interpret_escapes, actual_text) = if text.starts_with("-e ") {
+            (true, &text[3..])
+        } else if text == "-e" {
+            (true, "")
         } else {
-            ""
+            (false, text)
         };
-        self.terminal.lock().print_to_terminal(format!("{}\n", text));
+
+        let output = if interpret_escapes {
+            let mut result = String::new();
+            let mut chars = actual_text.chars();
+            while let Some(c) = chars.next() {
+                if c == '\\' {
+                    match chars.next() {
+                        Some('n') => result.push('\n'),
+                        Some('t') => result.push('\t'),
+                        Some('\\') => result.push('\\'),
+                        Some('r') => result.push('\r'),
+                        Some('0') => result.push('\0'),
+                        Some(other) => {
+                            result.push('\\');
+                            result.push(other);
+                        }
+                        None => result.push('\\'),
+                    }
+                } else {
+                    result.push(c);
+                }
+            }
+            result
+        } else {
+            actual_text.to_string()
+        };
+
+        self.terminal.lock().print_to_terminal(format!("{}\n", output));
         self.clear_cmdline(false)?;
         self.redisplay_prompt();
         Ok(())
     }
 
-    /// Execute `whoami` command. Shows current user.
+    /// Execute `whoami` command.
     fn execute_internal_whoami(&mut self) -> Result<(), &'static str> {
         self.terminal.lock().print_to_terminal("root\n".to_string());
         self.clear_cmdline(false)?;
@@ -1529,11 +1878,266 @@ impl Shell {
         Ok(())
     }
 
-    /// Execute `uname` command. Shows system information.
-    fn execute_internal_uname(&mut self) -> Result<(), &'static str> {
-        self.terminal.lock().print_to_terminal("OS: Mai v1.0.0\n".to_string());
-        self.terminal.lock().print_to_terminal("Kernel: Mai\n".to_string());
-        self.terminal.lock().print_to_terminal("Architecture: x86_64\n".to_string());
+    /// Execute `uname` command with flag support.
+    fn execute_internal_uname(&mut self, cmdline: &str) -> Result<(), &'static str> {
+        let args: Vec<&str> = cmdline.split_whitespace().skip(1).collect();
+
+        if args.is_empty() {
+            self.terminal.lock().print_to_terminal("MaiOS\n".to_string());
+        } else {
+            let mut term = self.terminal.lock();
+            for arg in &args {
+                match *arg {
+                    "-s" => term.print_to_terminal("MaiOS\n".to_string()),
+                    "-r" => term.print_to_terminal("1.0.0\n".to_string()),
+                    "-m" => term.print_to_terminal("x86_64\n".to_string()),
+                    "-a" => term.print_to_terminal("MaiOS 1.0.0 x86_64\n".to_string()),
+                    _ => term.print_to_terminal(format!("uname: unknown option '{}'\nUsage: uname [-a|-s|-r|-m]\n", arg)),
+                }
+            }
+            drop(term);
+        }
+        self.clear_cmdline(false)?;
+        self.redisplay_prompt();
+        Ok(())
+    }
+
+    /// Execute `cd` command (internal: changes shell's working directory).
+    fn execute_internal_cd(&mut self, cmdline: &str) -> Result<(), &'static str> {
+        let args: Vec<&str> = cmdline.split_whitespace().skip(1).collect();
+
+        if args.is_empty() {
+            // cd with no args: go to root
+            self.env.lock().working_dir = alloc::sync::Arc::clone(root::get_root());
+        } else {
+            let path: &path::Path = args[0].as_ref();
+            match self.env.lock().chdir(path) {
+                Ok(()) => {},
+                Err(environment::Error::NotADirectory) => {
+                    self.terminal.lock().print_to_terminal(format!("cd: not a directory: {}\n", args[0]));
+                },
+                Err(environment::Error::NotFound) => {
+                    self.terminal.lock().print_to_terminal(format!("cd: no such directory: {}\n", args[0]));
+                },
+            }
+        }
+        self.clear_cmdline(false)?;
+        self.redisplay_prompt();
+        Ok(())
+    }
+
+    /// Execute `pwd` command.
+    fn execute_internal_pwd(&mut self) -> Result<(), &'static str> {
+        let path = self.env.lock().cwd();
+        self.terminal.lock().print_to_terminal(format!("{}\n", path));
+        self.clear_cmdline(false)?;
+        self.redisplay_prompt();
+        Ok(())
+    }
+
+    /// Execute `export VAR=VALUE` command.
+    fn execute_internal_export(&mut self, cmdline: &str) -> Result<(), &'static str> {
+        let args: Vec<&str> = cmdline.split_whitespace().skip(1).collect();
+        if args.is_empty() {
+            // export with no args: show all variables
+            return self.execute_internal_env();
+        }
+        for arg in args {
+            if let Some(eq_pos) = arg.find('=') {
+                let key = arg[..eq_pos].to_string();
+                let value = arg[eq_pos + 1..].to_string();
+                if key.is_empty() {
+                    self.terminal.lock().print_to_terminal("export: invalid variable name\n".to_string());
+                } else {
+                    self.env.lock().set(key, value);
+                }
+            } else {
+                self.terminal.lock().print_to_terminal(format!("export: usage: export VAR=VALUE\n"));
+            }
+        }
+        self.clear_cmdline(false)?;
+        self.redisplay_prompt();
+        Ok(())
+    }
+
+    /// Execute `env` / `set` command: show all environment variables.
+    fn execute_internal_env(&mut self) -> Result<(), &'static str> {
+        let env = self.env.lock();
+        let mut term = self.terminal.lock();
+        term.print_to_terminal(format!("PWD={}\n", env.cwd()));
+        for (key, value) in env.variables.iter() {
+            term.print_to_terminal(format!("{}={}\n", key, value));
+        }
+        drop(term);
+        drop(env);
+        self.clear_cmdline(false)?;
+        self.redisplay_prompt();
+        Ok(())
+    }
+
+    /// Execute `alias` command.
+    fn execute_internal_alias(&mut self, cmdline: &str) -> Result<(), &'static str> {
+        let rest = cmdline.trim_start_matches("alias").trim();
+        if rest.is_empty() {
+            // Show all aliases
+            let mut term = self.terminal.lock();
+            if self.aliases.is_empty() {
+                term.print_to_terminal("No aliases defined.\n".to_string());
+            } else {
+                for (name, cmd) in self.aliases.iter() {
+                    term.print_to_terminal(format!("alias {}='{}'\n", name, cmd));
+                }
+            }
+            drop(term);
+        } else if let Some(eq_pos) = rest.find('=') {
+            let name = rest[..eq_pos].trim().to_string();
+            let mut value = rest[eq_pos + 1..].trim().to_string();
+            // Remove surrounding quotes if present
+            if (value.starts_with('\'') && value.ends_with('\''))
+                || (value.starts_with('"') && value.ends_with('"'))
+            {
+                value = value[1..value.len() - 1].to_string();
+            }
+            if name.is_empty() {
+                self.terminal.lock().print_to_terminal("alias: invalid alias name\n".to_string());
+            } else {
+                self.aliases.insert(name, value);
+            }
+        } else {
+            // Show specific alias
+            if let Some(cmd) = self.aliases.get(rest) {
+                self.terminal.lock().print_to_terminal(format!("alias {}='{}'\n", rest, cmd));
+            } else {
+                self.terminal.lock().print_to_terminal(format!("alias: {} not found\n", rest));
+            }
+        }
+        self.clear_cmdline(false)?;
+        self.redisplay_prompt();
+        Ok(())
+    }
+
+    /// Execute `unalias` command.
+    fn execute_internal_unalias(&mut self, cmdline: &str) -> Result<(), &'static str> {
+        let args: Vec<&str> = cmdline.split_whitespace().skip(1).collect();
+        if args.is_empty() {
+            self.terminal.lock().print_to_terminal("unalias: usage: unalias NAME\n".to_string());
+        } else {
+            for arg in args {
+                if self.aliases.remove(arg).is_none() {
+                    self.terminal.lock().print_to_terminal(format!("unalias: {}: not found\n", arg));
+                }
+            }
+        }
+        self.clear_cmdline(false)?;
+        self.redisplay_prompt();
+        Ok(())
+    }
+
+    /// Execute `history` command.
+    fn execute_internal_history(&mut self) -> Result<(), &'static str> {
+        let mut term = self.terminal.lock();
+        if self.command_history.is_empty() {
+            term.print_to_terminal("No command history.\n".to_string());
+        } else {
+            for (i, cmd) in self.command_history.iter().enumerate() {
+                term.print_to_terminal(format!("  {:4}  {}\n", i + 1, cmd));
+            }
+        }
+        drop(term);
+        self.clear_cmdline(false)?;
+        self.redisplay_prompt();
+        Ok(())
+    }
+
+    /// Execute `exit` command.
+    fn execute_internal_exit(&mut self) -> Result<(), &'static str> {
+        self.terminal.lock().print_to_terminal("Goodbye!\n".to_string());
+        // Kill all running jobs
+        for (_job_num, job) in self.jobs.iter() {
+            for task_ref in &job.tasks {
+                if !task_ref.has_exited() {
+                    let _ = task_ref.kill(KillReason::Requested);
+                }
+            }
+        }
+        self.clear_cmdline(false)?;
+        // We can't actually break the shell loop from here, but we can request exit
+        // by clearing everything and letting the user know
+        Ok(())
+    }
+
+    /// Execute `date` command.
+    fn execute_internal_date(&mut self) -> Result<(), &'static str> {
+        let now = rtc::read_rtc();
+        self.terminal.lock().print_to_terminal(format!("{}\n", now));
+        self.clear_cmdline(false)?;
+        self.redisplay_prompt();
+        Ok(())
+    }
+
+    /// Execute `uptime` command.
+    fn execute_internal_uptime(&mut self) -> Result<(), &'static str> {
+        let uptime = time::Instant::ZERO.elapsed();
+        let total_secs = uptime.as_secs();
+        let hours = total_secs / 3600;
+        let minutes = (total_secs % 3600) / 60;
+        let seconds = total_secs % 60;
+        self.terminal.lock().print_to_terminal(
+            format!("up {}h {}m {}s\n", hours, minutes, seconds)
+        );
+        self.clear_cmdline(false)?;
+        self.redisplay_prompt();
+        Ok(())
+    }
+
+    /// Execute `hostname` command.
+    fn execute_internal_hostname(&mut self, cmdline: &str) -> Result<(), &'static str> {
+        let args: Vec<&str> = cmdline.split_whitespace().skip(1).collect();
+        if args.is_empty() {
+            self.terminal.lock().print_to_terminal(format!("{}\n", self.hostname));
+        } else {
+            self.hostname = args[0].to_string();
+        }
+        self.clear_cmdline(false)?;
+        self.redisplay_prompt();
+        Ok(())
+    }
+
+    /// Execute `type` command: identify command type.
+    fn execute_internal_type(&mut self, cmdline: &str) -> Result<(), &'static str> {
+        let args: Vec<&str> = cmdline.split_whitespace().skip(1).collect();
+        if args.is_empty() {
+            self.terminal.lock().print_to_terminal("type: usage: type COMMAND\n".to_string());
+        } else {
+            let cmd = args[0];
+            let internal_cmds = [
+                "jobs", "ps", "tasks", "tasklist", "fg", "bg",
+                "clear", "cls", "help", "echo", "whoami", "uname", "ver",
+                "cd", "pwd", "export", "env", "set", "alias", "unalias",
+                "history", "exit", "date", "uptime", "hostname", "type",
+            ];
+            let mut term = self.terminal.lock();
+            if self.aliases.contains_key(cmd) {
+                let alias_val = self.aliases.get(cmd).cloned().unwrap_or_default();
+                term.print_to_terminal(format!("{} is aliased to '{}'\n", cmd, alias_val));
+            } else if internal_cmds.contains(&cmd) {
+                term.print_to_terminal(format!("{} is a shell builtin\n", cmd));
+            } else {
+                // Check if it's an external app
+                let found = task::with_current_task(|t| {
+                    let ns_dir = t.namespace.dir().clone();
+                    let crate_name = format!("{}-", cmd);
+                    !ns_dir.get_files_starting_with(&crate_name).is_empty()
+                }).unwrap_or(false);
+
+                if found {
+                    term.print_to_terminal(format!("{} is an external application\n", cmd));
+                } else {
+                    term.print_to_terminal(format!("{}: not found\n", cmd));
+                }
+            }
+            drop(term);
+        }
         self.clear_cmdline(false)?;
         self.redisplay_prompt();
         Ok(())

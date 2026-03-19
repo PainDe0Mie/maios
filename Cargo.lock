@@ -152,8 +152,9 @@ dependencies = [
  "hashbrown 0.11.2",
  "lazy_static",
  "logger",
+ "spin 0.9.4",
  "stdio",
- "sync_block",
+ "sync_irq",
  "task",
  "tty",
 ]
@@ -656,6 +657,19 @@ version = "0.1.0"
 dependencies = [
  "dereffer",
  "spin 0.9.4",
+]
+
+[[package]]
+name = "cp"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "heapfile",
+ "path",
+ "task",
+ "vfs_node",
 ]
 
 [[package]]
@@ -1258,6 +1272,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "find"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
+
+[[package]]
 name = "first_application"
 version = "0.1.0"
 dependencies = [
@@ -1502,6 +1527,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "grep"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
+
+[[package]]
 name = "hash32"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1525,6 +1561,17 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+
+[[package]]
+name = "head"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
 
 [[package]]
 name = "heap"
@@ -1830,6 +1877,7 @@ dependencies = [
  "log",
  "mpmc",
  "once_cell",
+ "port_io",
  "ps2",
  "spin 0.9.4",
  "x86_64",
@@ -1940,23 +1988,8 @@ checksum = "549ce1740e46b291953c4340adcd74c59bcf4308f4cac050fd33ba91b7168f4a"
 name = "linux_syscall"
 version = "0.1.0"
 dependencies = [
- "app_io",
- "elf_loader",
- "fs_node",
- "io",
- "kernel_config",
- "lazy_static",
  "log",
- "memory",
- "memory_structs",
- "mod_mgmt",
- "path",
- "pte_flags",
- "root",
- "spawn",
- "spin 0.9.4",
- "task",
- "vfs_node",
+ "maios_syscall",
 ]
 
 [[package]]
@@ -2097,6 +2130,31 @@ dependencies = [
  "framebuffer_drawer",
  "keycodes_ascii",
  "shapes",
+]
+
+[[package]]
+name = "maios_syscall"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "elf_loader",
+ "fs_node",
+ "io",
+ "kernel_config",
+ "lazy_static",
+ "log",
+ "memory",
+ "memory_structs",
+ "path",
+ "pte_flags",
+ "root",
+ "rtc",
+ "scheduler",
+ "spawn",
+ "spin 0.9.4",
+ "task",
+ "time",
+ "vfs_node",
 ]
 
 [[package]]
@@ -2250,19 +2308,8 @@ dependencies = [
  "framebuffer",
  "framebuffer_drawer",
  "log",
- "mhc",
  "shapes",
  "spin 0.9.4",
-]
-
-[[package]]
-name = "mhc"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.4.1",
- "log",
- "spin 0.9.4",
- "task_struct",
 ]
 
 [[package]]
@@ -2292,6 +2339,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "spin 0.9.4",
+ "task",
  "task_struct",
 ]
 
@@ -2401,6 +2449,7 @@ dependencies = [
  "log",
  "mouse_data",
  "mpmc",
+ "port_io",
  "ps2",
  "spin 0.9.4",
  "x86_64",
@@ -2480,6 +2529,17 @@ dependencies = [
  "slabmalloc_unsafe",
  "spin 0.9.4",
  "sync_irq",
+]
+
+[[package]]
+name = "mv"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "heapfile",
+ "path",
+ "task",
 ]
 
 [[package]]
@@ -2827,6 +2887,17 @@ dependencies = [
  "spin 0.9.4",
  "volatile 0.2.7",
  "zerocopy",
+]
+
+[[package]]
+name = "pe_loader"
+version = "0.1.0"
+dependencies = [
+ "kernel_config",
+ "log",
+ "memory",
+ "memory_structs",
+ "pte_flags",
 ]
 
 [[package]]
@@ -3526,6 +3597,7 @@ dependencies = [
  "environment",
  "event_types",
  "fs_node",
+ "heapfile",
  "keycodes_ascii",
  "lazy_static",
  "libterm",
@@ -3533,11 +3605,13 @@ dependencies = [
  "mod_mgmt",
  "path",
  "root",
+ "rtc",
  "scheduler",
  "spawn",
  "spin 0.9.4",
  "stdio",
  "task",
+ "time",
  "window_manager",
 ]
 
@@ -3753,6 +3827,7 @@ dependencies = [
  "core2",
  "keycodes_ascii",
  "spin 0.9.4",
+ "sync_irq",
 ]
 
 [[package]]
@@ -3896,15 +3971,31 @@ version = "0.1.0"
 dependencies = [
  "cpu",
  "gdt",
- "interrupts",
  "linux_syscall",
  "log",
- "memory",
- "spin 0.9.4",
+ "maios_syscall",
  "task",
- "tss",
  "windows_syscall",
  "x86_64",
+]
+
+[[package]]
+name = "syscall_trace"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "maios_syscall",
+]
+
+[[package]]
+name = "tail"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
 ]
 
 [[package]]
@@ -4235,6 +4326,7 @@ name = "test_win_compat"
 version = "0.1.0"
 dependencies = [
  "app_io",
+ "log",
  "windows_syscall",
 ]
 
@@ -4272,10 +4364,14 @@ dependencies = [
  "cat",
  "cd",
  "channel_eval",
+ "cp",
  "date",
  "deps",
  "example",
+ "find",
  "first_application",
+ "grep",
+ "head",
  "heap_eval",
  "hello",
  "hull",
@@ -4284,6 +4380,7 @@ dependencies = [
  "loadc",
  "ls",
  "mkdir",
+ "mv",
  "ns",
  "ping",
  "pmu_sample_start",
@@ -4301,6 +4398,7 @@ dependencies = [
  "serial_echo",
  "shell",
  "swap",
+ "tail",
  "test_aligned_page_allocation",
  "test_async",
  "test_backtrace",
@@ -4322,12 +4420,13 @@ dependencies = [
  "test_tls",
  "test_wait_queue",
  "test_wasmtime",
- "test_win_compat",
  "theseus_std",
+ "touch",
  "unified_channel",
  "unwind_test",
  "upd",
  "wasm",
+ "wc",
 ]
 
 [[package]]
@@ -4397,6 +4496,17 @@ name = "tock-registers"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ee8fba06c1f4d0b396ef61a54530bb6b28f0dc61c38bc8bc5a5a48161e6282e"
+
+[[package]]
+name = "touch"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "heapfile",
+ "path",
+ "task",
+]
 
 [[package]]
 name = "tsc"
@@ -4887,6 +4997,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wc"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4952,6 +5073,7 @@ dependencies = [
  "framebuffer",
  "framebuffer_compositor",
  "framebuffer_drawer",
+ "keyboard",
  "keycodes_ascii",
  "lazy_static",
  "log",
@@ -4960,7 +5082,6 @@ dependencies = [
  "mouse_data",
  "mpmc",
  "path",
- "preemption",
  "scheduler",
  "shapes",
  "sleep",
@@ -4973,7 +5094,9 @@ dependencies = [
 name = "windows_syscall"
 version = "0.1.0"
 dependencies = [
+ "kernel_config",
  "log",
+ "maios_syscall",
 ]
 
 [[package]]

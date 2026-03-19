@@ -1,0 +1,22 @@
+[package]
+name = "head"
+version = "0.1.0"
+authors = ["MaiOS"]
+
+[dependencies]
+getopts = "0.2.21"
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.task]
+path = "../../kernel/task"
+
+[dependencies.path]
+path = "../../kernel/path"
+
+[dependencies.fs_node]
+path = "../../kernel/fs_node"
+
+[lib]
+crate-type = ["rlib"]
