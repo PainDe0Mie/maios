@@ -80,3 +80,6 @@ path = "../../kernel/keyboard"
 
 [dependencies.mhc]
 path = "../../kernel/mhc"
+
+[dependencies.preemption]
+path = "../../kernel/preemption"
