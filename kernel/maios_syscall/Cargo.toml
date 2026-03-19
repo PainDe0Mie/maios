@@ -27,6 +27,8 @@ kernel_config = { path = "../kernel_config" }
 time = { path = "../time" }
 rtc = { path = "../rtc" }
 scheduler = { path = "../scheduler" }
+heapfile = { path = "../heapfile" }
+pe_loader = { path = "../pe_loader" }
 
 [lib]
 crate-type = ["rlib"]

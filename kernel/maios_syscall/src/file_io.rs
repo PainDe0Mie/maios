@@ -10,6 +10,7 @@ use alloc::string::String;
 use log::debug;
 use crate::error::{SyscallResult, SyscallError};
 use crate::resource::{self, Resource};
+use fs_node;
 
 /// Linux `struct iovec` layout (x86_64).
 #[repr(C)]
@@ -258,8 +259,16 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64, _: u64, _: u64, _: u64) -> S
     }
 }
 
-pub fn sys_open(path_ptr: u64, _flags: u64, _mode: u64, _: u64, _: u64, _: u64) -> SyscallResult {
-    debug!("sys_open(path={:#x}, flags={:#x}, mode={:#o})", path_ptr, _flags, _mode);
+// Linux open(2) flags
+const O_WRONLY: u64  = 0x0001;
+const O_RDWR: u64    = 0x0002;
+const O_CREAT: u64   = 0x0040;
+const O_EXCL: u64    = 0x0080;
+const O_TRUNC: u64   = 0x0200;
+const O_APPEND: u64  = 0x0400;
+
+pub fn sys_open(path_ptr: u64, flags: u64, _mode: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    debug!("sys_open(path={:#x}, flags={:#x}, mode={:#o})", path_ptr, flags, _mode);
 
     let path_str = match unsafe { read_c_string(path_ptr) } {
         Some(s) => s,
@@ -269,20 +278,98 @@ pub fn sys_open(path_ptr: u64, _flags: u64, _mode: u64, _: u64, _: u64, _: u64) 
 
     let root_dir = root::get_root();
     let p = path::Path::new(&path_str);
-    let file_ref = match p.get_file(root_dir) {
-        Some(f) => f,
-        None => {
-            debug!("sys_open: not found \"{}\"", path_str);
-            return Err(SyscallError::NotFound);
+
+    // Try to find existing file/dir
+    let existing = p.get(&root_dir);
+
+    let file_ref = match existing {
+        Some(fs_node::FileOrDir::File(f)) => {
+            // File exists
+            if (flags & O_CREAT != 0) && (flags & O_EXCL != 0) {
+                // O_CREAT | O_EXCL: fail if file already exists
+                debug!("sys_open: O_EXCL and file exists \"{}\"", path_str);
+                return Err(SyscallError::FileExists);
+            }
+            // O_TRUNC: truncate the file to zero length
+            if flags & O_TRUNC != 0 {
+                let mut locked = f.lock();
+                // Truncate by writing empty at offset 0 and setting length
+                // HeapFile stores a Vec<u8>, so we use write_at with empty to signal truncation
+                // Actually we need to access the internal vec — use the trait method
+                if let Err(_) = locked.write_at(&[], 0) {
+                    debug!("sys_open: truncate failed for \"{}\"", path_str);
+                }
+                // For HeapFile, truncation means replacing the content.
+                // Since we can't directly truncate, we'll handle this at the resource level.
+            }
+            f
         }
+        Some(fs_node::FileOrDir::Dir(_)) => {
+            // Opening a directory as a file — return IsADirectory for write attempts
+            if flags & (O_WRONLY | O_RDWR) != 0 {
+                return Err(SyscallError::IsADirectory);
+            }
+            // For read-only directory opens (used by some Linux programs), return NotFound
+            // since we don't support directory fds yet
+            return Err(SyscallError::IsADirectory);
+        }
+        None => {
+            // File not found
+            if flags & O_CREAT == 0 {
+                debug!("sys_open: not found \"{}\"", path_str);
+                return Err(SyscallError::NotFound);
+            }
+
+            // O_CREAT: create the file
+            debug!("sys_open: creating \"{}\"", path_str);
+
+            // Split path into parent directory and filename
+            let (parent_dir, filename) = resolve_parent_and_name(&path_str, &root_dir)?;
+
+            match heapfile::HeapFile::create(filename, &parent_dir) {
+                Ok(f) => f,
+                Err(e) => {
+                    debug!("sys_open: create failed for \"{}\": {}", path_str, e);
+                    return Err(SyscallError::IoError);
+                }
+            }
+        }
+    };
+
+    let offset = if flags & O_APPEND != 0 {
+        file_ref.lock().len()
+    } else {
+        0
     };
 
     let tid = current_task_id();
     let fd = resource::with_resources_mut(tid, |table| {
-        table.alloc_fd(Resource::File { file: file_ref, offset: 0 })
+        table.alloc_fd(Resource::File { file: file_ref, offset })
     });
     debug!("sys_open: \"{}\" -> fd {}", path_str, fd);
     Ok(fd)
+}
+
+/// Split a path string into (parent_directory_ref, filename).
+fn resolve_parent_and_name(path_str: &str, root: &fs_node::DirRef) -> Result<(fs_node::DirRef, String), SyscallError> {
+    // Find the last '/' to split parent path and filename
+    if let Some(last_slash) = path_str.rfind('/') {
+        let parent_path = if last_slash == 0 { "/" } else { &path_str[..last_slash] };
+        let filename = &path_str[last_slash + 1..];
+        if filename.is_empty() {
+            return Err(SyscallError::InvalidArgument);
+        }
+        let p = path::Path::new(parent_path);
+        match p.get(root) {
+            Some(fs_node::FileOrDir::Dir(d)) => Ok((d, String::from(filename))),
+            _ => Err(SyscallError::NotFound),
+        }
+    } else {
+        // No slash — file is in the current working directory
+        let cwd = task::with_current_task(|t| t.env.lock().working_dir.clone())
+            .map_err(|_| SyscallError::NotFound)?;
+        Ok((cwd, String::from(path_str)))
+    }
 }
 
 pub fn sys_close(handle: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {

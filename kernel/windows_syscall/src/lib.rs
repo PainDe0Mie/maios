@@ -392,6 +392,52 @@ fn adapt_nt_query_information_file(
     ntstatus::STATUS_SUCCESS
 }
 
+/// Stub pour NtQuerySystemInformation.
+///
+/// Retourne STATUS_SUCCESS avec buffer zéro pour ne pas crasher
+/// les appels basiques (SystemBasicInformation, etc.).
+fn adapt_nt_query_system_information(
+    info_class: u64,
+    buffer_ptr: u64,
+    buffer_length: u64,
+    return_length_ptr: u64,
+) -> i64 {
+    debug!("NtQuerySystemInformation: class={}", info_class);
+
+    if buffer_ptr != 0 && buffer_length > 0 {
+        unsafe {
+            core::ptr::write_bytes(buffer_ptr as *mut u8, 0, buffer_length as usize);
+        }
+    }
+    if return_length_ptr != 0 {
+        unsafe { *(return_length_ptr as *mut u32) = 0; }
+    }
+    ntstatus::STATUS_SUCCESS
+}
+
+/// Stub pour NtQueryInformationProcess.
+///
+/// Supporte ProcessBasicInformation (class 0) avec des valeurs par défaut.
+fn adapt_nt_query_information_process(
+    _process_handle: u64,
+    info_class: u64,
+    buffer_ptr: u64,
+    buffer_length: u64,
+    return_length_ptr: u64,
+) -> i64 {
+    debug!("NtQueryInformationProcess: class={}", info_class);
+
+    if buffer_ptr != 0 && buffer_length > 0 {
+        unsafe {
+            core::ptr::write_bytes(buffer_ptr as *mut u8, 0, buffer_length as usize);
+        }
+    }
+    if return_length_ptr != 0 {
+        unsafe { *(return_length_ptr as *mut u32) = buffer_length as u32; }
+    }
+    ntstatus::STATUS_SUCCESS
+}
+
 // =============================================================================
 // Point d'entrée
 // =============================================================================
@@ -440,6 +486,12 @@ pub fn handle_syscall(
         }
         nr::NT_QUERY_INFORMATION_FILE => {
             return adapt_nt_query_information_file(arg0, arg1, arg2, arg3, arg4);
+        }
+        nr::NT_QUERY_SYSTEM_INFORMATION => {
+            return adapt_nt_query_system_information(arg0, arg1, arg2, arg3);
+        }
+        nr::NT_QUERY_INFORMATION_PROCESS => {
+            return adapt_nt_query_information_process(arg0, arg1, arg2, arg3, arg4);
         }
         nr::NT_TERMINATE_PROCESS => {
             // NtTerminateProcess : handle -1 = processus courant

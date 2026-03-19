@@ -390,3 +390,291 @@ pub fn load(data: &[u8]) -> Result<LoadedPe, &'static str> {
 pub fn is_pe(data: &[u8]) -> bool {
     parse_header(data).is_ok()
 }
+
+// ---------------------------------------------------------------------------
+// Import resolution
+// ---------------------------------------------------------------------------
+
+/// Data Directory entry (RVA + Size), 8 bytes each.
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+struct DataDirectory {
+    rva: u32,
+    size: u32,
+}
+
+/// IMAGE_IMPORT_DESCRIPTOR (20 bytes each).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+struct ImportDescriptor {
+    /// RVA to the Import Lookup Table (ILT) — original thunk array.
+    original_first_thunk: u32,
+    time_date_stamp: u32,
+    forwarder_chain: u32,
+    /// RVA to the DLL name (null-terminated ASCII).
+    name_rva: u32,
+    /// RVA to the Import Address Table (IAT) — thunk array to patch.
+    first_thunk: u32,
+}
+
+/// Read a null-terminated ASCII string from PE data at a given RVA.
+fn read_rva_string(data: &[u8], rva: u32) -> Option<&str> {
+    let off = rva as usize;
+    if off >= data.len() { return None; }
+    let slice = &data[off..];
+    let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len().min(256));
+    core::str::from_utf8(&slice[..end]).ok()
+}
+
+/// Resolve PE imports by patching the IAT with stub function addresses.
+///
+/// For each imported function, generates a tiny x86_64 stub:
+/// ```asm
+/// mov r10, rcx      ; Windows x64 syscall convention
+/// mov eax, <nr>     ; NT syscall number
+/// syscall
+/// ret
+/// ```
+///
+/// The stubs are written to a single allocated page that must be kept alive
+/// by the caller (returned as part of `LoadedPe::sections` in practice).
+///
+/// `image_base` is the nominal base address of the PE image — used to compute
+/// RVA-to-VA translations. The caller must have loaded sections at this base
+/// (or handle relocations).
+pub fn resolve_imports(data: &[u8], image_base: u64) -> Result<MappedPages, &'static str> {
+    let (_coff, opt, _section_off) = parse_header(data)?;
+
+    // Data directories are immediately after the OptionalHeader64 fixed fields.
+    // number_of_rva_and_sizes tells us how many entries there are.
+    let num_dd = opt.number_of_rva_and_sizes as usize;
+    if num_dd < 2 {
+        debug!("pe_loader: no import directory (only {} data directories)", num_dd);
+        // No import directory — nothing to resolve (static binary)
+        let stub_page = memory::create_mapping(PAGE_SIZE, PteFlagsArch::new().valid(true).writable(true))?;
+        return Ok(stub_page);
+    }
+
+    // Data directories start right after the OptionalHeader64 struct
+    let opt_ptr = opt as *const OptionalHeader64 as usize;
+    let dd_start = opt_ptr + core::mem::size_of::<OptionalHeader64>();
+    let dd_entry_size = core::mem::size_of::<DataDirectory>();
+
+    let import_dd = unsafe { &*((dd_start + 1 * dd_entry_size) as *const DataDirectory) };
+    let import_rva = import_dd.rva as usize;
+    let import_size = import_dd.size as usize;
+
+    if import_rva == 0 || import_size == 0 {
+        debug!("pe_loader: import directory is empty");
+        let stub_page = memory::create_mapping(PAGE_SIZE, PteFlagsArch::new().valid(true).writable(true))?;
+        return Ok(stub_page);
+    }
+
+    debug!("pe_loader: import directory at RVA {:#x}, size {:#x}", import_rva, import_size);
+
+    // Allocate a page for stub functions (writable + executable)
+    let stub_flags = PteFlagsArch::new().valid(true).writable(true).executable(true);
+    let mut stub_page = memory::create_mapping(PAGE_SIZE, stub_flags)?;
+    let stub_base = {
+        let slice: &[u8] = stub_page.as_slice(0, 1)
+            .map_err(|_| "pe_loader: failed to get stub page address")?;
+        slice.as_ptr() as u64
+    };
+    let mut stub_offset: usize = 0;
+
+    // Iterate through import descriptors
+    let desc_size = core::mem::size_of::<ImportDescriptor>();
+    let mut desc_off = import_rva;
+
+    loop {
+        if desc_off + desc_size > data.len() { break; }
+        let desc = unsafe { &*(data.as_ptr().add(desc_off) as *const ImportDescriptor) };
+
+        // Null descriptor terminates the list
+        let ft = desc.first_thunk;
+        let name_rva = desc.name_rva;
+        if ft == 0 && name_rva == 0 {
+            break;
+        }
+
+        let dll_name = read_rva_string(data, name_rva).unwrap_or("???");
+        debug!("pe_loader: import DLL: \"{}\"", dll_name);
+
+        // Walk the ILT (or IAT if ILT is missing) to enumerate imported functions
+        let ilt_rva = if desc.original_first_thunk != 0 {
+            desc.original_first_thunk as usize
+        } else {
+            ft as usize
+        };
+        let iat_rva = ft as usize;
+
+        let mut thunk_idx = 0usize;
+        loop {
+            let ilt_off = ilt_rva + thunk_idx * 8;
+            if ilt_off + 8 > data.len() { break; }
+
+            let thunk_value = u64::from_le_bytes([
+                data[ilt_off], data[ilt_off+1], data[ilt_off+2], data[ilt_off+3],
+                data[ilt_off+4], data[ilt_off+5], data[ilt_off+6], data[ilt_off+7],
+            ]);
+
+            if thunk_value == 0 { break; } // Null terminator
+
+            let func_name = if thunk_value & (1u64 << 63) != 0 {
+                // Import by ordinal
+                None
+            } else {
+                // Import by name: thunk_value is an RVA to IMAGE_IMPORT_BY_NAME
+                // struct { u16 Hint; char Name[]; }
+                let hint_rva = (thunk_value & 0x7FFF_FFFF) as u32;
+                read_rva_string(data, hint_rva + 2) // +2 to skip Hint field
+            };
+
+            let name_str = func_name.unwrap_or("(ordinal)");
+
+            // Look up the stub for this function
+            let syscall_nr = lookup_win32_stub(dll_name, name_str);
+
+            // Generate a stub function
+            let stub_addr = if syscall_nr != 0xFFFF {
+                // Generate: mov r10, rcx; mov eax, <nr>; syscall; ret
+                let stub = generate_syscall_stub(syscall_nr);
+                if stub_offset + stub.len() > PAGE_SIZE {
+                    error!("pe_loader: stub page full, cannot resolve more imports");
+                    break;
+                }
+                let dest: &mut [u8] = stub_page.as_slice_mut(stub_offset, stub.len())
+                    .map_err(|_| "pe_loader: failed to write stub")?;
+                dest.copy_from_slice(&stub);
+                let addr = stub_base + stub_offset as u64;
+                stub_offset += stub.len();
+                debug!("pe_loader:   {} → stub at {:#x} (NT syscall {:#x})", name_str, addr, syscall_nr);
+                addr
+            } else {
+                // Unknown function — generate a stub that returns STATUS_NOT_IMPLEMENTED
+                let stub = generate_nop_stub();
+                if stub_offset + stub.len() > PAGE_SIZE {
+                    break;
+                }
+                let dest: &mut [u8] = stub_page.as_slice_mut(stub_offset, stub.len())
+                    .map_err(|_| "pe_loader: failed to write nop stub")?;
+                dest.copy_from_slice(&stub);
+                let addr = stub_base + stub_offset as u64;
+                stub_offset += stub.len();
+                debug!("pe_loader:   {} → nop stub at {:#x} (unimplemented)", name_str, addr);
+                addr
+            };
+
+            // Patch the IAT entry in the loaded image
+            // IAT is at image_base + iat_rva + thunk_idx * 8
+            let iat_va = image_base + iat_rva as u64 + (thunk_idx * 8) as u64;
+            unsafe {
+                *(iat_va as *mut u64) = stub_addr;
+            }
+
+            thunk_idx += 1;
+        }
+
+        desc_off += desc_size;
+    }
+
+    debug!("pe_loader: import resolution complete, {} bytes of stubs generated", stub_offset);
+    Ok(stub_page)
+}
+
+/// Generate an x86_64 NT syscall stub (12 bytes):
+/// ```asm
+/// mov r10, rcx      ; 49 89 CA (3 bytes) — Windows x64 ABI: rcx → r10
+/// mov eax, <nr>     ; B8 xx xx xx xx (5 bytes) — syscall number
+/// syscall            ; 0F 05 (2 bytes)
+/// ret                ; C3 (1 byte)
+/// ; nop              ; 90 (1 byte, alignment)
+/// ```
+fn generate_syscall_stub(nr: u16) -> [u8; 12] {
+    let nr32 = nr as u32;
+    [
+        0x49, 0x89, 0xCA,                               // mov r10, rcx
+        0xB8, nr32 as u8, (nr32 >> 8) as u8, 0x00, 0x00, // mov eax, nr
+        0x0F, 0x05,                                      // syscall
+        0xC3,                                             // ret
+        0x90,                                             // nop (pad to 12 bytes)
+    ]
+}
+
+/// Generate a no-op stub that returns STATUS_NOT_IMPLEMENTED (0xC0000002):
+/// ```asm
+/// mov eax, 0xC0000002 ; B8 02 00 00 C0 (5 bytes)
+/// ret                  ; C3 (1 byte)
+/// ```
+fn generate_nop_stub() -> [u8; 8] {
+    [
+        0xB8, 0x02, 0x00, 0x00, 0xC0, // mov eax, 0xC0000002 (STATUS_NOT_IMPLEMENTED)
+        0xC3,                           // ret
+        0x90, 0x90,                     // nop nop (pad to 8)
+    ]
+}
+
+/// Lookup table mapping Win32/NT function names to NT syscall numbers.
+///
+/// Returns 0xFFFF if the function is not mapped.
+fn lookup_win32_stub(dll_name: &str, func_name: &str) -> u16 {
+    // Normalize DLL name to lowercase for comparison
+    let dll_lower: &str = dll_name;
+    let is_ntdll = dll_lower.len() >= 5
+        && (dll_lower.as_bytes()[0] | 0x20) == b'n'
+        && (dll_lower.as_bytes()[1] | 0x20) == b't'
+        && (dll_lower.as_bytes()[2] | 0x20) == b'd'
+        && (dll_lower.as_bytes()[3] | 0x20) == b'l'
+        && (dll_lower.as_bytes()[4] | 0x20) == b'l';
+
+    let is_kernel32 = dll_lower.len() >= 8
+        && (dll_lower.as_bytes()[0] | 0x20) == b'k'
+        && (dll_lower.as_bytes()[1] | 0x20) == b'e'
+        && (dll_lower.as_bytes()[2] | 0x20) == b'r'
+        && (dll_lower.as_bytes()[3] | 0x20) == b'n';
+
+    if is_ntdll {
+        match func_name {
+            "NtCreateFile"              => 0x0055,
+            "NtReadFile"                => 0x0006,
+            "NtWriteFile"               => 0x0008,
+            "NtClose"                   => 0x000F,
+            "NtAllocateVirtualMemory"   => 0x0018,
+            "NtFreeVirtualMemory"       => 0x001E,
+            "NtProtectVirtualMemory"    => 0x0050,
+            "NtTerminateProcess"        => 0x002C,
+            "NtQueryPerformanceCounter" => 0x0031,
+            "NtQueryInformationFile"    => 0x0011,
+            "NtQuerySystemInformation"  => 0x0036,
+            "NtQueryInformationProcess" => 0x0019,
+            "RtlInitUnicodeString"      => 0xFFFF, // stub separately
+            _ => 0xFFFF,
+        }
+    } else if is_kernel32 {
+        // kernel32 functions are thin wrappers around ntdll.
+        // Map them to the corresponding NT syscall numbers.
+        match func_name {
+            "ExitProcess"       => 0x002C, // NtTerminateProcess
+            "WriteFile"         => 0x0008, // NtWriteFile
+            "ReadFile"          => 0x0006, // NtReadFile
+            "CloseHandle"       => 0x000F, // NtClose
+            "CreateFileA" | "CreateFileW" => 0x0055, // NtCreateFile
+            "VirtualAlloc"      => 0x0018, // NtAllocateVirtualMemory
+            "VirtualFree"       => 0x001E, // NtFreeVirtualMemory
+            "VirtualProtect"    => 0x0050, // NtProtectVirtualMemory
+            "GetStdHandle"      => 0xFFFF, // Special: handled by nop stub returning fixed handles
+            "WriteConsoleA" | "WriteConsoleW" => 0x0008,
+            "GetLastError"      => 0xFFFF, // nop stub: return 0 (ERROR_SUCCESS)
+            "SetLastError"      => 0xFFFF, // nop stub
+            "GetModuleHandleA" | "GetModuleHandleW" => 0xFFFF, // nop stub
+            "GetProcAddress"    => 0xFFFF, // nop stub
+            "GetCurrentProcess" => 0xFFFF, // nop stub (return -1)
+            "GetCurrentProcessId" => 0xFFFF, // nop stub
+            "QueryPerformanceCounter" => 0x0031,
+            "QueryPerformanceFrequency" => 0x0031,
+            _ => 0xFFFF,
+        }
+    } else {
+        0xFFFF
+    }
+}

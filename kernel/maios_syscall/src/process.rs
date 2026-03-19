@@ -81,7 +81,7 @@ pub fn sys_gettid(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResu
     sys_getpid(0, 0, 0, 0, 0, 0)
 }
 
-/// sys_execve — exécuter un binaire ELF.
+/// sys_execve — exécuter un binaire ELF ou PE.
 pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, _: u64, _: u64, _: u64) -> SyscallResult {
     debug!("sys_execve(path={:#x})", path_ptr);
 
@@ -111,22 +111,30 @@ pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, _: u64, _: u64,
         return Err(SyscallError::NotExecutable);
     }
 
-    let mut elf_data = vec![0u8; file_len];
+    let mut file_data = vec![0u8; file_len];
     {
         let mut locked = file_ref.lock();
-        match io::ByteReader::read_at(&mut *locked, &mut elf_data, 0) {
+        match io::ByteReader::read_at(&mut *locked, &mut file_data, 0) {
             Ok(_) => {}
             Err(_) => return Err(SyscallError::IoError),
         }
     }
 
-    // Valider le header ELF
-    if elf_loader::parse_header(&elf_data).is_err() {
-        warn!("sys_execve: \"{}\" is not a valid ELF64 binary", path_str);
-        return Err(SyscallError::NotExecutable);
+    // Detect binary format by magic bytes
+    if file_data.len() >= 2 && file_data[0] == b'M' && file_data[1] == b'Z' {
+        // PE (Windows) executable
+        execve_pe(file_data, path_str)
+    } else if elf_loader::parse_header(&file_data).is_ok() {
+        // ELF (Linux) executable
+        execve_elf(file_data, path_str)
+    } else {
+        warn!("sys_execve: \"{}\" is not a valid ELF64 or PE binary", path_str);
+        Err(SyscallError::NotExecutable)
     }
+}
 
-    // Spawner une nouvelle tâche qui charge et exécute l'ELF
+/// Execute an ELF binary.
+fn execve_elf(elf_data: alloc::vec::Vec<u8>, path_str: alloc::string::String) -> SyscallResult {
     let task_name = alloc::format!("elf_{}", path_str);
 
     let task_result = spawn::new_task_builder(move |_: ()| -> isize {
@@ -156,6 +164,67 @@ pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, _: u64, _: u64,
         }
         Err(e) => {
             warn!("sys_execve: failed to spawn task: {}", e);
+            Err(SyscallError::OutOfMemory)
+        }
+    }
+}
+
+/// Execute a PE (Windows) binary.
+fn execve_pe(pe_data: alloc::vec::Vec<u8>, path_str: alloc::string::String) -> SyscallResult {
+    debug!("sys_execve: detected PE binary \"{}\"", path_str);
+
+    let task_name = alloc::format!("pe_{}", path_str);
+
+    let task_result = spawn::new_task_builder(move |_: ()| -> isize {
+        // Set this task to Windows execution mode for syscall routing
+        // ExecMode::Windows = 2 (stored as AtomicU8 in task_struct)
+        let _ = task::with_current_task(|t| {
+            t.0.exec_mode.store(2, core::sync::atomic::Ordering::Release);
+        });
+        debug!("execve_pe: task set to Windows ExecMode");
+
+        // Load the PE binary
+        match pe_loader::load(&pe_data) {
+            Ok(loaded) => {
+                let entry = loaded.entry_point.value();
+                debug!("execve_pe: image_base={:#x}, entry_point={:#x}", loaded.image_base, entry);
+
+                // Resolve imports (patches IAT in-place, returns stub page)
+                let stub_page = match pe_loader::resolve_imports(&pe_data, loaded.image_base) {
+                    Ok(page) => page,
+                    Err(e) => {
+                        log::error!("execve_pe: import resolution failed: {}", e);
+                        return -1;
+                    }
+                };
+
+                // Keep sections + stub page alive for the duration of execution
+                let _sections = loaded.sections;
+                let _stubs = stub_page;
+
+                // Jump to entry point
+                // Windows x64 entry: BOOL WINAPI DllMain/WinMain/mainCRTStartup(void)
+                let entry_fn: extern "C" fn() -> ! = unsafe {
+                    core::mem::transmute(entry)
+                };
+                entry_fn();
+            }
+            Err(e) => {
+                log::error!("execve_pe: pe_loader::load failed: {}", e);
+                -1
+            }
+        }
+    }, ())
+    .name(task_name)
+    .spawn();
+
+    match task_result {
+        Ok(_) => {
+            debug!("sys_execve: PE task spawned, killing current task");
+            sys_exit(0, 0, 0, 0, 0, 0)
+        }
+        Err(e) => {
+            warn!("sys_execve: failed to spawn PE task: {}", e);
             Err(SyscallError::OutOfMemory)
         }
     }
