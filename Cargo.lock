@@ -243,6 +243,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fe8f5a8a398345e52358e18ff07cc17a568fbca5c6f73873d3a62056309603"
 
 [[package]]
+name = "basename"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
+]
+
+[[package]]
 name = "bincode"
 version = "2.0.0-rc.1"
 source = "git+https://github.com/bincode-org/bincode#1ca82752cf8c0391a4d49b8f881b5257f8c81fe8"
@@ -370,6 +378,14 @@ name = "byteorder"
 version = "1.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
+
+[[package]]
+name = "cal"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
+]
 
 [[package]]
 name = "captain"
@@ -657,6 +673,17 @@ version = "0.1.0"
 dependencies = [
  "dereffer",
  "spin 0.9.4",
+]
+
+[[package]]
+name = "cp"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
 ]
 
 [[package]]
@@ -951,6 +978,15 @@ dependencies = [
  "storage_device",
  "storage_manager",
  "vfs_node",
+ "window_manager",
+]
+
+[[package]]
+name = "df"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
 ]
 
 [[package]]
@@ -965,6 +1001,14 @@ checksum = "adfbc57365a37acbd2ebf2b64d7e69bb766e2fea813521ed536f5d0520dcf86c"
 dependencies = [
  "block-buffer",
  "crypto-common",
+]
+
+[[package]]
+name = "dirname"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
 ]
 
 [[package]]
@@ -1004,6 +1048,17 @@ dependencies = [
  "task",
  "time",
  "waker",
+]
+
+[[package]]
+name = "du"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
 ]
 
 [[package]]
@@ -1078,6 +1133,15 @@ checksum = "35949884794ad573cf46071e41c9b60efb0cb311e3ca01f7af807af1debc66ff"
 dependencies = [
  "nb 0.1.3",
  "void",
+]
+
+[[package]]
+name = "env"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "getopts",
+ "task",
 ]
 
 [[package]]
@@ -1183,6 +1247,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "factor"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
+]
+
+[[package]]
 name = "fadt"
 version = "0.1.0"
 dependencies = [
@@ -1197,6 +1269,14 @@ name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4443176a9f2c162692bd3d352d745ef9413eec5782a80d8fd6f8a1ac692a07f7"
+
+[[package]]
+name = "false_cmd"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
+]
 
 [[package]]
 name = "fat32"
@@ -1333,6 +1413,14 @@ dependencies = [
  "font",
  "framebuffer",
  "shapes",
+]
+
+[[package]]
+name = "free"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
 ]
 
 [[package]]
@@ -1505,6 +1593,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "grep"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
+
+[[package]]
 name = "hash32"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1528,6 +1627,17 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+
+[[package]]
+name = "head"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
 
 [[package]]
 name = "heap"
@@ -1588,6 +1698,14 @@ name = "hello"
 version = "0.1.0"
 dependencies = [
  "log",
+]
+
+[[package]]
+name = "hostname"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
 ]
 
 [[package]]
@@ -2516,6 +2634,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mv"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
+
+[[package]]
 name = "nano_core"
 version = "0.1.0"
 dependencies = [
@@ -2614,6 +2743,17 @@ dependencies = [
  "memory",
  "mpmc",
  "nic_buffers",
+]
+
+[[package]]
+name = "nl"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
 ]
 
 [[package]]
@@ -3009,6 +3149,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "printenv"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
+]
+
+[[package]]
 name = "proc-macro-error"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3252,6 +3400,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rev"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
+
+[[package]]
 name = "riscv"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3488,6 +3647,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
+name = "seq"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "getopts",
+ "task",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.138"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3673,6 +3841,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sleep_cmd"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "sleep",
+ "task",
+]
+
+[[package]]
 name = "smoltcp"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3684,6 +3861,17 @@ dependencies = [
  "defmt",
  "heapless",
  "managed",
+]
+
+[[package]]
+name = "sort"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
 ]
 
 [[package]]
@@ -3958,6 +4146,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tail"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
+
+[[package]]
 name = "target-lexicon"
 version = "0.12.5"
 source = "git+https://github.com/theseus-os/target-lexicon?branch=theseus#75d36cc66df0ac4569df1b20a16ca914f417b85a"
@@ -4052,6 +4251,17 @@ dependencies = [
  "task",
  "window",
  "window_manager",
+]
+
+[[package]]
+name = "tee"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
 ]
 
 [[package]]
@@ -4449,6 +4659,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ee8fba06c1f4d0b396ef61a54530bb6b28f0dc61c38bc8bc5a5a48161e6282e"
 
 [[package]]
+name = "touch"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
+
+[[package]]
+name = "tr"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
+]
+
+[[package]]
+name = "true_cmd"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
+]
+
+[[package]]
 name = "tsc"
 version = "0.1.0"
 dependencies = [
@@ -4533,6 +4770,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "uniq"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
+
+[[package]]
 name = "unreachable"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4583,6 +4831,15 @@ dependencies = [
  "spin 0.9.4",
  "task",
  "vfs_node",
+]
+
+[[package]]
+name = "uptime"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
+ "time",
 ]
 
 [[package]]
@@ -4937,6 +5194,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wc"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5049,6 +5317,25 @@ version = "0.6.2"
 source = "git+https://github.com/theseus-os/xmas-elf.git#635d55f6886ae3fe0ec8a78e0bcc1238224c903d"
 dependencies = [
  "zero",
+]
+
+[[package]]
+name = "xxd"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "getopts",
+ "path",
+ "task",
+]
+
+[[package]]
+name = "yes"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "task",
 ]
 
 [[package]]
