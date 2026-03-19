@@ -1,0 +1,19 @@
+[package]
+name = "runpe"
+version = "0.1.0"
+authors = ["MaiOS Contributors"]
+description = "Load and execute a PE (Windows) binary from the MaiOS VFS"
+edition = "2021"
+
+[dependencies]
+app_io = { path = "../../kernel/app_io" }
+task = { path = "../../kernel/task" }
+path = { path = "../../kernel/path" }
+fs_node = { path = "../../kernel/fs_node" }
+io = { path = "../../kernel/io" }
+pe_loader = { path = "../../kernel/pe_loader" }
+spawn = { path = "../../kernel/spawn" }
+log = "0.4.8"
+
+[lib]
+crate-type = ["rlib"]

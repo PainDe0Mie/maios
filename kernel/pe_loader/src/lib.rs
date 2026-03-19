@@ -263,48 +263,77 @@ pub fn section_headers<'a>(
 
 /// Load a PE32+ binary from raw bytes into virtual memory.
 ///
-/// For each section this function:
-/// 1. Allocates virtual pages via [`memory::create_mapping`].
-/// 2. Copies the raw data portion (`SizeOfRawData` bytes).
-/// 3. Zeros the remainder up to `VirtualSize` (BSS-like regions).
+/// Allocates a single contiguous mapping for the entire image (SizeOfImage),
+/// then copies each section to its correct RVA offset. This ensures that
+/// RVA-based references (imports, relocations) work correctly.
+///
+/// After loading, applies base relocations if the actual load address
+/// differs from the preferred ImageBase.
 ///
 /// Returns the loaded PE with entry point and owned page mappings.
 pub fn load(data: &[u8]) -> Result<LoadedPe, &'static str> {
     let (coff, opt, section_off) = parse_header(data)?;
     let num_sections = coff.number_of_sections;
     let sections_raw = section_headers(data, section_off, num_sections)?;
-    let mut sections = Vec::new();
 
-    let image_base = opt.image_base;
+    let preferred_base = opt.image_base;
     let entry_rva = opt.address_of_entry_point;
+    let size_of_image = opt.size_of_image as usize;
+    let size_of_headers = opt.size_of_headers as usize;
 
     debug!(
-        "pe_loader: PE32+ image_base={:#x} entry_rva={:#x} sections={}",
-        image_base, entry_rva, num_sections
+        "pe_loader: PE32+ preferred_base={:#x} entry_rva={:#x} size_of_image={:#x} sections={}",
+        preferred_base, entry_rva, size_of_image, num_sections
     );
 
+    if size_of_image == 0 {
+        return Err("pe_loader: SizeOfImage is zero");
+    }
+
+    // Allocate a single contiguous block for the entire image.
+    // writable + executable so all sections can be accessed (we don't
+    // enforce per-section permissions yet).
+    let flags = PteFlagsArch::new().valid(true).writable(true).executable(true);
+    let mut image_mapping = memory::create_mapping(size_of_image, flags)?;
+
+    // Get the actual base address where the image was loaded
+    let actual_base = {
+        let slice: &[u8] = image_mapping.as_slice(0, 1)
+            .map_err(|_| "pe_loader: failed to read image mapping base address")?;
+        slice.as_ptr() as u64
+    };
+
+    debug!("pe_loader: image loaded at actual_base={:#x} (preferred={:#x})", actual_base, preferred_base);
+
+    // Zero the entire image first
+    {
+        let dest: &mut [u8] = image_mapping.as_slice_mut(0, size_of_image)
+            .map_err(|_| "pe_loader: failed to get mutable slice for image")?;
+        for b in dest.iter_mut() { *b = 0; }
+    }
+
+    // Copy PE headers
+    {
+        let hdr_copy_len = size_of_headers.min(data.len()).min(size_of_image);
+        let dest: &mut [u8] = image_mapping.as_slice_mut(0, hdr_copy_len)
+            .map_err(|_| "pe_loader: failed to write headers")?;
+        dest.copy_from_slice(&data[..hdr_copy_len]);
+    }
+
+    // Copy each section to its RVA offset within the image
     for shdr in sections_raw {
         let vsize = shdr.virtual_size as usize;
         let raw_size = shdr.size_of_raw_data as usize;
         let raw_offset = shdr.pointer_to_raw_data as usize;
+        let section_rva = shdr.virtual_address as usize;
         let chars = shdr.characteristics;
-        let section_vaddr = shdr.virtual_address as usize;
 
-        if vsize == 0 && raw_size == 0 {
-            continue;
-        }
+        if vsize == 0 && raw_size == 0 { continue; }
 
         let section_size = vsize.max(raw_size);
-        if section_size == 0 {
-            continue;
-        }
+        if section_size == 0 { continue; }
 
-        debug!(
-            "pe_loader: section '{}' vaddr={:#x} vsize={:#x} raw_off={:#x} raw_size={:#x} chars={:#x}",
-            shdr.name_str(), section_vaddr, vsize, raw_offset, raw_size, chars
-        );
-
-        // Skip sections that have no memory representation
+        // Skip non-loadable sections
         if chars & (section_flags::IMAGE_SCN_CNT_CODE
             | section_flags::IMAGE_SCN_CNT_INITIALIZED_DATA
             | section_flags::IMAGE_SCN_CNT_UNINITIALIZED_DATA
@@ -312,78 +341,164 @@ pub fn load(data: &[u8]) -> Result<LoadedPe, &'static str> {
             | section_flags::IMAGE_SCN_MEM_WRITE
             | section_flags::IMAGE_SCN_MEM_EXECUTE) == 0
         {
-            debug!("pe_loader: skipping section '{}' (no memory flags)", shdr.name_str());
             continue;
         }
 
-        // Validate raw data bounds
-        if raw_size > 0 {
-            let raw_end = raw_offset
-                .checked_add(raw_size)
-                .ok_or("pe_loader: section raw data offset + size overflow")?;
-            if raw_end > data.len() {
-                error!(
-                    "pe_loader: section '{}' raw data [{:#x}..{:#x}) exceeds input size {:#x}",
-                    shdr.name_str(), raw_offset, raw_end, data.len()
-                );
-                return Err("pe_loader: section raw data exceeds PE input bounds");
-            }
+        // Bounds check
+        if section_rva + section_size > size_of_image {
+            error!("pe_loader: section '{}' extends beyond SizeOfImage", shdr.name_str());
+            continue;
         }
 
-        // Allocate pages (writable initially for copying)
-        let _final_flags = pe_section_flags_to_pte(chars);
-        let write_flags = PteFlagsArch::new().valid(true).writable(true);
+        debug!(
+            "pe_loader: section '{}' rva={:#x} vsize={:#x} raw_off={:#x} raw_size={:#x}",
+            shdr.name_str(), section_rva, vsize, raw_offset, raw_size
+        );
 
-        let page_offset = 0; // PE sections are page-aligned by convention
-        let alloc_size = section_size;
-
-        let mut mapped = memory::create_mapping(alloc_size, write_flags)?;
-
-        // Copy raw data and zero BSS
-        {
-            let dest: &mut [u8] = mapped.as_slice_mut(page_offset, section_size)
-                .map_err(|_| "pe_loader: failed to obtain mutable slice for section")?;
-
-            if raw_size > 0 {
-                let copy_len = raw_size.min(section_size);
-                dest[..copy_len].copy_from_slice(&data[raw_offset..raw_offset + copy_len]);
-            }
-
-            // Zero uninitialized portion
-            let zeroed_start = raw_size.min(section_size);
-            if zeroed_start < section_size {
-                for byte in &mut dest[zeroed_start..] {
-                    *byte = 0;
-                }
-            }
+        // Copy raw data to the correct RVA offset
+        if raw_size > 0 && raw_offset + raw_size <= data.len() {
+            let copy_len = raw_size.min(section_size);
+            let dest: &mut [u8] = image_mapping.as_slice_mut(section_rva, copy_len)
+                .map_err(|_| "pe_loader: failed to write section data")?;
+            dest.copy_from_slice(&data[raw_offset..raw_offset + copy_len]);
         }
-
-        sections.push(mapped);
+        // BSS portion is already zeroed from the initial memset
     }
 
-    if sections.is_empty() {
-        return Err("pe_loader: no loadable sections found in PE binary");
+    // Apply base relocations if loaded at a different address than preferred
+    let delta = actual_base as i64 - preferred_base as i64;
+    if delta != 0 {
+        debug!("pe_loader: applying base relocations (delta={:#x})", delta);
+        apply_base_relocations(&mut image_mapping, data, opt, delta)?;
     }
 
-    // The entry point is ImageBase + AddressOfEntryPoint.
-    // Since we load at arbitrary addresses (not at ImageBase), we need
-    // to use the first section's actual mapped address as a base.
-    // For now, compute the nominal entry point — the caller must handle
-    // relocation if ImageBase differs from the actual load address.
-    let entry_vaddr = image_base.wrapping_add(entry_rva as u64) as usize;
-    let entry = VirtualAddress::new_canonical(entry_vaddr);
+    // Compute entry point using the actual load address
+    let entry_va = actual_base.wrapping_add(entry_rva as u64) as usize;
+    let entry = VirtualAddress::new_canonical(entry_va);
 
     debug!(
-        "pe_loader: loaded {} sections, entry point at {:#x}",
-        sections.len(),
-        entry.value()
+        "pe_loader: loaded at {:#x}, entry point at {:#x}",
+        actual_base, entry.value()
     );
 
     Ok(LoadedPe {
         entry_point: entry,
-        image_base,
-        sections,
+        image_base: actual_base,
+        sections: alloc::vec![image_mapping],
     })
+}
+
+/// Apply PE base relocations (.reloc section).
+///
+/// The relocation table is found via Data Directory entry #5 (IMAGE_DIRECTORY_ENTRY_BASERELOC).
+/// Each block contains a page RVA and a list of relocation entries.
+fn apply_base_relocations(
+    image: &mut MappedPages,
+    _data: &[u8],
+    opt: &OptionalHeader64,
+    delta: i64,
+) -> Result<(), &'static str> {
+    let num_dd = opt.number_of_rva_and_sizes as usize;
+    if num_dd < 6 {
+        debug!("pe_loader: no relocation directory (only {} data dirs)", num_dd);
+        return Ok(());
+    }
+
+    // Read the base relocation data directory (index 5)
+    let opt_ptr = opt as *const OptionalHeader64 as usize;
+    let dd_start = opt_ptr + core::mem::size_of::<OptionalHeader64>();
+    let dd_entry_size = core::mem::size_of::<DataDirectory>();
+    let reloc_dd = unsafe { &*((dd_start + 5 * dd_entry_size) as *const DataDirectory) };
+
+    let reloc_rva = reloc_dd.rva as usize;
+    let reloc_size = reloc_dd.size as usize;
+
+    if reloc_rva == 0 || reloc_size == 0 {
+        debug!("pe_loader: relocation table is empty");
+        return Ok(());
+    }
+
+    debug!("pe_loader: reloc directory at RVA {:#x}, size {:#x}", reloc_rva, reloc_size);
+
+    // The relocation data is now in our loaded image at offset reloc_rva
+    let size_of_image = opt.size_of_image as usize;
+    if reloc_rva + reloc_size > size_of_image {
+        return Err("pe_loader: relocation table extends beyond image");
+    }
+
+    // We need to read from the image mapping and also write to it.
+    // First, read all relocation data into a temporary buffer.
+    let reloc_data = {
+        let slice: &[u8] = image.as_slice(reloc_rva, reloc_size)
+            .map_err(|_| "pe_loader: failed to read reloc data")?;
+        let mut buf = alloc::vec![0u8; reloc_size];
+        buf.copy_from_slice(slice);
+        buf
+    };
+
+    // Process relocation blocks
+    let mut offset = 0;
+    while offset + 8 <= reloc_data.len() {
+        let page_rva = u32::from_le_bytes([
+            reloc_data[offset], reloc_data[offset+1],
+            reloc_data[offset+2], reloc_data[offset+3],
+        ]) as usize;
+        let block_size = u32::from_le_bytes([
+            reloc_data[offset+4], reloc_data[offset+5],
+            reloc_data[offset+6], reloc_data[offset+7],
+        ]) as usize;
+
+        if block_size == 0 { break; }
+        if block_size < 8 { break; }
+
+        let num_entries = (block_size - 8) / 2;
+
+        for i in 0..num_entries {
+            let entry_off = offset + 8 + i * 2;
+            if entry_off + 2 > reloc_data.len() { break; }
+
+            let entry = u16::from_le_bytes([reloc_data[entry_off], reloc_data[entry_off + 1]]);
+            let reloc_type = (entry >> 12) & 0xF;
+            let reloc_offset = (entry & 0xFFF) as usize;
+
+            match reloc_type {
+                0 => {} // IMAGE_REL_BASED_ABSOLUTE — padding, skip
+                3 => {
+                    // IMAGE_REL_BASED_HIGHLOW (32-bit)
+                    let fixup_rva = page_rva + reloc_offset;
+                    if fixup_rva + 4 <= size_of_image {
+                        let slice: &mut [u8] = image.as_slice_mut(fixup_rva, 4)
+                            .map_err(|_| "pe_loader: reloc fixup write failed")?;
+                        let val = u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]);
+                        let new_val = (val as i64).wrapping_add(delta) as u32;
+                        slice.copy_from_slice(&new_val.to_le_bytes());
+                    }
+                }
+                10 => {
+                    // IMAGE_REL_BASED_DIR64 (64-bit) — most common for PE32+
+                    let fixup_rva = page_rva + reloc_offset;
+                    if fixup_rva + 8 <= size_of_image {
+                        let slice: &mut [u8] = image.as_slice_mut(fixup_rva, 8)
+                            .map_err(|_| "pe_loader: reloc fixup write failed")?;
+                        let val = u64::from_le_bytes([
+                            slice[0], slice[1], slice[2], slice[3],
+                            slice[4], slice[5], slice[6], slice[7],
+                        ]);
+                        let new_val = (val as i64).wrapping_add(delta) as u64;
+                        slice.copy_from_slice(&new_val.to_le_bytes());
+                    }
+                }
+                _ => {
+                    debug!("pe_loader: unsupported relocation type {}", reloc_type);
+                }
+            }
+        }
+
+        offset += block_size;
+    }
+
+    debug!("pe_loader: base relocations applied successfully");
+    Ok(())
 }
 
 /// Validate that the given data is a PE32+ binary without loading it.
@@ -532,37 +647,45 @@ pub fn resolve_imports(data: &[u8], image_base: u64) -> Result<MappedPages, &'st
 
             let name_str = func_name.unwrap_or("(ordinal)");
 
-            // Look up the stub for this function
-            let syscall_nr = lookup_win32_stub(dll_name, name_str);
+            // Look up the stub kind for this function
+            let stub_kind = lookup_win32_stub(dll_name, name_str);
 
-            // Generate a stub function
-            let stub_addr = if syscall_nr != 0xFFFF {
-                // Generate: mov r10, rcx; mov eax, <nr>; syscall; ret
-                let stub = generate_syscall_stub(syscall_nr);
-                if stub_offset + stub.len() > PAGE_SIZE {
-                    error!("pe_loader: stub page full, cannot resolve more imports");
-                    break;
+            // Generate the appropriate stub
+            let stub_addr = match stub_kind {
+                StubKind::Syscall(nr) => {
+                    let stub = generate_syscall_stub(nr);
+                    if stub_offset + stub.len() > PAGE_SIZE { break; }
+                    let dest: &mut [u8] = stub_page.as_slice_mut(stub_offset, stub.len())
+                        .map_err(|_| "pe_loader: failed to write stub")?;
+                    dest.copy_from_slice(&stub);
+                    let addr = stub_base + stub_offset as u64;
+                    stub_offset += stub.len();
+                    debug!("pe_loader:   {} → syscall stub {:#x}", name_str, nr);
+                    addr
                 }
-                let dest: &mut [u8] = stub_page.as_slice_mut(stub_offset, stub.len())
-                    .map_err(|_| "pe_loader: failed to write stub")?;
-                dest.copy_from_slice(&stub);
-                let addr = stub_base + stub_offset as u64;
-                stub_offset += stub.len();
-                debug!("pe_loader:   {} → stub at {:#x} (NT syscall {:#x})", name_str, addr, syscall_nr);
-                addr
-            } else {
-                // Unknown function — generate a stub that returns STATUS_NOT_IMPLEMENTED
-                let stub = generate_nop_stub();
-                if stub_offset + stub.len() > PAGE_SIZE {
-                    break;
+                StubKind::ReturnValue(val) => {
+                    let stub = generate_return_value_stub(val);
+                    if stub_offset + stub.len() > PAGE_SIZE { break; }
+                    let dest: &mut [u8] = stub_page.as_slice_mut(stub_offset, stub.len())
+                        .map_err(|_| "pe_loader: failed to write return stub")?;
+                    dest.copy_from_slice(&stub);
+                    let addr = stub_base + stub_offset as u64;
+                    stub_offset += stub.len();
+                    debug!("pe_loader:   {} → return {:#x}", name_str, val);
+                    addr
                 }
-                let dest: &mut [u8] = stub_page.as_slice_mut(stub_offset, stub.len())
-                    .map_err(|_| "pe_loader: failed to write nop stub")?;
-                dest.copy_from_slice(&stub);
-                let addr = stub_base + stub_offset as u64;
-                stub_offset += stub.len();
-                debug!("pe_loader:   {} → nop stub at {:#x} (unimplemented)", name_str, addr);
-                addr
+                StubKind::Unknown => {
+                    // Return 0 for unknown functions (safer than crashing)
+                    let stub = generate_return_value_stub(0);
+                    if stub_offset + stub.len() > PAGE_SIZE { break; }
+                    let dest: &mut [u8] = stub_page.as_slice_mut(stub_offset, stub.len())
+                        .map_err(|_| "pe_loader: failed to write unknown stub")?;
+                    dest.copy_from_slice(&stub);
+                    let addr = stub_base + stub_offset as u64;
+                    stub_offset += stub.len();
+                    debug!("pe_loader:   {} → unknown (ret 0)", name_str);
+                    addr
+                }
             };
 
             // Patch the IAT entry in the loaded image
@@ -601,80 +724,112 @@ fn generate_syscall_stub(nr: u16) -> [u8; 12] {
     ]
 }
 
-/// Generate a no-op stub that returns STATUS_NOT_IMPLEMENTED (0xC0000002):
+/// Generate a stub that returns a fixed 64-bit value in RAX.
 /// ```asm
-/// mov eax, 0xC0000002 ; B8 02 00 00 C0 (5 bytes)
-/// ret                  ; C3 (1 byte)
+/// mov rax, <imm64>  ; 48 B8 xx xx xx xx xx xx xx xx (10 bytes)
+/// ret                ; C3 (1 byte)
+/// nop                ; 90 (pad to 12 bytes)
 /// ```
-fn generate_nop_stub() -> [u8; 8] {
+fn generate_return_value_stub(value: u64) -> [u8; 12] {
+    let b = value.to_le_bytes();
     [
-        0xB8, 0x02, 0x00, 0x00, 0xC0, // mov eax, 0xC0000002 (STATUS_NOT_IMPLEMENTED)
-        0xC3,                           // ret
-        0x90, 0x90,                     // nop nop (pad to 8)
+        0x48, 0xB8, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], // mov rax, imm64
+        0xC3,                                                          // ret
+        0x90,                                                          // nop
     ]
 }
 
-/// Lookup table mapping Win32/NT function names to NT syscall numbers.
-///
-/// Returns 0xFFFF if the function is not mapped.
-fn lookup_win32_stub(dll_name: &str, func_name: &str) -> u16 {
-    // Normalize DLL name to lowercase for comparison
-    let dll_lower: &str = dll_name;
-    let is_ntdll = dll_lower.len() >= 5
-        && (dll_lower.as_bytes()[0] | 0x20) == b'n'
-        && (dll_lower.as_bytes()[1] | 0x20) == b't'
-        && (dll_lower.as_bytes()[2] | 0x20) == b'd'
-        && (dll_lower.as_bytes()[3] | 0x20) == b'l'
-        && (dll_lower.as_bytes()[4] | 0x20) == b'l';
+/// What kind of stub to generate for a Win32/NT function.
+enum StubKind {
+    /// NT syscall stub: mov r10,rcx; mov eax,nr; syscall; ret
+    Syscall(u16),
+    /// Return a fixed value: mov rax,value; ret
+    ReturnValue(u64),
+    /// Unknown/unimplemented function
+    Unknown,
+}
 
-    let is_kernel32 = dll_lower.len() >= 8
-        && (dll_lower.as_bytes()[0] | 0x20) == b'k'
-        && (dll_lower.as_bytes()[1] | 0x20) == b'e'
-        && (dll_lower.as_bytes()[2] | 0x20) == b'r'
-        && (dll_lower.as_bytes()[3] | 0x20) == b'n';
+/// Lookup table mapping Win32/NT function names to stub kinds.
+fn lookup_win32_stub(dll_name: &str, func_name: &str) -> StubKind {
+    let dll = dll_name.as_bytes();
+    let is_ntdll = dll.len() >= 5
+        && (dll[0] | 0x20) == b'n'
+        && (dll[1] | 0x20) == b't'
+        && (dll[2] | 0x20) == b'd'
+        && (dll[3] | 0x20) == b'l'
+        && (dll[4] | 0x20) == b'l';
+
+    let is_kernel32 = dll.len() >= 8
+        && (dll[0] | 0x20) == b'k'
+        && (dll[1] | 0x20) == b'e'
+        && (dll[2] | 0x20) == b'r'
+        && (dll[3] | 0x20) == b'n';
 
     if is_ntdll {
         match func_name {
-            "NtCreateFile"              => 0x0055,
-            "NtReadFile"                => 0x0006,
-            "NtWriteFile"               => 0x0008,
-            "NtClose"                   => 0x000F,
-            "NtAllocateVirtualMemory"   => 0x0018,
-            "NtFreeVirtualMemory"       => 0x001E,
-            "NtProtectVirtualMemory"    => 0x0050,
-            "NtTerminateProcess"        => 0x002C,
-            "NtQueryPerformanceCounter" => 0x0031,
-            "NtQueryInformationFile"    => 0x0011,
-            "NtQuerySystemInformation"  => 0x0036,
-            "NtQueryInformationProcess" => 0x0019,
-            "RtlInitUnicodeString"      => 0xFFFF, // stub separately
-            _ => 0xFFFF,
+            "NtCreateFile"              => StubKind::Syscall(0x0055),
+            "NtReadFile"                => StubKind::Syscall(0x0006),
+            "NtWriteFile"               => StubKind::Syscall(0x0008),
+            "NtClose"                   => StubKind::Syscall(0x000F),
+            "NtAllocateVirtualMemory"   => StubKind::Syscall(0x0018),
+            "NtFreeVirtualMemory"       => StubKind::Syscall(0x001E),
+            "NtProtectVirtualMemory"    => StubKind::Syscall(0x0050),
+            "NtTerminateProcess"        => StubKind::Syscall(0x002C),
+            "NtQueryPerformanceCounter" => StubKind::Syscall(0x0031),
+            "NtQueryInformationFile"    => StubKind::Syscall(0x0011),
+            "NtQuerySystemInformation"  => StubKind::Syscall(0x0036),
+            "NtQueryInformationProcess" => StubKind::Syscall(0x0019),
+            "RtlInitUnicodeString"      => StubKind::ReturnValue(0), // void function, return 0
+            "RtlAllocateHeap"           => StubKind::ReturnValue(0), // return NULL (allocation failure)
+            "RtlFreeHeap"               => StubKind::ReturnValue(1), // return TRUE
+            _ => StubKind::Unknown,
         }
     } else if is_kernel32 {
-        // kernel32 functions are thin wrappers around ntdll.
-        // Map them to the corresponding NT syscall numbers.
         match func_name {
-            "ExitProcess"       => 0x002C, // NtTerminateProcess
-            "WriteFile"         => 0x0008, // NtWriteFile
-            "ReadFile"          => 0x0006, // NtReadFile
-            "CloseHandle"       => 0x000F, // NtClose
-            "CreateFileA" | "CreateFileW" => 0x0055, // NtCreateFile
-            "VirtualAlloc"      => 0x0018, // NtAllocateVirtualMemory
-            "VirtualFree"       => 0x001E, // NtFreeVirtualMemory
-            "VirtualProtect"    => 0x0050, // NtProtectVirtualMemory
-            "GetStdHandle"      => 0xFFFF, // Special: handled by nop stub returning fixed handles
-            "WriteConsoleA" | "WriteConsoleW" => 0x0008,
-            "GetLastError"      => 0xFFFF, // nop stub: return 0 (ERROR_SUCCESS)
-            "SetLastError"      => 0xFFFF, // nop stub
-            "GetModuleHandleA" | "GetModuleHandleW" => 0xFFFF, // nop stub
-            "GetProcAddress"    => 0xFFFF, // nop stub
-            "GetCurrentProcess" => 0xFFFF, // nop stub (return -1)
-            "GetCurrentProcessId" => 0xFFFF, // nop stub
-            "QueryPerformanceCounter" => 0x0031,
-            "QueryPerformanceFrequency" => 0x0031,
-            _ => 0xFFFF,
+            "ExitProcess"       => StubKind::Syscall(0x002C),
+            "WriteFile"         => StubKind::Syscall(0x0008),
+            "ReadFile"          => StubKind::Syscall(0x0006),
+            "CloseHandle"       => StubKind::Syscall(0x000F),
+            "CreateFileA" | "CreateFileW" => StubKind::Syscall(0x0055),
+            "VirtualAlloc"      => StubKind::Syscall(0x0018),
+            "VirtualFree"       => StubKind::Syscall(0x001E),
+            "VirtualProtect"    => StubKind::Syscall(0x0050),
+            "WriteConsoleA" | "WriteConsoleW" => StubKind::Syscall(0x0008),
+            "QueryPerformanceCounter"   => StubKind::Syscall(0x0031),
+            "QueryPerformanceFrequency" => StubKind::Syscall(0x0031),
+            // Win32 functions with fixed return values
+            "GetStdHandle"      => StubKind::ReturnValue(0xFFFF_FFFF_FFFF_FFF5), // STD_OUTPUT_HANDLE=-11 → handle 7
+            "GetLastError"      => StubKind::ReturnValue(0),   // ERROR_SUCCESS
+            "SetLastError"      => StubKind::ReturnValue(0),   // void
+            "GetCurrentProcess" => StubKind::ReturnValue(0xFFFF_FFFF_FFFF_FFFF), // pseudo-handle -1
+            "GetCurrentProcessId" => StubKind::ReturnValue(1), // PID 1
+            "GetCurrentThreadId"  => StubKind::ReturnValue(1), // TID 1
+            "GetModuleHandleA" | "GetModuleHandleW" => StubKind::ReturnValue(0), // NULL (no module)
+            "GetProcAddress"    => StubKind::ReturnValue(0),   // NULL (not found)
+            "HeapCreate"        => StubKind::ReturnValue(0x1000), // fake heap handle
+            "HeapAlloc"         => StubKind::ReturnValue(0),   // NULL (allocation failure)
+            "HeapFree"          => StubKind::ReturnValue(1),   // TRUE
+            "GetProcessHeap"    => StubKind::ReturnValue(0x1000), // fake heap handle
+            "IsDebuggerPresent" => StubKind::ReturnValue(0),   // FALSE
+            "GetCommandLineA"   => StubKind::ReturnValue(0),   // NULL
+            "GetCommandLineW"   => StubKind::ReturnValue(0),   // NULL
+            "GetSystemTimeAsFileTime" => StubKind::ReturnValue(0), // void
+            "InitializeCriticalSectionAndSpinCount" => StubKind::ReturnValue(1), // TRUE
+            "DeleteCriticalSection" => StubKind::ReturnValue(0), // void
+            "EnterCriticalSection"  => StubKind::ReturnValue(0), // void
+            "LeaveCriticalSection"  => StubKind::ReturnValue(0), // void
+            "TlsAlloc"         => StubKind::ReturnValue(0),    // TLS index 0
+            "TlsSetValue"      => StubKind::ReturnValue(1),    // TRUE
+            "TlsGetValue"      => StubKind::ReturnValue(0),    // NULL
+            "FlsAlloc"         => StubKind::ReturnValue(0),    // FLS index 0
+            "FlsSetValue"      => StubKind::ReturnValue(1),    // TRUE
+            "FlsGetValue"      => StubKind::ReturnValue(0),    // NULL
+            "SetUnhandledExceptionFilter" => StubKind::ReturnValue(0), // NULL (previous filter)
+            "UnhandledExceptionFilter"    => StubKind::ReturnValue(1), // EXCEPTION_EXECUTE_HANDLER
+            "IsProcessorFeaturePresent"   => StubKind::ReturnValue(0), // FALSE
+            _ => StubKind::Unknown,
         }
     } else {
-        0xFFFF
+        StubKind::Unknown
     }
 }

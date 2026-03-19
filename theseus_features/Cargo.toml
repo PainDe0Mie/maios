@@ -35,6 +35,7 @@ ps = { path = "../applications/ps", optional = true }
 pwd = { path = "../applications/pwd", optional = true }
 rm = { path = "../applications/rm", optional = true }
 rq = { path = "../applications/rq", optional = true }
+runpe = { path = "../applications/runpe", optional = true }
 serial_echo = { path = "../applications/serial_echo", optional = true }
 shell = { path = "../applications/shell", optional = true }
 swap = { path = "../applications/swap", optional = true }
@@ -138,6 +139,7 @@ theseus_apps = [
     "pwd",
     "rm",
     "rq",
+    "runpe",
     "serial_echo",
     "shell",
     "swap",

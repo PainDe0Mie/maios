@@ -3380,6 +3380,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "runpe"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "fs_node",
+ "io",
+ "log",
+ "path",
+ "pe_loader",
+ "spawn",
+ "task",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4395,6 +4409,7 @@ dependencies = [
  "rm",
  "rq",
  "rq_eval",
+ "runpe",
  "scheduler_eval",
  "seconds_counter",
  "serial_echo",
