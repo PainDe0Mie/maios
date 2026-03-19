@@ -4,6 +4,7 @@ extern crate alloc;
 
 use alloc::{sync::Arc, vec::Vec};
 
+use log::info;
 use smoltcp::wire::Ipv4Address;
 use spin::Mutex;
 use sync_irq::IrqSafeMutex;
@@ -18,40 +19,69 @@ pub use smoltcp::{
     phy,
     socket::{icmp, tcp, udp},
     time::Instant,
-    wire::{self, IpEndpoint},
+    wire::{self, IpEndpoint, IpListenEndpoint},
 };
 pub use socket::{LockedSocket, Socket};
 
-/// A randomly chosen IP address that must be outside of the DHCP range.
-///
-/// The default QEMU user-slirp network gives IP address of `10.0.2.*`.
-const DEFAULT_LOCAL_IP: &str = "10.0.2.15/24";
+/// Fallback statique si DHCP échoue.
+const FALLBACK_LOCAL_IP: &str = "10.0.2.15/24";
+const FALLBACK_GATEWAY_IP: IpAddress = IpAddress::Ipv4(Ipv4Address::new(10, 0, 2, 2));
 
-/// Standard home router address.
-///
-/// `10.0.2.2` is the default QEMU user-slirp networking gateway IP.
-const DEFAULT_GATEWAY_IP: IpAddress = IpAddress::Ipv4(Ipv4Address::new(10, 0, 2, 2));
-
-// TODO: Make mutex rwlock?
-// TODO: Use atomic append-only vec?
 static NETWORK_INTERFACES: Mutex<Vec<Arc<NetworkInterface>>> = Mutex::new(Vec::new());
 
-/// Registers a network device.
+/// Serveurs DNS obtenus via DHCP. Protégé par un Mutex.
+static DNS_SERVERS: Mutex<Vec<Ipv4Address>> = Mutex::new(Vec::new());
+
+/// Enregistre un périphérique réseau et démarre DHCP.
 ///
-/// The function will convert the device to an interface and it will then be
-/// accessible using [`get_interfaces()`].
+/// L'interface est créée sans IP. Un polling DHCP de 5 secondes max tente
+/// d'obtenir une adresse. En cas d'échec, un fallback statique est utilisé.
 pub fn register_device<T>(device: &'static IrqSafeMutex<T>) -> Arc<NetworkInterface>
 where
     T: 'static + NetworkDevice + Send,
 {
-    let interface = NetworkInterface::new(
-        device,
-        // TODO: use DHCP to acquire an IP address and gateway.
-        DEFAULT_LOCAL_IP.parse().unwrap(),
-        DEFAULT_GATEWAY_IP,
-    );
-
+    // Créer l'interface sans IP — DHCP va la configurer
+    let interface = NetworkInterface::new_dhcp(device);
     let interface_arc = Arc::new(interface);
+
+    // Tenter DHCP pendant 5 secondes max (5000 polls à ~1ms chacun)
+    let mut dhcp_success = false;
+    for _ in 0..5000 {
+        if let Some((_ip, _gw, dns)) = interface_arc.poll_dhcp() {
+            // Stocker les DNS servers
+            let mut dns_lock = DNS_SERVERS.lock();
+            dns_lock.clear();
+            for srv in dns.iter().flatten() {
+                dns_lock.push(*srv);
+            }
+            dhcp_success = true;
+            break;
+        }
+        // Petit yield — on est encore en early boot, pas de sleep disponible
+        core::hint::spin_loop();
+    }
+
+    if !dhcp_success {
+        info!("DHCP: timeout, using static fallback {}", FALLBACK_LOCAL_IP);
+        // Fallback : configurer statiquement
+        {
+            let mut inner = interface_arc.inner.lock();
+            inner.update_ip_addrs(|addrs| {
+                addrs.clear();
+                addrs.push(FALLBACK_LOCAL_IP.parse().unwrap()).unwrap();
+            });
+            match FALLBACK_GATEWAY_IP {
+                IpAddress::Ipv4(addr) => { inner.routes_mut().add_default_ipv4_route(addr).ok(); }
+                IpAddress::Ipv6(addr) => { inner.routes_mut().add_default_ipv6_route(addr).ok(); }
+            }
+        }
+        // Fallback DNS = gateway
+        let mut dns_lock = DNS_SERVERS.lock();
+        if dns_lock.is_empty() {
+            dns_lock.push(Ipv4Address::new(10, 0, 2, 2));
+        }
+    }
+
     NETWORK_INTERFACES.lock().push(interface_arc.clone());
     interface_arc
 }
@@ -66,6 +96,11 @@ pub fn get_default_interface() -> Option<Arc<NetworkInterface>> {
     NETWORK_INTERFACES.lock().first().cloned()
 }
 
+/// Retourne les serveurs DNS configurés (via DHCP ou fallback).
+pub fn get_dns_servers() -> Vec<Ipv4Address> {
+    DNS_SERVERS.lock().clone()
+}
+
 /// Returns a port in the range reserved for private, dynamic, and ephemeral
 /// ports.
 pub fn get_ephemeral_port() -> u16 {
@@ -73,10 +108,6 @@ pub fn get_ephemeral_port() -> u16 {
 
     const RANGE_START: u16 = 49152;
     const RANGE_END: u16 = u16::MAX;
-
-    // TODO: Doesn't need to be random (especially cryptographically random) but
-    // reduces the likelihood of port clashes. Can remove randmoness after
-    // implementing some kind of tracking of used ports.
 
     let mut rng = random::init_rng::<rand_chacha::ChaChaRng>().unwrap();
     rng.gen_range(RANGE_START..=RANGE_END)
