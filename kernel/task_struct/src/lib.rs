@@ -10,7 +10,7 @@ use core::{
     any::Any,
     fmt,
     hash::{Hash, Hasher},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU8, AtomicUsize, Ordering},
     task::Waker,
 };
 
@@ -147,6 +147,10 @@ pub struct Task {
     /// Wakers for async tasks.
     pub wakers: IrqSafeMutex<Vec<Waker>>,
     
+    /// Syscall ABI mode: 0 = Native, 1 = Linux, 2 = Windows.
+    /// Stored as AtomicU8 for lock-free access from the syscall hot path.
+    pub exec_mode: AtomicU8,
+
     pub address_space: Option<AddressSpace>,
 
     pub is_an_idle_task: bool,
@@ -190,6 +194,7 @@ impl Task {
             pinned_core: AtomicCell::new(None.into()),
             context_data: IrqSafeMutex::new(None),
             wakers: IrqSafeMutex::new(Vec::new()),
+            exec_mode: AtomicU8::new(0), // 0 = Native
             address_space: None,
             is_an_idle_task: false,
             restart_info: None,

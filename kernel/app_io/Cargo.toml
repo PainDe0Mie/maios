@@ -17,8 +17,11 @@ path = "../../kernel/task"
 [dependencies.stdio]
 path = "../../libs/stdio"
 
-[dependencies.sync_block]
-path = "../../kernel/sync_block"
+[dependencies.spin]
+version = "0.9.4"
+
+[dependencies.sync_irq]
+path = "../../libs/sync_irq"
 
 [dependencies.tty]
 path = "../../kernel/tty"

@@ -9,16 +9,13 @@ edition = "2021"
 log = "0.4.8"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-spin = "0.9.4"
 x86_64 = "0.14.8"
-memory = { path = "../memory" }
 cpu = { path = "../cpu" }
-interrupts = { path = "../interrupts" }
 gdt = { path = "../gdt" }
-tss = { path = "../tss" }
 task = { path = "../task" }
 linux_syscall = { path = "../linux_syscall" }
 windows_syscall = { path = "../windows_syscall" }
+maios_syscall = { path = "../maios_syscall" }
 
 [lib]
 crate-type = ["rlib"]

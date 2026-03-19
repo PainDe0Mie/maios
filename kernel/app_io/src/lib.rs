@@ -14,6 +14,7 @@
 extern crate alloc;
 extern crate logger;
 
+#[allow(unused_imports)]
 use alloc::{format, sync::Arc};
 use core2::io::{self, Error, ErrorKind, Read, Write};
 use stdio::{StdioReader, StdioWriter};
@@ -85,20 +86,20 @@ pub struct IoStreams {
 mod shared_maps {
     use super::IoStreams;
     use hashbrown::HashMap;
-    use sync_block::{Mutex, MutexGuard};
+    use sync_irq::{Mutex, MutexGuard};
 
     lazy_static::lazy_static! {
         /// Map a task id to its IoStreams structure.
-        /// Shells should call `insert_child_streams` when spawning a new app,
-        /// which effectively stores a new key value pair to this map.
-        /// After a shell's child app exits, the shell should call
-        /// `remove_child_streams` to clean it up.
+        ///
+        /// Uses sync_irq::Mutex which disables interrupts while the lock is
+        /// held. This prevents preemption deadlocks: if task A holds the lock
+        /// and gets preempted, task B on the same CPU would spin forever on
+        /// a plain spin::Mutex. Disabling interrupts prevents the timer IRQ
+        /// from triggering a context switch while the lock is held.
         static ref APP_IO_STREAMS: Mutex<HashMap<usize, IoStreams>> = Mutex::new(HashMap::new());
     }
 
-    /// Lock and returns the `MutexGuard` of `APP_IO_STREAMS`. Use
-    /// `lock_all_maps()` if you want to lock both of the maps to avoid
-    /// deadlock.
+    /// Lock and returns the `MutexGuard` of `APP_IO_STREAMS`.
     pub fn lock_stream_map() -> MutexGuard<'static, HashMap<usize, IoStreams>> {
         APP_IO_STREAMS.lock()
     }
@@ -204,22 +205,39 @@ macro_rules! print {
     });
 }
 
-/// Converts the given `core::fmt::Arguments` to a `String` and enqueues the
-/// string into the correct terminal print-producer
+/// Adapter that bridges `core::fmt::Write` to `ImmutableWrite`,
+/// avoiding heap allocation (no intermediate String).
+struct FmtToIoAdapter<'a>(&'a dyn ImmutableWrite);
+
+impl<'a> core::fmt::Write for FmtToIoAdapter<'a> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.0.write_all(s.as_bytes()).map_err(|_| core::fmt::Error)
+    }
+}
+
+/// Writes the given `core::fmt::Arguments` directly into the correct
+/// terminal print-producer, without heap allocation.
+///
+/// Previous implementation used `format!()` which allocated a String on
+/// the heap. The slab allocator disables interrupts (CLI) while holding
+/// its lock. If a panic occurred during allocation, the unwinder would
+/// try to allocate again → recursive deadlock on the allocator lock
+/// with interrupts disabled.
 pub fn print_to_stdout_args(fmt_args: core::fmt::Arguments) {
     let task_id = task::get_my_current_task_id();
 
-    // Obtains the correct stdout stream and push the output bytes.
-    let locked_streams = shared_maps::lock_stream_map();
-    if let Some(queues) = locked_streams.get(&task_id) {
-        if queues
-                .stdout
-                .write_all(format!("{fmt_args}").as_bytes())
-                .is_err()
-            {
-                let _ = logger::write_str("\x1b[31m [E] failed to write to stdout \x1b[0m\n");
-            }
-    } else {
-        // let _ = logger::write_str("\x1b[31m [E] error in print!/println! macro: no stdout queue for current task \x1b[0m\n");
-    };
+    // Clone the Arc<dyn ImmutableWrite> while holding the lock, then release
+    // the lock BEFORE performing I/O.
+    let stdout = {
+        let locked_streams = shared_maps::lock_stream_map();
+        locked_streams.get(&task_id).map(|q| q.stdout.clone())
+    }; // lock released here
+
+    if let Some(writer) = stdout {
+        use core::fmt::Write;
+        let mut adapter = FmtToIoAdapter(writer.as_ref());
+        if core::fmt::write(&mut adapter, fmt_args).is_err() {
+            let _ = logger::write_str("\x1b[31m [E] failed to write to stdout \x1b[0m\n");
+        }
+    }
 }

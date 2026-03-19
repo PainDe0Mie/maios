@@ -152,8 +152,9 @@ dependencies = [
  "hashbrown 0.11.2",
  "lazy_static",
  "logger",
+ "spin 0.9.4",
  "stdio",
- "sync_block",
+ "sync_irq",
  "task",
  "tty",
 ]
@@ -1943,23 +1944,8 @@ checksum = "549ce1740e46b291953c4340adcd74c59bcf4308f4cac050fd33ba91b7168f4a"
 name = "linux_syscall"
 version = "0.1.0"
 dependencies = [
- "app_io",
- "elf_loader",
- "fs_node",
- "io",
- "kernel_config",
- "lazy_static",
  "log",
- "memory",
- "memory_structs",
- "mod_mgmt",
- "path",
- "pte_flags",
- "root",
- "spawn",
- "spin 0.9.4",
- "task",
- "vfs_node",
+ "maios_syscall",
 ]
 
 [[package]]
@@ -2100,6 +2086,31 @@ dependencies = [
  "framebuffer_drawer",
  "keycodes_ascii",
  "shapes",
+]
+
+[[package]]
+name = "maios_syscall"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "elf_loader",
+ "fs_node",
+ "io",
+ "kernel_config",
+ "lazy_static",
+ "log",
+ "memory",
+ "memory_structs",
+ "path",
+ "pte_flags",
+ "root",
+ "rtc",
+ "scheduler",
+ "spawn",
+ "spin 0.9.4",
+ "task",
+ "time",
+ "vfs_node",
 ]
 
 [[package]]
@@ -2833,6 +2844,17 @@ dependencies = [
  "spin 0.9.4",
  "volatile 0.2.7",
  "zerocopy",
+]
+
+[[package]]
+name = "pe_loader"
+version = "0.1.0"
+dependencies = [
+ "kernel_config",
+ "log",
+ "memory",
+ "memory_structs",
+ "pte_flags",
 ]
 
 [[package]]
@@ -3759,6 +3781,7 @@ dependencies = [
  "core2",
  "keycodes_ascii",
  "spin 0.9.4",
+ "sync_irq",
 ]
 
 [[package]]
@@ -3902,15 +3925,20 @@ version = "0.1.0"
 dependencies = [
  "cpu",
  "gdt",
- "interrupts",
  "linux_syscall",
  "log",
- "memory",
- "spin 0.9.4",
+ "maios_syscall",
  "task",
- "tss",
  "windows_syscall",
  "x86_64",
+]
+
+[[package]]
+name = "syscall_trace"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "maios_syscall",
 ]
 
 [[package]]
@@ -4241,6 +4269,7 @@ name = "test_win_compat"
 version = "0.1.0"
 dependencies = [
  "app_io",
+ "log",
  "windows_syscall",
 ]
 
@@ -4967,7 +4996,6 @@ dependencies = [
  "mouse_data",
  "mpmc",
  "path",
- "preemption",
  "scheduler",
  "shapes",
  "sleep",
@@ -4981,11 +5009,9 @@ dependencies = [
 name = "windows_syscall"
 version = "0.1.0"
 dependencies = [
- "app_io",
+ "kernel_config",
  "log",
- "memory",
- "spin 0.9.4",
- "task",
+ "maios_syscall",
 ]
 
 [[package]]

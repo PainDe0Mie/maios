@@ -223,7 +223,14 @@ pub fn process_deferred_led_update() {
         if let Some(KeyboardInterruptParams { keyboard, .. }) = KEYBOARD.get() {
             // SAFE: we only read modifiers here, no real race with interrupt handler
             let modifiers = unsafe { &*KBD_MODIFIERS };
-            set_keyboard_led(keyboard, modifiers);
+            // Disable interrupts during PS/2 LED I/O to prevent the keyboard IRQ
+            // handler from consuming ACK bytes (0xFA) meant for polling_receive().
+            // Without this, the IRQ steals the ACK → polling times out → the PS/2
+            // command is left incomplete → the controller misinterprets the next
+            // scancode as LED data, corrupting the keyboard state.
+            x86_64::instructions::interrupts::without_interrupts(|| {
+                set_keyboard_led(keyboard, modifiers);
+            });
         }
     }
 }
