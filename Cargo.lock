@@ -978,7 +978,6 @@ dependencies = [
  "storage_device",
  "storage_manager",
  "vfs_node",
- "window_manager",
 ]
 
 [[package]]

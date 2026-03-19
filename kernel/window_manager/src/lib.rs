@@ -369,20 +369,26 @@ impl WindowManager {
     /// VirtIO-GPU display has been set up via MHC — copies the same pixels
     /// to the VirtIO-GPU scanout so both outputs stay in sync.
     pub fn present(&mut self) {
+        if let Some(mgi) = MGI.get() {
+            mgi.lock().present();
+        }
+    }
+
+    /// Copy the MGI frontbuffer to the VirtIO-GPU scanout.
+    /// Called from the WM loop *without* preemption held so the
+    /// polled VirtIO transfer cannot starve timers / other tasks.
+    pub fn flush_to_virtio(&self) {
+        if !mhc::has_display() { return; }
         let (w, h) = self.get_screen_size();
         if let Some(mgi) = MGI.get() {
-            let mut mgi_guard = mgi.lock();
-            mgi_guard.present();
-            // Mirror to VirtIO-GPU scanout if MHC display is configured.
-            if mhc::has_display() {
-                let pixels_u32 = unsafe {
-                    core::slice::from_raw_parts(
-                        mgi_guard.frontbuffer_ptr() as *const u32,
-                        w * h,
-                    )
-                };
-                mhc::flush_display(pixels_u32, w as u32, h as u32);
-            }
+            let mgi_guard = mgi.lock();
+            let pixels_u32 = unsafe {
+                core::slice::from_raw_parts(
+                    mgi_guard.frontbuffer_ptr() as *const u32,
+                    w * h,
+                )
+            };
+            mhc::flush_display(pixels_u32, w as u32, h as u32);
         }
     }
 
@@ -856,9 +862,17 @@ fn window_manager_loop(
         }
 
         if need_present {
-            let _guard = preemption::hold_preemption();
+            // Composite under preemption guard (fast, in-memory blit).
+            {
+                let _guard = preemption::hold_preemption();
+                if let Some(wm) = WINDOW_MANAGER.get() {
+                    wm.lock().present();
+                }
+            }
+            // VirtIO-GPU flush WITHOUT preemption held — the polled I/O
+            // can take a while in TCG mode and must not starve timers.
             if let Some(wm) = WINDOW_MANAGER.get() {
-                wm.lock().present();
+                wm.lock().flush_to_virtio();
             }
         }
 
