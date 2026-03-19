@@ -227,11 +227,35 @@ static mut SYSCALL_TABLE: [Option<SyscallHandler>; MAX_SYSCALL_NR] =
     [None; MAX_SYSCALL_NR];
 
 /// Parallel table storing the arg_count for each syscall (used by tracing).
-#[cfg(feature = "syscall-trace")]
 static mut SYSCALL_ARG_COUNT: [u8; MAX_SYSCALL_NR] = [0; MAX_SYSCALL_NR];
 
 /// Whether the syscall table has been initialized.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Runtime toggle for syscall tracing via COM1 serial.
+///
+/// When enabled, every syscall logs its name, arguments, and return value
+/// directly to COM1. Can be toggled at any time without recompilation.
+///
+/// Overhead when disabled: single `AtomicBool::load(Relaxed)` ≈ 1 cycle.
+static TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable syscall tracing at runtime.
+pub fn enable_trace() {
+    TRACE_ENABLED.store(true, Ordering::Relaxed);
+    log::info!("maios_syscall: syscall tracing ENABLED (COM1)");
+}
+
+/// Disable syscall tracing at runtime.
+pub fn disable_trace() {
+    TRACE_ENABLED.store(false, Ordering::Relaxed);
+    log::info!("maios_syscall: syscall tracing DISABLED");
+}
+
+/// Check whether syscall tracing is currently enabled.
+pub fn is_trace_enabled() -> bool {
+    TRACE_ENABLED.load(Ordering::Relaxed)
+}
 
 // ---------------------------------------------------------------------------
 // Registration & initialization
@@ -241,14 +265,11 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 ///
 /// # Safety
 /// Must only be called during `init()` before `INITIALIZED` is set.
-unsafe fn register(nr: u16, handler: SyscallHandler, _name: &'static str, _arg_count: u8, _flags: u8) {
+unsafe fn register(nr: u16, handler: SyscallHandler, _name: &'static str, arg_count: u8, _flags: u8) {
     let idx = nr as usize;
     debug_assert!(idx < MAX_SYSCALL_NR, "syscall number {:#x} exceeds table size", nr);
     SYSCALL_TABLE[idx] = Some(handler);
-    #[cfg(feature = "syscall-trace")]
-    {
-        SYSCALL_ARG_COUNT[idx] = _arg_count;
-    }
+    SYSCALL_ARG_COUNT[idx] = arg_count;
 }
 
 /// Initialize the unified syscall table.
@@ -419,10 +440,9 @@ pub fn dispatch(nr: u16, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -
     // and is only read after initialization.
     let handler = unsafe { SYSCALL_TABLE[idx] };
 
-    #[cfg(feature = "syscall-trace")]
-    let arg_count = unsafe { SYSCALL_ARG_COUNT[idx] };
-    #[cfg(feature = "syscall-trace")]
-    {
+    // Runtime trace: ~1 cycle overhead when disabled (single atomic load)
+    if TRACE_ENABLED.load(Ordering::Relaxed) && trace::should_trace(nr) {
+        let arg_count = unsafe { SYSCALL_ARG_COUNT[idx] };
         let args = [a0, a1, a2, a3, a4, a5];
         trace::trace_entry(nr, &args, arg_count);
     }
@@ -435,8 +455,9 @@ pub fn dispatch(nr: u16, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -
         }
     };
 
-    #[cfg(feature = "syscall-trace")]
-    trace::trace_exit(nr, &result);
+    if TRACE_ENABLED.load(Ordering::Relaxed) && trace::should_trace(nr) {
+        trace::trace_exit(nr, &result);
+    }
 
     result
 }
