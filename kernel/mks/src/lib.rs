@@ -46,7 +46,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
 use spin::RwLock;
 
-use task_struct::{Task, TaskRef, RunState};
+use task_struct::{Task, RunState};
+use task::TaskRef;
 use topology::CpuTopology;
 use runqueue::PerCpuRunQueue;
 

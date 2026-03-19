@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 # MaiOS kernel crates
 task_struct   = { path = "../../kernel/task_struct" }
+task          = { path = "../../kernel/task" }
 log           = { version = "0.4", default-features = false }
 spin          = { version = "0.9", features = ["once"] }
 

@@ -34,7 +34,10 @@ pub enum SchedClass {
     /// Real-time FIFO (runs until blocked or preempted by higher RT).
     Fifo,
     /// Hard real-time: EDF within deadline class.
-    Deadline { period_ns: u64, runtime_ns: u64 },
+    /// - `runtime`: CPU budget per period (ns)
+    /// - `deadline`: absolute deadline timestamp (ns)
+    /// - `period`: period length (ns)
+    Deadline { runtime: u64, deadline: u64, period: u64 },
 }
 
 impl Default for SchedClass {
@@ -67,6 +70,10 @@ pub struct TaskSchedInfo {
     pub last_cpu: AtomicUsize,
     /// Absolute timestamp (ns) at which a sleeping task should wake.
     pub wakeup_time_ns: u64,
+    /// True when the task is currently enqueued on a run-queue.
+    pub on_rq: bool,
+    /// Total CPU time consumed by this task (ns), for accounting.
+    pub exec_runtime: u64,
 }
 
 impl Default for TaskSchedInfo {
@@ -84,6 +91,8 @@ impl Default for TaskSchedInfo {
             policy: SchedClass::Normal,
             last_cpu: AtomicUsize::new(0),
             wakeup_time_ns: 0,
+            on_rq: false,
+            exec_runtime: 0,
         }
     }
 }

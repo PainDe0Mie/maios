@@ -12,7 +12,8 @@
 //!             same-priority tasks round-robin.
 
 use alloc::collections::BTreeMap;
-use task_struct::{TaskRef, SchedClass};
+use task_struct::SchedClass;
+use task::TaskRef;
 
 /// Number of RT priority levels.
 pub const RT_PRIO_LEVELS: usize = 100;
@@ -122,7 +123,7 @@ impl RtRunQueue {
                     true
                 }
             }
-            SchedClass::Fifo(_) => false, // FIFO never preempts on time.
+            SchedClass::Fifo => false, // FIFO never preempts on time.
             _ => false,
         }
     }
