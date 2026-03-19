@@ -5299,6 +5299,11 @@ dependencies = [
  "kernel_config",
  "log",
  "maios_syscall",
+ "scheduler",
+ "sleep",
+ "spawn",
+ "spin 0.9.4",
+ "task",
 ]
 
 [[package]]

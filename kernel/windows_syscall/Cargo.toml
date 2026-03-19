@@ -11,6 +11,11 @@ log = "0.4.8"
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 maios_syscall = { path = "../maios_syscall" }
 kernel_config = { path = "../kernel_config" }
+spin = "0.9.4"
+task = { path = "../task" }
+spawn = { path = "../spawn" }
+scheduler = { path = "../scheduler" }
+sleep = { path = "../sleep" }
 
 [lib]
 crate-type = ["rlib"]
