@@ -27,6 +27,9 @@ kernel_config = { path = "../kernel_config" }
 time = { path = "../time" }
 rtc = { path = "../rtc" }
 scheduler = { path = "../scheduler" }
+sleep = { path = "../sleep" }
+mgi = { path = "../mgi" }
+mhc = { path = "../mhc" }
 
 [lib]
 crate-type = ["rlib"]

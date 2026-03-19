@@ -36,6 +36,7 @@ pub mod extended;
 pub mod futex;
 pub mod socket;
 pub mod signals;
+pub mod graphics;
 pub mod trace;
 
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -180,6 +181,7 @@ pub mod nr {
     pub const SYS_PRESENT: u16         = 0x0803;
     pub const SYS_GET_EVENT: u16       = 0x0804;
     pub const SYS_AUDIO_WRITE: u16     = 0x0805;
+    pub const SYS_VSYNC_WAIT: u16      = 0x0806;
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +407,12 @@ pub fn init() {
         register(nr::SYS_CLONE,        extended::sys_clone,        "sys_clone",        5, FLAG_NORETURN);
         register(nr::SYS_MINCORE,      extended::sys_mincore,      "sys_mincore",      3, 0);
         register(nr::SYS_MSYNC,        extended::sys_msync,        "sys_msync",        3, 0);
+
+        // --- MaiOS-specific Graphics (0x08xx) ---
+        register(nr::SYS_MAP_FRAMEBUFFER, graphics::sys_map_framebuffer, "sys_map_framebuffer", 1, 0);
+        register(nr::SYS_PRESENT,         graphics::sys_present,         "sys_present",         1, 0);
+        register(nr::SYS_GET_EVENT,       graphics::sys_get_event,       "sys_get_event",       4, 0);
+        register(nr::SYS_VSYNC_WAIT,      graphics::sys_vsync_wait,      "sys_vsync_wait",      0, FLAG_BLOCKING);
     }
 
     INITIALIZED.store(true, Ordering::SeqCst);

@@ -36,6 +36,109 @@ use color::Color;
 use shapes::{Coord, Rectangle};
 use framebuffer::{Framebuffer, AlphaPixel};
 use spin::{Mutex, Once};
+use core::sync::atomic::{AtomicU64, AtomicBool, AtomicUsize, Ordering};
+
+// ────────────────────────────────────────────────────────────────────────────
+// VSync — compteur de frames global + mode fullscreen exclusif
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Compteur de frames global, incrémenté à chaque `present()`.
+/// Les applications peuvent attendre le prochain tick via `vsync_wait()`.
+static VSYNC_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Quand `true`, le WM bypass sa composition et utilise le buffer
+/// exclusif fourni par l'application fullscreen.
+static EXCLUSIVE_FULLSCREEN: AtomicBool = AtomicBool::new(false);
+
+/// Adresse du buffer fourni par l'app en mode fullscreen exclusif.
+/// Format : BGRA8888, taille = width * height * 4 octets.
+static EXCLUSIVE_BUFFER_PTR: AtomicUsize = AtomicUsize::new(0);
+
+/// Taille du buffer exclusif (en pixels, w*h).
+static EXCLUSIVE_BUFFER_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// Retourne le compteur de frames VSync courant.
+#[inline]
+pub fn vsync_counter() -> u64 {
+    VSYNC_COUNTER.load(Ordering::Acquire)
+}
+
+/// Incrémente le compteur VSync. Appelé par le WM après chaque present().
+#[inline]
+pub fn vsync_tick() {
+    VSYNC_COUNTER.fetch_add(1, Ordering::Release);
+}
+
+/// Vérifie si le mode fullscreen exclusif est actif.
+#[inline]
+pub fn is_exclusive_fullscreen() -> bool {
+    EXCLUSIVE_FULLSCREEN.load(Ordering::Acquire)
+}
+
+/// Active le mode fullscreen exclusif avec un buffer applicatif.
+///
+/// `buffer_ptr` : adresse des pixels BGRA8888 en mémoire kernel-visible.
+/// `pixel_count` : nombre de pixels (width * height).
+pub fn set_exclusive_fullscreen(buffer_ptr: usize, pixel_count: usize) {
+    EXCLUSIVE_BUFFER_PTR.store(buffer_ptr, Ordering::Release);
+    EXCLUSIVE_BUFFER_LEN.store(pixel_count, Ordering::Release);
+    EXCLUSIVE_FULLSCREEN.store(true, Ordering::Release);
+    info!("MGI: exclusive fullscreen ON (buffer @ {:#x}, {} px)", buffer_ptr, pixel_count);
+}
+
+/// Désactive le mode fullscreen exclusif et rend la main au compositeur WM.
+pub fn clear_exclusive_fullscreen() {
+    EXCLUSIVE_FULLSCREEN.store(false, Ordering::Release);
+    EXCLUSIVE_BUFFER_PTR.store(0, Ordering::Release);
+    EXCLUSIVE_BUFFER_LEN.store(0, Ordering::Release);
+    // Force un repaint complet au prochain present() normal
+    if let Some(mgi) = MGI.get() {
+        mgi.lock().invalidate_all();
+    }
+    info!("MGI: exclusive fullscreen OFF");
+}
+
+/// En mode fullscreen exclusif, copie le buffer applicatif vers le frontbuffer
+/// puis retourne `true`. Sinon retourne `false`.
+pub fn present_exclusive() -> bool {
+    if !is_exclusive_fullscreen() {
+        return false;
+    }
+    let ptr = EXCLUSIVE_BUFFER_PTR.load(Ordering::Acquire);
+    let len = EXCLUSIVE_BUFFER_LEN.load(Ordering::Acquire);
+    if ptr == 0 || len == 0 {
+        return false;
+    }
+    if let Some(mgi) = MGI.get() {
+        let mut mgi_guard = mgi.lock();
+        let (w, h) = mgi_guard.resolution();
+        if len != w * h {
+            return false;
+        }
+        // Copie directe du buffer app → frontbuffer (bypass backbuffer + tilemap)
+        let front_ptr = mgi_guard.frontbuffer_ptr() as *mut u8;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                ptr as *const u8,
+                front_ptr,
+                len * 4, // 4 bytes par pixel BGRA8888
+            );
+        }
+        return true;
+    }
+    false
+}
+
+/// Retourne un pointeur brut vers le backbuffer MGI et sa taille (w, h).
+/// Utilisé par SYS_MAP_FRAMEBUFFER pour donner aux apps un accès direct.
+pub fn get_backbuffer_info() -> Option<(*mut u8, usize, usize)> {
+    MGI.get().map(|mgi| {
+        let mut guard = mgi.lock();
+        let (w, h) = guard.resolution();
+        let ptr = guard.backbuffer_ptr_mut();
+        (ptr, w, h)
+    })
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Instance globale
@@ -106,6 +209,8 @@ pub trait GraphicsProvider {
     /// Pixels are stored as BGRA8888 (4 bytes each).  The caller must ensure
     /// the buffer is not written to while reading it.
     fn frontbuffer_ptr(&self) -> *const u8;
+    /// Mutable pointer to the backbuffer for direct rendering by apps.
+    fn backbuffer_ptr_mut(&mut self) -> *mut u8;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -151,6 +256,12 @@ impl Mgi {
     #[inline]
     pub fn frontbuffer_ptr(&self) -> *const u8 {
         self.provider.frontbuffer_ptr()
+    }
+
+    /// Mutable pointer to the backbuffer for direct app rendering.
+    #[inline]
+    pub fn backbuffer_ptr_mut(&mut self) -> *mut u8 {
+        self.provider.backbuffer_ptr_mut()
     }
 }
 
@@ -584,5 +695,9 @@ impl GraphicsProvider for SoftwareGraphicsProvider {
 
     fn frontbuffer_ptr(&self) -> *const u8 {
         self.frontbuffer.buffer().as_ptr() as *const u8
+    }
+
+    fn backbuffer_ptr_mut(&mut self) -> *mut u8 {
+        self.backbuffer.buffer_mut().as_mut_ptr() as *mut u8
     }
 }

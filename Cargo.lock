@@ -2218,11 +2218,14 @@ dependencies = [
  "log",
  "memory",
  "memory_structs",
+ "mgi",
+ "mhc",
  "path",
  "pte_flags",
  "root",
  "rtc",
  "scheduler",
+ "sleep",
  "spawn",
  "spin 0.9.4",
  "task",
@@ -4911,9 +4914,9 @@ dependencies = [
 
 [[package]]
 name = "volatile"
-version = "0.4.4"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4c2dbd44eb8b53973357e6e207e370f0c1059990df850aca1eca8947cf464f0"
+checksum = "442887c63f2c839b346c192d047a7c87e73d0689c9157b00b53dcc27dd5ea793"
 
 [[package]]
 name = "volatile-register"
@@ -5307,7 +5310,7 @@ dependencies = [
  "bit_field 0.10.1",
  "bitflags 1.3.2",
  "rustversion",
- "volatile 0.4.4",
+ "volatile 0.4.6",
 ]
 
 [[package]]

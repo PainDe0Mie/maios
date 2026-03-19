@@ -862,11 +862,17 @@ fn window_manager_loop(
         }
 
         if need_present {
-            // Composite under preemption guard (fast, in-memory blit).
-            {
-                let _guard = preemption::hold_preemption();
-                if let Some(wm) = WINDOW_MANAGER.get() {
-                    wm.lock().present();
+            if mgi::is_exclusive_fullscreen() {
+                // Mode fullscreen exclusif : copie directe du buffer app → frontbuffer,
+                // bypass complet du compositeur WM.
+                mgi::present_exclusive();
+            } else {
+                // Composite under preemption guard (fast, in-memory blit).
+                {
+                    let _guard = preemption::hold_preemption();
+                    if let Some(wm) = WINDOW_MANAGER.get() {
+                        wm.lock().present();
+                    }
                 }
             }
             // VirtIO-GPU flush WITHOUT preemption held — the polled I/O
@@ -874,6 +880,9 @@ fn window_manager_loop(
             if let Some(wm) = WINDOW_MANAGER.get() {
                 wm.lock().flush_to_virtio();
             }
+            // Incrémenter le compteur VSync global pour signaler aux apps
+            // qu'un nouveau frame a été affiché.
+            mgi::vsync_tick();
         }
 
         // Sleep briefly so we yield the CPU *and* guarantee a timely
