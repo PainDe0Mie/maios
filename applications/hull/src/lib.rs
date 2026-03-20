@@ -275,6 +275,7 @@ impl Shell {
             "fg" => self.fg(args),
             "getopts" => self.getopts(args),
             "hash" => self.hash(args),
+            "help" => self.help(args),
             "history" => {
                 self.history(args);
                 Ok(())

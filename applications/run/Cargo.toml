@@ -1,0 +1,20 @@
+[package]
+name = "run"
+version = "0.1.0"
+description = "Exécuter un binaire ELF Linux depuis le système de fichiers MaiOS"
+edition = "2021"
+
+[dependencies]
+app_io      = { path = "../../kernel/app_io" }
+task        = { path = "../../kernel/task" }
+fs_node     = { path = "../../kernel/fs_node" }
+path        = { path = "../../kernel/path" }
+spawn       = { path = "../../kernel/spawn" }
+mod_mgmt    = { path = "../../kernel/mod_mgmt" }
+elf_loader  = { path = "../../kernel/elf_loader" }
+getopts     = { git = "https://github.com/AltOS-Rust/getopts" }
+memory      = { path = "../../kernel/memory" }
+scheduler   = { path = "../../kernel/scheduler" }
+
+[lib]
+crate-type = ["rlib"]

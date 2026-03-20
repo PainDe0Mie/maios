@@ -29,6 +29,7 @@ extern crate alloc;
 extern crate mod_mgmt;
 extern crate environment;
 extern crate storage_manager;
+extern crate disk_mount;
 #[cfg(target_arch = "x86_64")]
 extern crate syscall;
 
@@ -466,6 +467,26 @@ pub fn init(
     // =========================================================================
     info!("Initializing swap...");
     init_swap();
+
+    // =========================================================================
+    // Step 19b — Mount persistent filesystems (FAT32)
+    //
+    // After storage devices are discovered (via storage_manager / init_swap),
+    // we attempt to mount any FAT32 volumes found on disk into the VFS.
+    // This provides persistent storage under /disk, enabling:
+    // - Persistent file storage across reboots
+    // - Installation of applications (e.g., Doom) on disk
+    // - A real filesystem hierarchy (not just in-memory MemFS)
+    //
+    // Inspired by Linux's late_initcall mount sequence and Plan 9's bind(2).
+    // =========================================================================
+    {
+        let mounted = disk_mount::init();
+        if mounted > 0 {
+            disk_mount::create_system_dirs();
+            info!("Persistent filesystem: {} volume(s) mounted", mounted);
+        }
+    }
 
     // =========================================================================
     // Step 20 — Syscall subsystem (MEB — Mai Execution Bridge)

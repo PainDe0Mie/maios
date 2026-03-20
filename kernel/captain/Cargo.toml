@@ -32,6 +32,7 @@ task = { path = "../task" }
 cpu = { path = "../cpu" }
 storage_manager = { path = "../storage_manager" }
 memory_swap = { path = "../memory_swap" }
+disk_mount = { path = "../disk_mount" }
 environment = { path = "../environment" }
 first_application = { path = "../first_application" }
 

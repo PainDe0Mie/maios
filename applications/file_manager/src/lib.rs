@@ -14,6 +14,8 @@
 //!   Retour arrière    — dossier parent
 //!   PageUp / PageDown — défilement rapide
 //!   Home / End        — début / fin de liste
+//!   Suppr / X         — supprimer le fichier/dossier sélectionné
+//!   F5 / R            — rafraîchir le répertoire
 //!   Q                 — quitter
 
 #![no_std]
@@ -54,21 +56,23 @@ use keycodes_ascii::{KeyAction, Keycode};
 const C_SEL_ACT:  Color = Color::new(0x003D5480);
 const C_STRIPE:   Color = Color::new(0x001E2030);
 const C_FILE:     Color = Color::new(0x00A9B1D6);
+const C_DISK:     Color = Color::new(0x0089DDFF);  // bleu clair pour volumes disque
 
 // ────────────────────────────────────────────────────────────────
 // DIMENSIONS FENÊTRE
 // ────────────────────────────────────────────────────────────────
-const WIN_W: usize = 780;
-const WIN_H: usize = 520;
+const WIN_W: usize = 850;
+const WIN_H: usize = 560;
 
 // ────────────────────────────────────────────────────────────────
 // LAYOUT INTERNE (coords relatives au contenu de la fenêtre)
 // ────────────────────────────────────────────────────────────────
-const PATHBAR_H:  usize = 28;
-const SIDEBAR_W:  usize = 160;
-const HEADER_H:   usize = 22;
-const ROW_H:      usize = 20;
-const FOOTER_H:   usize = 22;
+const PATHBAR_H:   usize = 28;
+const TOOLBAR_H:   usize = 24;
+const SIDEBAR_W:   usize = 170;
+const HEADER_H:    usize = 22;
+const ROW_H:       usize = 20;
+const FOOTER_H:    usize = 22;
 const SCROLLBAR_W: usize = 8;
 
 /// Largeur du panneau principal (hors sidebar et scrollbar)
@@ -77,7 +81,7 @@ fn main_w(cw: usize) -> usize {
 }
 
 /// Y du premier pixel de la liste (relatif au contenu)
-const LIST_TOP: usize = PATHBAR_H + HEADER_H;
+const LIST_TOP: usize = PATHBAR_H + TOOLBAR_H + HEADER_H;
 
 /// Nombre de lignes visibles dans content_h pixels
 fn visible_rows(ch: usize) -> usize {
@@ -89,7 +93,6 @@ fn visible_rows(ch: usize) -> usize {
 // ────────────────────────────────────────────────────────────────
 const C_ICON: isize = 4;
 const C_NAME: isize = 20;
-// C_TYPE et C_SIZE sont calculés dynamiquement selon main_w
 
 // ────────────────────────────────────────────────────────────────
 // CHEMIN AFFICHÉ
@@ -104,32 +107,44 @@ fn display_path(dir: &DirRef) -> String {
 }
 
 // ────────────────────────────────────────────────────────────────
-// ENTRÉE DE RÉPERTOIRE
+// ENTRÉE DE RÉPERTOIRE (avec taille)
 // ────────────────────────────────────────────────────────────────
 #[derive(Clone)]
 struct Entry {
     name:    String,
     is_dir:  bool,
     is_exec: bool,
+    is_disk: bool,
+    size:    usize,
 }
 
 impl Entry {
     fn kind_str(&self) -> &'static str {
-        if self.is_dir      { "Dossier"     }
+        if self.is_disk      { "Volume"      }
+        else if self.is_dir  { "Dossier"     }
         else if self.is_exec { "Application" }
         else                 { "Fichier"     }
     }
 
     fn color(&self) -> Color {
-        if self.is_dir      { theme::C_YELLOW }
+        if self.is_disk      { C_DISK          }
+        else if self.is_dir  { theme::C_YELLOW }
         else if self.is_exec { theme::C_GREEN  }
         else                 { C_FILE          }
     }
 
     fn icon(&self) -> char {
-        if self.is_dir      { 'D' }
+        if self.is_disk      { '#' }
+        else if self.is_dir  { 'D' }
         else if self.is_exec { 'X' }
         else                 { 'F' }
+    }
+
+    fn size_str(&self) -> String {
+        if self.is_dir || self.is_disk { "--".to_string() }
+        else if self.size < 1024 { format!("{} B", self.size) }
+        else if self.size < 1024 * 1024 { format!("{} KB", self.size / 1024) }
+        else { format!("{} MB", self.size / (1024 * 1024)) }
     }
 }
 
@@ -137,8 +152,12 @@ fn is_executable(name: &str) -> bool {
     (name.contains('-') && !name.contains('.')) || name.ends_with(".elf")
 }
 
+fn is_disk_volume(name: &str) -> bool {
+    name == "disk" || name.starts_with("disk")
+}
+
 // ────────────────────────────────────────────────────────────────
-// LECTURE D'UN RÉPERTOIRE
+// LECTURE D'UN RÉPERTOIRE (avec taille des fichiers)
 // ────────────────────────────────────────────────────────────────
 fn list_dir(dir: &DirRef) -> Vec<Entry> {
     let locked = dir.lock();
@@ -154,14 +173,20 @@ fn list_dir(dir: &DirRef) -> Vec<Entry> {
         }
     });
     names.into_iter().map(|name| {
-        let is_dir  = locked.get(&name).map_or(false, |f| f.is_dir());
+        let fod = locked.get(&name);
+        let is_dir  = fod.as_ref().map_or(false, |f| f.is_dir());
+        let is_disk = is_dir && is_disk_volume(&name);
         let is_exec = !is_dir && is_executable(&name);
-        Entry { name, is_dir, is_exec }
+        let size = match &fod {
+            Some(FileOrDir::File(f)) => f.lock().len(),
+            _ => 0,
+        };
+        Entry { name, is_dir, is_exec, is_disk, size }
     }).collect()
 }
 
 // ────────────────────────────────────────────────────────────────
-// FAVORIS (sidebar)
+// FAVORIS (sidebar) — avec accès disque
 // ────────────────────────────────────────────────────────────────
 struct Bookmark {
     label: &'static str,
@@ -169,10 +194,28 @@ struct Bookmark {
 }
 
 const BOOKMARKS: &[Bookmark] = &[
-    Bookmark { label: "Root",  path: "/"      },
-    Bookmark { label: "Apps",  path: "/apps"  },
-    Bookmark { label: "Libs",  path: "/libs"  },
-    Bookmark { label: "Boot",  path: "/boot"  },
+    Bookmark { label: "Root",     path: "/"          },
+    Bookmark { label: "Disque",   path: "/disk"      },
+    Bookmark { label: "Apps",     path: "/disk/apps"  },
+    Bookmark { label: "Home",     path: "/disk/home"  },
+    Bookmark { label: "System",   path: "/disk/system" },
+    Bookmark { label: "Modules",  path: "/apps"      },
+    Bookmark { label: "Libs",     path: "/libs"      },
+];
+
+// ────────────────────────────────────────────────────────────────
+// BARRE D'OUTILS
+// ────────────────────────────────────────────────────────────────
+struct ToolButton {
+    label: &'static str,
+    key:   &'static str,
+    width: usize,
+}
+
+const TOOL_BUTTONS: &[ToolButton] = &[
+    ToolButton { label: "Supprimer",  key: "Suppr", width: 90 },
+    ToolButton { label: "Rafraichir", key: "F5",    width: 90 },
+    ToolButton { label: "Parent",     key: "Bksp",  width: 75 },
 ];
 
 // ────────────────────────────────────────────────────────────────
@@ -222,10 +265,7 @@ fn navigate_to(path_str: &str) -> Option<DirRef> {
 // ────────────────────────────────────────────────────────────────
 struct ClickTracker {
     last_idx:   usize,
-    /// Nombre d'itérations de boucle depuis le dernier clic
-    /// (pas de timer réel disponible, on approxime)
     last_ticks: usize,
-    /// Tick courant de la boucle principale
     tick: usize,
 }
 
@@ -234,15 +274,13 @@ impl ClickTracker {
         Self { last_idx: usize::MAX, last_ticks: 0, tick: 0 }
     }
 
-    /// Appeler à chaque itération de la boucle principale.
     fn advance(&mut self) {
         self.tick = self.tick.wrapping_add(1);
     }
 
-    /// Retourne `true` si c'est un double-clic.
     fn click(&mut self, idx: usize) -> bool {
         let double = idx == self.last_idx
-            && self.tick.wrapping_sub(self.last_ticks) < 30; // ~30 itérations ≈ dbl-clic
+            && self.tick.wrapping_sub(self.last_ticks) < 30;
         self.last_idx   = idx;
         self.last_ticks = self.tick;
         double
@@ -255,13 +293,13 @@ impl ClickTracker {
 #[allow(clippy::too_many_arguments)]
 fn redraw(
     fb:       &mut Framebuffer<AlphaPixel>,
-    ox: isize, oy: isize,   // offset du contenu dans le framebuffer (titlebar + border)
-    cw: usize, ch: usize,   // dimensions du contenu
+    ox: isize, oy: isize,
+    cw: usize, ch: usize,
     entries:  &[Entry],
     cur_dir:  &DirRef,
     selected: usize,
     scroll:   usize,
-    status:   &str,         // message dans le footer
+    status:   &str,
 ) {
     let mut ctx = DrawContext::new(fb);
     let mw  = main_w(cw);
@@ -282,14 +320,17 @@ fn redraw(
 
     // Titre sidebar
     ctx.fill_rect(sb_x, sb_y, SIDEBAR_W, PATHBAR_H, theme::C_HEADER);
-    ctx.text(sb_x + 8, sb_y + (PATHBAR_H as isize - fh) / 2, "FAVORIS", theme::C_ACCENT);
+    ctx.text(sb_x + 8, sb_y + (PATHBAR_H as isize - fh) / 2, "NAVIGATION", theme::C_ACCENT);
     ctx.hline(sb_x, sb_x + SIDEBAR_W as isize, sb_y + PATHBAR_H as isize, theme::C_BORDER);
 
     // Favoris
     for (i, bm) in BOOKMARKS.iter().enumerate() {
         let ry = sb_y + PATHBAR_H as isize + (i * ROW_H) as isize;
         let text_y = ry + (ROW_H as isize - fh) / 2;
-        ctx.draw_char(sb_x + 6, text_y, '>', theme::C_ACCENT);
+        // Icône selon le type
+        let icon = if bm.path.contains("disk") && bm.path != "/disk/apps" { '#' } else { '>' };
+        let icon_color = if bm.path.starts_with("/disk") { C_DISK } else { theme::C_ACCENT };
+        ctx.draw_char(sb_x + 6, text_y, icon, icon_color);
         let max_chars = ((SIDEBAR_W as isize - 24).max(0) as usize) / theme::CHAR_W;
         ctx.text_clipped(sb_x + 18, text_y, bm.label, max_chars, theme::C_FG);
     }
@@ -308,7 +349,9 @@ fn redraw(
     for (depth, seg) in segments.iter().enumerate() {
         let indent = sb_x + 8 + (depth as isize + 1) * 6;
         let avail = ((SIDEBAR_W as isize - (indent - sb_x) - 4).max(0) as usize) / theme::CHAR_W;
-        ctx.draw_char(indent, tree_y, '+', theme::C_FG_DIM);
+        let seg_icon = if *seg == "disk" || seg.starts_with("disk") { '#' } else { '+' };
+        let seg_color = if *seg == "disk" || seg.starts_with("disk") { C_DISK } else { theme::C_FG_DIM };
+        ctx.draw_char(indent, tree_y, seg_icon, seg_color);
         ctx.text_clipped(indent + fw, tree_y, seg, avail, theme::C_FG);
         tree_y += ROW_H as isize;
         if tree_y > sb_y + ch as isize - FOOTER_H as isize { break; }
@@ -317,33 +360,44 @@ fn redraw(
     // ══════════════════════════════════════════════════════════
     // PANNEAU PRINCIPAL
     // ══════════════════════════════════════════════════════════
-    let mx = ox + SIDEBAR_W as isize;  // X du panneau principal dans le fb
+    let mx = ox + SIDEBAR_W as isize;
 
     // ── Barre de chemin ─────────────────────────────────────────
     ctx.fill_rect(mx, oy, mw + SCROLLBAR_W, PATHBAR_H, theme::C_HEADER);
     ctx.hline(mx, mx + (mw + SCROLLBAR_W) as isize, oy + PATHBAR_H as isize, theme::C_ACCENT);
 
-    // Icône "maison" + chemin complet
     let path_str = display_path(cur_dir);
     let text_y_path = oy + (PATHBAR_H as isize - fh) / 2;
     ctx.draw_char(mx + 6, text_y_path, '~', theme::C_ACCENT);
-    let max_chars_path = ((mw as isize - 90).max(0) as usize) / theme::CHAR_W;
+    let max_chars_path = ((mw as isize - 24).max(0) as usize) / theme::CHAR_W;
     ctx.text_clipped(mx + 18, text_y_path, &path_str, max_chars_path, theme::C_FG);
 
-    // Bouton "↑ Parent" à droite
-    let btn_x = mx + mw as isize - 70;
-    ctx.fill_rect(btn_x, oy + 4, 62, PATHBAR_H - 8, theme::C_PANEL);
-    ctx.border_rect(btn_x, oy + 4, 62, PATHBAR_H - 8, theme::C_BORDER);
-    ctx.text(btn_x + 4, text_y_path, "^ Parent", theme::C_FG_DIM);
+    // ── Barre d'outils ──────────────────────────────────────────
+    let tb_y = oy + PATHBAR_H as isize;
+    ctx.fill_rect(mx, tb_y, mw + SCROLLBAR_W, TOOLBAR_H, theme::C_PANEL);
+    ctx.hline(mx, mx + (mw + SCROLLBAR_W) as isize, tb_y + TOOLBAR_H as isize - 1, theme::C_BORDER);
+
+    let tb_text_y = tb_y + (TOOLBAR_H as isize - fh) / 2;
+    let mut btn_x = mx + 4;
+    for btn in TOOL_BUTTONS {
+        ctx.fill_rect(btn_x, tb_y + 3, btn.width, TOOLBAR_H - 6, theme::C_HEADER);
+        ctx.border_rect(btn_x, tb_y + 3, btn.width, TOOLBAR_H - 6, theme::C_BORDER);
+        let label = format!("{} [{}]", btn.label, btn.key);
+        let max_btn_chars = (btn.width.saturating_sub(8)) / theme::CHAR_W;
+        ctx.text_clipped(btn_x + 4, tb_text_y, &label, max_btn_chars, theme::C_FG_DIM);
+        btn_x += btn.width as isize + 4;
+    }
 
     // ── Header colonnes ─────────────────────────────────────────
-    let hdr_y  = oy + PATHBAR_H as isize;
-    let col_type_x  = mx + mw as isize - 120;
+    let hdr_y  = oy + (PATHBAR_H + TOOLBAR_H) as isize;
+    let col_size_x  = mx + mw as isize - 180;
+    let col_type_x  = mx + mw as isize - 100;
     ctx.fill_rect(mx, hdr_y, mw + SCROLLBAR_W, HEADER_H, theme::C_HEADER);
     ctx.hline(mx, mx + mw as isize, hdr_y + HEADER_H as isize - 1, theme::C_ACCENT);
 
     let hdr_text_y = hdr_y + (HEADER_H as isize - fh) / 2;
     ctx.text(mx + C_NAME + fw, hdr_text_y, "Nom", theme::C_FG_DIM);
+    ctx.text(col_size_x,       hdr_text_y, "Taille", theme::C_FG_DIM);
     ctx.text(col_type_x,       hdr_text_y, "Type", theme::C_FG_DIM);
 
     // ── Lignes ──────────────────────────────────────────────────
@@ -364,7 +418,7 @@ fn redraw(
         };
         ctx.fill_rect(mx, ry, mw, ROW_H, bg);
 
-        // Indicateur de sélection (barre latérale gauche)
+        // Indicateur de sélection
         if abs_idx == selected {
             ctx.fill_rect(mx, ry, 3, ROW_H, theme::C_ACCENT);
         }
@@ -374,19 +428,23 @@ fn redraw(
         ctx.draw_char(mx + C_ICON, text_y, entry.icon(), icon_color);
 
         // Nom
-        let max_name_px = col_type_x - (mx + C_NAME + fw) - 8;
+        let max_name_px = col_size_x - (mx + C_NAME + fw) - 8;
         let max_name_chars = (max_name_px.max(0) as usize) / theme::CHAR_W;
         ctx.text_clipped(mx + C_NAME + fw, text_y, &entry.name, max_name_chars, entry.color());
+
+        // Taille
+        let size_s = entry.size_str();
+        ctx.text_clipped(col_size_x, text_y, &size_s, 10, theme::C_FG_DIM);
 
         // Type
         ctx.text(col_type_x, text_y, entry.kind_str(), theme::C_FG_DIM);
 
-        // Séparateur horizontal (très subtil)
+        // Séparateur horizontal
         ctx.hline(mx + 3, mx + mw as isize, ry + ROW_H as isize - 1,
             Color::new(0x00202030));
     }
 
-    // Zone vide en dessous des lignes
+    // Zone vide sous les lignes
     let last_row_y = list_y0 + (vis * ROW_H) as isize;
     let footer_y   = oy + ch as isize - FOOTER_H as isize;
     if last_row_y < footer_y {
@@ -422,15 +480,15 @@ fn redraw(
     };
     ctx.text(mx + 8, ft_text_y, &count_str, theme::C_FG_DIM);
 
-    // Status / raccourcis au centre
+    // Status / raccourcis
     let hint = if status.is_empty() {
-        "Entree:ouvrir  BackSp:parent  Q:quitter"
+        "Entree:ouvrir  Suppr:supprimer  F5:rafraichir  Q:quitter"
     } else {
         status
     };
     let hint_x = mx + mw as isize / 2 - (hint.len() as isize * fw) / 2;
-    if hint_x > mx + 120 {
-        let max_hint_chars = ((mw as isize - 130).max(0) as usize) / theme::CHAR_W;
+    if hint_x > mx + 100 {
+        let max_hint_chars = ((mw as isize - 110).max(0) as usize) / theme::CHAR_W;
         ctx.text_clipped(hint_x, ft_text_y, hint, max_hint_chars, theme::C_FG_DIM);
     }
 }
@@ -447,7 +505,6 @@ struct FileManager {
     status:      String,
     clicker:     ClickTracker,
 
-    /// Dimensions du contenu de la fenêtre (calculées une fois)
     off_x: isize,
     off_y: isize,
     cw:    usize,
@@ -477,7 +534,6 @@ impl FileManager {
 
     fn vis(&self) -> usize { visible_rows(self.ch) }
 
-    /// Clamp scroll so selected is always visible.
     fn clamp_scroll(&mut self) {
         let vis = self.vis();
         if self.selected < self.scroll {
@@ -504,9 +560,19 @@ impl FileManager {
         }
     }
 
+    fn refresh(&mut self) {
+        self.entries = list_dir(&self.current_dir);
+        if self.selected >= self.entries.len() {
+            self.selected = self.entries.len().saturating_sub(1);
+        }
+        self.clamp_scroll();
+        self.status = "Rafraichi".to_string();
+        self.dirty  = true;
+    }
+
     fn open_selected(&mut self) {
         if let Some(entry) = self.entries.get(self.selected).cloned() {
-            if entry.is_dir {
+            if entry.is_dir || entry.is_disk {
                 let sub = self.current_dir.lock()
                     .get(&entry.name)
                     .and_then(|fod| if let FileOrDir::Dir(d) = fod { Some(d) } else { None });
@@ -518,14 +584,36 @@ impl FileManager {
                 self.dirty  = true;
                 try_launch(&entry.name);
             } else {
-                self.status = format!("Fichier: {}", entry.name);
+                self.status = format!("{} — {} octets", entry.name, entry.size);
                 self.dirty  = true;
             }
         }
     }
 
+    fn delete_selected(&mut self) {
+        if let Some(entry) = self.entries.get(self.selected).cloned() {
+            // Empêcher la suppression de volumes disque et répertoires système
+            if entry.is_disk {
+                self.status = "Impossible de supprimer un volume".to_string();
+                self.dirty = true;
+                return;
+            }
+
+            let mut locked = self.current_dir.lock();
+            if let Some(fod) = locked.get(&entry.name) {
+                locked.remove(&fod);
+                drop(locked);
+                self.status = format!("Supprime: {}", entry.name);
+                self.refresh();
+            } else {
+                self.status = format!("Non trouve: {}", entry.name);
+                self.dirty = true;
+            }
+        }
+    }
+
     // ── Gestion clavier ──────────────────────────────────────────
-    fn on_key(&mut self, kc: Keycode) -> bool /* quitter? */ {
+    fn on_key(&mut self, kc: Keycode) -> bool {
         let vis = self.vis();
         let len = self.entries.len();
         match kc {
@@ -567,19 +655,23 @@ impl FileManager {
             Keycode::Backspace => {
                 self.navigate_parent();
             }
+            // Supprimer
+            Keycode::Delete | Keycode::X => {
+                self.delete_selected();
+            }
+            // Rafraîchir
+            Keycode::F5 | Keycode::R => {
+                self.refresh();
+            }
             _ => {}
         }
         false
     }
 
     // ── Gestion souris ───────────────────────────────────────────
-    /// Retourne `true` si l'app doit quitter.
-    ///
-    /// `coord` est la coordonnée de la souris **relative au contenu** de la fenêtre
-    /// (ce que `MousePositionEvent::coordinate` fournit — relatif à la zone interne).
     fn on_mouse_click(&mut self, coord: Coord, was_left: bool, is_left: bool) -> bool {
-        if !was_left && !is_left { return false; } // pas de changement de bouton
-        if !is_left { return false; }              // relâchement ignoré ici
+        if !was_left && !is_left { return false; }
+        if !is_left { return false; }
 
         let x = coord.x;
         let y = coord.y;
@@ -592,20 +684,24 @@ impl FileManager {
                 if let Some(bm) = BOOKMARKS.get(idx) {
                     if let Some(dir) = navigate_to(bm.path) {
                         self.navigate_into(dir);
+                    } else {
+                        self.status = format!("{} non disponible", bm.label);
+                        self.dirty = true;
                     }
                 }
             }
             return false;
         }
 
-        // ── Clic bouton "Parent" ─────────────────────────────────
-        let mw   = main_w(self.cw);
-        let btn_x_start = SIDEBAR_W as isize + mw as isize - 70;
-        let btn_x_end   = btn_x_start + 62;
-        if y >= 4 && y < PATHBAR_H as isize - 4
-            && x >= btn_x_start && x < btn_x_end
-        {
-            self.navigate_parent();
+        // ── Clic barre d'outils ──────────────────────────────────
+        let tb_y_start = PATHBAR_H as isize;
+        let tb_y_end   = tb_y_start + TOOLBAR_H as isize;
+        if y >= tb_y_start && y < tb_y_end {
+            let rx = x - SIDEBAR_W as isize;
+            // Bouton Supprimer [0..90], Rafraîchir [94..184], Parent [188..263]
+            if rx >= 4 && rx < 94       { self.delete_selected(); }
+            else if rx >= 98 && rx < 188 { self.refresh(); }
+            else if rx >= 192 && rx < 267 { self.navigate_parent(); }
             return false;
         }
 
@@ -613,7 +709,6 @@ impl FileManager {
         if y >= LIST_TOP as isize {
             let row_rel = y - LIST_TOP as isize;
             let vis     = self.vis();
-            // S'assurer qu'on est bien dans la zone de liste (pas le footer)
             let list_px_h = vis * ROW_H;
             if row_rel >= 0 && (row_rel as usize) < list_px_h {
                 let row = (row_rel / ROW_H as isize) as usize;
@@ -676,7 +771,6 @@ pub fn main(_args: alloc::vec::Vec<String>) -> isize {
                 }
 
                 Ok(Some(Event::WindowResizeEvent(_area))) => {
-                    // Recalcule les dimensions du contenu
                     let a = win.area();
                     fm.off_x = a.top_left.x;
                     fm.off_y = a.top_left.y;
