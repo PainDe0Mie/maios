@@ -143,8 +143,13 @@ struct CommandHeader {
 const _: () = assert!(core::mem::size_of::<CommandHeader>() == 32);
 
 // ────────────────────────────────────────────────────────────────────────────
-// Command Table (128 octets CFIS + 64 octets ACMD + 16 octets reserved
-//               + N * PRDT entries)
+// Command Table (AHCI 1.3 spec, section 4.2.3)
+//
+// Offset  Size   Description
+// 0x00    64B    Command FIS (CFIS)
+// 0x40    16B    ATAPI Command
+// 0x50    48B    Reserved
+// 0x80    N×16B  PRDT entries
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Physical Region Descriptor Table entry (16 octets).
@@ -162,8 +167,11 @@ struct PrdtEntry {
 }
 const _: () = assert!(core::mem::size_of::<PrdtEntry>() == 16);
 
-/// Taille minimale d'une Command Table : 128B CFIS + 64B ACMD + 16B reserved + 1 PRDT entry
-const CMD_TABLE_SIZE: usize = 128 + 64 + 16 + core::mem::size_of::<PrdtEntry>();
+/// Offset du PRDT dans la Command Table (AHCI spec : 0x80).
+const PRDT_OFFSET: usize = 0x80;
+
+/// Taille minimale d'une Command Table : header (0x80) + 1 PRDT entry.
+const CMD_TABLE_SIZE: usize = PRDT_OFFSET + core::mem::size_of::<PrdtEntry>();
 
 // ────────────────────────────────────────────────────────────────────────────
 // FIS types (Frame Information Structure)
@@ -342,7 +350,7 @@ impl AhciPort {
         // 3. Préparer le PRDT entry (si transfert de données)
         if byte_count > 0 {
             let prdt = unsafe {
-                &mut *((self.ct_va + 128 + 64 + 16) as *mut PrdtEntry)
+                &mut *((self.ct_va + PRDT_OFFSET) as *mut PrdtEntry)
             };
             prdt.dba = dma_pa as u32;
             prdt.dbau = (dma_pa >> 32) as u32;
@@ -805,13 +813,14 @@ pub fn init_from_pci(pci_dev: &PciDevice) -> Result<Option<StorageControllerRef>
             }
             Err(e) => {
                 // Pas d'erreur fatale — un port peut simplement être vide
-                debug!("AHCI port {}: {}", port_num, e);
+                info!("AHCI port {}: {}", port_num, e);
             }
         }
     }
 
     if drives.is_empty() {
-        info!("AHCI: no SATA drives found on this controller");
+        warn!("AHCI: controller detected but no SATA drives initialized");
+        warn!("AHCI: verify QEMU has a disk attached: -drive file=disk.img,format=raw,if=none,id=disk0 -device ahci,id=ahci -device ide-hd,drive=disk0,bus=ahci.0");
         return Ok(None);
     }
 
