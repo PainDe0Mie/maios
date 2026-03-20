@@ -17,8 +17,6 @@ extern crate alloc;
 use log::warn;
 use maios_syscall::error::{SyscallResult, SyscallError, result_to_ntstatus};
 
-pub mod nt_threading;
-
 /// Codes NTSTATUS Windows.
 pub mod ntstatus {
     pub const STATUS_SUCCESS: i64 = 0x0000_0000;
@@ -48,16 +46,6 @@ pub mod nr {
     pub const NT_QUERY_SYSTEM_INFORMATION: u64 = 0x0036;
     pub const NT_QUERY_PERFORMANCE_COUNTER: u64 = 0x0031;
     pub const NT_QUERY_INFORMATION_PROCESS: u64 = 0x0019;
-
-    // Threading & synchronization
-    pub const NT_WAIT_FOR_SINGLE_OBJECT: u64 = 0x0004;
-    pub const NT_WAIT_FOR_MULTIPLE_OBJECTS: u64 = 0x000B;
-    pub const NT_SET_EVENT: u64 = 0x000E;
-    pub const NT_RELEASE_MUTANT: u64 = 0x001B;
-    pub const NT_RESET_EVENT: u64 = 0x0028;
-    pub const NT_CREATE_EVENT: u64 = 0x0048;
-    pub const NT_CREATE_MUTANT: u64 = 0x004B;
-    pub const NT_CREATE_THREAD_EX: u64 = 0x00C2;
 }
 
 // =============================================================================
@@ -252,44 +240,7 @@ pub fn handle_syscall(
             }
             return ntstatus::STATUS_NOT_IMPLEMENTED;
         }
-
-        // --- Threading & Synchronization ---
-        nr::NT_CREATE_THREAD_EX => {
-            return nt_threading::adapt_nt_create_thread_ex(arg0, arg1, arg2, arg3, arg4, arg5);
-        }
-        nr::NT_CREATE_EVENT => {
-            return nt_threading::adapt_nt_create_event(arg0, arg1, arg2, arg3, arg4);
-        }
-        nr::NT_SET_EVENT => {
-            return nt_threading::adapt_nt_set_event(arg0, arg1);
-        }
-        nr::NT_RESET_EVENT => {
-            return nt_threading::adapt_nt_reset_event(arg0, arg1);
-        }
-        nr::NT_CREATE_MUTANT => {
-            return nt_threading::adapt_nt_create_mutant(arg0, arg1, arg2, arg3);
-        }
-        nr::NT_RELEASE_MUTANT => {
-            return nt_threading::adapt_nt_release_mutant(arg0, arg1);
-        }
-        nr::NT_WAIT_FOR_SINGLE_OBJECT => {
-            return nt_threading::adapt_nt_wait_for_single_object(arg0, arg1, arg2);
-        }
-        nr::NT_WAIT_FOR_MULTIPLE_OBJECTS => {
-            return nt_threading::adapt_nt_wait_for_multiple_objects(arg0, arg1, arg2, arg3, arg4);
-        }
-
         _ => {}
-    }
-
-    // NtClose (0x0F) : essayer d'abord de fermer un objet kernel NT.
-    // Si c'est un handle kernel (Event/Mutant/Thread), on le traite ici.
-    // Sinon, on le laisse passer au dispatch normal (fichier/resource).
-    if service_num == 0x0F {
-        if nt_threading::try_close_kernel_object(arg0) {
-            return ntstatus::STATUS_SUCCESS;
-        }
-        // Pas un objet kernel → continuer vers SYS_CLOSE normal
     }
 
     // Lookup dans la table de traduction pour les syscalls sans adaptation

@@ -225,7 +225,6 @@ pub fn syscall_name(nr: u16) -> &'static str {
         0x0803 => "present",
         0x0804 => "get_event",
         0x0805 => "audio_write",
-        0x0806 => "vsync_wait",
 
         _ => "?",
     }
