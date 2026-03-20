@@ -868,15 +868,26 @@ impl LoadedSection {
             return Err("requested type and offset would not fit within the MappedPages bounds");
         }
 
-        // SAFETY: We checked the section type, executability, and size bounds of the
-        // underlying MappedPages above. The lifetime of the returned function
-        // reference is tied to this section's lifetime. The caller guarantees
-        // that the function signature matches.
-        Ok(unsafe { 
-            core::mem::transmute(
-                &(mp.start_address().value() + self.mapped_pages_offset)
-            )
-        })
+        // Compute the virtual address of the function.
+        let func_vaddr = mp.start_address().value() + self.mapped_pages_offset;
+        if func_vaddr == 0 {
+            error!("as_func(): computed function pointer is NULL (0x0) for section '{}' \
+                    (mp.start={:#X}, offset={:#X})",
+                self.name, mp.start_address().value(), self.mapped_pages_offset);
+            return Err("as_func(): computed function pointer is NULL — would cause PAGE FAULT at RIP=0x0");
+        }
+
+        // SAFETY: We checked the section type, executability, size bounds,
+        // and non-null address above. The lifetime of the returned reference
+        // is tied to the MappedPages held by this section (via Arc<Mutex>).
+        // The caller guarantees that the function signature matches.
+        //
+        // We store the address in a Box to ensure it has a stable memory
+        // location (avoids the dangling-reference-to-temporary bug).
+        // This leaks a tiny amount of memory (one usize per as_func call),
+        // which is acceptable since this is called once per crate load.
+        let stable_addr = alloc::boxed::Box::leak(alloc::boxed::Box::new(func_vaddr));
+        Ok(unsafe { core::mem::transmute(stable_addr as &usize) })
     }
 }
 
