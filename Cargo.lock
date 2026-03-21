@@ -1835,8 +1835,8 @@ dependencies = [
  "sleep",
  "spawn",
  "spin 0.9.4",
- "sync_irq",
  "task",
+ "time",
  "volatile 0.2.7",
  "zerocopy",
 ]

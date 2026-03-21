@@ -4,7 +4,7 @@
 //! and the DMA playback buffer. Uses double-buffering (2 x 4KB pages).
 
 use crate::regs::{self, BdlEntry, HdaStreamDesc};
-use log::debug;
+use log::{debug, warn};
 use memory::{MappedPages, PhysicalAddress};
 
 /// Size of each DMA buffer half (4 KB = 1024 stereo 16-bit frames).
@@ -30,6 +30,10 @@ pub struct OutputStream {
     dma_phys: PhysicalAddress,
     /// Tracks which half was last refilled to avoid redundant copies.
     last_refilled_half: u8,
+    /// Whether the DMA stream is currently running.
+    pub running: bool,
+    /// Number of consecutive pump cycles with no data from the mixer.
+    silence_cycles: u32,
 }
 
 impl OutputStream {
@@ -37,6 +41,7 @@ impl OutputStream {
     pub fn new(stream_tag: u8) -> Result<Self, &'static str> {
         let kernel_mmi = memory::get_kernel_mmi_ref()
             .ok_or("HDA stream: no kernel MMI")?;
+
         let flags = pte_flags::PteFlags::new()
             .valid(true)
             .writable(true)
@@ -74,18 +79,22 @@ impl OutputStream {
             BdlEntry {
                 address: dma_phys_val,
                 length: DMA_HALF_SIZE as u32,
-                flags: 1, // IOC
+                flags: 0, // No IOC — we poll LPIB, no interrupts needed
             },
             BdlEntry {
                 address: dma_phys_val + DMA_HALF_SIZE as u64,
                 length: DMA_HALF_SIZE as u32,
-                flags: 1, // IOC
+                flags: 0, // No IOC
             },
         ];
         unsafe {
             let bdl_ptr = bdl_va as *mut BdlEntry;
             core::ptr::copy_nonoverlapping(entries.as_ptr(), bdl_ptr, BDL_ENTRIES);
         }
+
+        warn!("HDA stream: BDL phys={:#010x}, DMA phys={:#010x} ({})",
+            bdl_phys.value(), dma_phys.value(),
+            if dma_phys.value() > 0xFFFF_FFFF { "ABOVE 4GB!" } else { "below 4GB" });
 
         Ok(OutputStream {
             stream_tag,
@@ -94,7 +103,9 @@ impl OutputStream {
             _dma_pages: dma_mapped,
             dma_va,
             dma_phys,
-            last_refilled_half: 1, // Pretend half 1 was just refilled so we start with half 0.
+            last_refilled_half: 1,
+            running: false,
+            silence_cycles: 0,
         })
     }
 
@@ -140,10 +151,13 @@ impl OutputStream {
             self.stream_tag, DMA_TOTAL_SIZE, BDL_ENTRIES - 1, regs::FMT_48KHZ_16BIT_STEREO);
     }
 
-    /// Start the output stream (set RUN bit + interrupt enables).
+    /// Start the output stream (set RUN bit only, no interrupt enables).
+    ///
+    /// We poll LPIB from the audio pump instead of using interrupts,
+    /// so IOCE (Interrupt On Completion Enable) is deliberately not set.
     pub fn start(&self, sd: &mut HdaStreamDesc) {
         let ctl = sd.ctl_lo.read();
-        sd.ctl_lo.write(ctl | regs::SD_CTL_RUN | regs::SD_CTL_IOCE);
+        sd.ctl_lo.write(ctl | regs::SD_CTL_RUN);
     }
 
     /// Stop the output stream.
@@ -152,19 +166,64 @@ impl OutputStream {
         sd.ctl_lo.write(ctl & !regs::SD_CTL_RUN);
     }
 
+    /// Number of silence cycles before stopping the stream (~500ms at 10ms pump).
+    const SILENCE_STOP_THRESHOLD: u32 = 50;
+
     /// Refill the DMA buffer from the audio mixer.
     ///
-    /// Reads LPIB to determine which half has been consumed by the controller,
-    /// then refills the consumed half with data from the mixer.
+    /// On-demand streaming: the DMA stream only runs when the mixer has audio
+    /// data. This avoids a QEMU DMA issue where a continuously-running HDA
+    /// stream causes system freezes.
     pub fn refill_from_mixer(&mut self, sd: &mut HdaStreamDesc) {
-        let lpib = sd.lpib.read() as usize;
-        // Determine which half the controller is currently playing.
-        let current_half = if lpib < DMA_HALF_SIZE { 0u8 } else { 1u8 };
+        // Check if the mixer has data.
+        let has_data = audio_mixer::get_mixer()
+            .and_then(|m| m.try_lock())
+            .map(|m| m.available_frames() > 0)
+            .unwrap_or(false);
 
-        // Refill the OTHER half (the one not being played).
+        if !has_data {
+            self.silence_cycles += 1;
+            if self.running && self.silence_cycles > Self::SILENCE_STOP_THRESHOLD {
+                self.stop(sd);
+                self.running = false;
+                warn!("HDA: stream stopped (no audio data)");
+            }
+            return;
+        }
+
+        // We have data — reset silence counter.
+        self.silence_cycles = 0;
+
+        // Start stream on-demand if not running.
+        if !self.running {
+            // Pre-fill both halves before starting.
+            for half in 0..2u8 {
+                let offset = half as usize * DMA_HALF_SIZE;
+                let dst = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        (self.dma_va + offset) as *mut u8,
+                        DMA_HALF_SIZE,
+                    )
+                };
+                if let Some(mixer) = audio_mixer::get_mixer() {
+                    if let Some(mut m) = mixer.try_lock() {
+                        m.read_pcm_into(dst);
+                    }
+                }
+            }
+            self.last_refilled_half = 1;
+            self.start(sd);
+            self.running = true;
+            warn!("HDA: stream started (audio data available)");
+            return;
+        }
+
+        // Stream is running — refill the half not being played.
+        let lpib = sd.lpib.read() as usize;
+        let current_half = if lpib < DMA_HALF_SIZE { 0u8 } else { 1u8 };
         let refill_half = 1 - current_half;
         if refill_half == self.last_refilled_half {
-            return; // Already refilled, nothing to do.
+            return;
         }
 
         let offset = refill_half as usize * DMA_HALF_SIZE;
@@ -175,12 +234,10 @@ impl OutputStream {
             )
         };
 
-        // Read from the global audio mixer.
         if let Some(mixer) = audio_mixer::get_mixer() {
-            mixer.lock().read_pcm_into(dst);
-        } else {
-            // No mixer — fill with silence.
-            unsafe { core::ptr::write_bytes(dst.as_mut_ptr(), 0, DMA_HALF_SIZE); }
+            if let Some(mut m) = mixer.try_lock() {
+                m.read_pcm_into(dst);
+            }
         }
 
         self.last_refilled_half = refill_half;

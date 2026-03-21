@@ -10,7 +10,8 @@
 extern crate alloc;
 
 use log::info;
-use spin::Once;
+use spin::{Once, Mutex};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(target_arch = "x86_64")]
 use memory::MappedPages;
@@ -30,7 +31,30 @@ const RING_FRAMES: usize = 65_536;
 const RING_BYTES: usize = RING_FRAMES * FRAME_SIZE;
 
 /// The global audio mixer singleton.
-static AUDIO_MIXER: Once<spin::Mutex<AudioMixer>> = Once::new();
+static AUDIO_MIXER: Once<Mutex<AudioMixer>> = Once::new();
+
+/// Hardware pump callback — set by the audio driver (e.g. intel_hda).
+/// Stored as a raw function pointer to avoid generics.
+static HW_PUMP: AtomicUsize = AtomicUsize::new(0);
+
+/// Register a hardware pump function.
+///
+/// The audio driver calls this once during init to register its pump function.
+/// The pump function will be called from `pump_hardware()`.
+pub fn register_hw_pump(f: fn()) {
+    HW_PUMP.store(f as usize, Ordering::Release);
+}
+
+/// Call the registered hardware pump function.
+///
+/// Called from `sys_audio_write` after writing data to the mixer.
+pub fn pump_hardware() {
+    let ptr = HW_PUMP.load(Ordering::Acquire);
+    if ptr != 0 {
+        let f: fn() = unsafe { core::mem::transmute(ptr) };
+        f();
+    }
+}
 
 /// Get a reference to the global audio mixer, if initialized.
 pub fn get_mixer() -> Option<&'static spin::Mutex<AudioMixer>> {

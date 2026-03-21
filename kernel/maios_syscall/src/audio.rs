@@ -29,5 +29,10 @@ pub fn sys_audio_write(buf_ptr: u64, buf_len: u64, _: u64, _: u64, _: u64, _: u6
     };
 
     let written = mixer.lock().write_pcm(data);
+
+    // Pump audio to the HDA DMA buffer via callback.
+    // No background pump task — Theseus's scheduler deadlocks on sleep loops.
+    audio_mixer::pump_hardware();
+
     Ok(written as u64)
 }

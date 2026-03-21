@@ -129,7 +129,7 @@ if (-not $BuildOnly) {
         "-net", "none"
         "-display", "sdl,gl=on"
         "-s"
-        "-device", "intel-hda,id=hda0"
+        "-device", "intel-hda,id=hda0,msi=off"
         "-device", "hda-output,bus=hda0.0"
     )
 

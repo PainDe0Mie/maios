@@ -16,11 +16,11 @@ memory = { path = "../memory" }
 memory_structs = { path = "../memory_structs" }
 pte_flags = { path = "../pte_flags" }
 pci = { path = "../pci" }
-sync_irq = { path = "../../libs/sync_irq" }
 audio_mixer = { path = "../audio_mixer" }
 sleep = { path = "../sleep" }
 spawn = { path = "../spawn" }
 task = { path = "../task" }
+time = { path = "../time" }
 
 [lib]
 crate-type = ["rlib"]
