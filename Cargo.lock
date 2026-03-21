@@ -203,6 +203,27 @@ name = "atomic_linked_list"
 version = "0.1.0"
 
 [[package]]
+name = "audio_mixer"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "memory",
+ "memory_structs",
+ "pte_flags",
+ "spin 0.9.4",
+]
+
+[[package]]
+name = "audio_test"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "audio_mixer",
+ "log",
+ "sleep",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -955,6 +976,7 @@ dependencies = [
  "event_types",
  "fat32",
  "fs_node",
+ "intel_hda",
  "interrupts",
  "ixgbe",
  "keyboard",
@@ -1801,6 +1823,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "intel_hda"
+version = "0.1.0"
+dependencies = [
+ "audio_mixer",
+ "log",
+ "memory",
+ "memory_structs",
+ "pci",
+ "pte_flags",
+ "sleep",
+ "spawn",
+ "spin 0.9.4",
+ "sync_irq",
+ "task",
+ "volatile 0.2.7",
+ "zerocopy",
+]
+
+[[package]]
 name = "interrupt_controller"
 version = "0.1.0"
 dependencies = [
@@ -2216,6 +2257,7 @@ name = "maios_syscall"
 version = "0.1.0"
 dependencies = [
  "app_io",
+ "audio_mixer",
  "elf_loader",
  "fs_node",
  "io",
@@ -2226,12 +2268,14 @@ dependencies = [
  "memory_structs",
  "mgi",
  "mhc",
+ "net",
  "path",
  "pte_flags",
  "root",
  "rtc",
  "scheduler",
  "sleep",
+ "smoltcp",
  "spawn",
  "spin 0.9.4",
  "task",

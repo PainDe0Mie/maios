@@ -53,7 +53,11 @@ pub struct HdaRegisters {
     pub rirbsize:   Volatile<u8>,       // 0x5E RIRB Size
     _pad6:          u8,                 // 0x5F
 
-    _pad7:          [u8; 0x20],         // 0x60..0x7F
+    // ── Immediate Command Interface (0x60..0x6B) ──
+    pub icoi:       Volatile<u32>,      // 0x60 Immediate Command Output
+    pub irii:       ReadOnly<u32>,      // 0x64 Immediate Response Input
+    pub ics:        Volatile<u16>,      // 0x68 Immediate Command Status
+    _pad7:          [u8; 0x16],         // 0x6A..0x7F
 
     // ── Stream Descriptor 0 (first output stream, at 0x80) ──
     pub sd0:        HdaStreamDesc,      // 0x80..0x9F
@@ -111,6 +115,13 @@ pub const RIRBCTL_RUN:    u8 = 1 << 1;
 
 /// RIRB Write Pointer Reset bit.
 pub const RIRBWP_RST: u16 = 1 << 15;
+
+// ─── Immediate Command Status bits ──────────────────────────────────────────
+
+/// Immediate Command Busy.
+pub const ICS_BUSY: u16 = 1 << 0;
+/// Immediate Result Valid.
+pub const ICS_VALID: u16 = 1 << 1;
 
 // ─── Stream descriptor bits ────────────────────────────────────────────────
 
