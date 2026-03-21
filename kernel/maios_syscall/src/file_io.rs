@@ -127,7 +127,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64, _: u64, _: u64, _: u64) -> Sy
             Some(Resource::Stdin) => ReadTarget::Stdin,
             Some(Resource::File { .. }) => ReadTarget::File,
             Some(Resource::Stdout) | Some(Resource::Stderr) => ReadTarget::BadFd,
-            Some(Resource::Memory { .. }) => ReadTarget::BadFd,
+            Some(Resource::Memory { .. }) | Some(Resource::Socket { .. }) => ReadTarget::BadFd,
             None => ReadTarget::BadFd,
         }
     });
@@ -208,7 +208,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64, _: u64, _: u64, _: u64) -> S
             Some(Resource::Stderr) => WriteTarget::Stderr,
             Some(Resource::Stdin) => WriteTarget::BadFd,
             Some(Resource::File { .. }) => WriteTarget::File,
-            Some(Resource::Memory { .. }) => WriteTarget::Other,
+            Some(Resource::Memory { .. }) | Some(Resource::Socket { .. }) => WriteTarget::Other,
             None => WriteTarget::BadFd,
         }
     });
@@ -356,7 +356,7 @@ pub fn sys_fstat(fd: u64, stat_buf: u64, _: u64, _: u64, _: u64, _: u64) -> Sysc
                 fill_stat_buf(stat_buf, size, false);
                 Ok(0)
             }
-            Resource::Memory { .. } => Err(SyscallError::BadFileDescriptor),
+            Resource::Memory { .. } | Resource::Socket { .. } => Err(SyscallError::BadFileDescriptor),
         }
     })
 }

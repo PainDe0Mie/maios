@@ -71,26 +71,15 @@ if (-not $RunOnly) {
 
     $wslProjectPath = wsl wslpath -u ($WorkDir -replace '\\', '/')
 
-    # Build with explicit NASM path for WSL
-    # Use single-line command to avoid line-ending issues
-    $buildCmd = "cd '$wslProjectPath' && export PATH=""`$HOME/.cargo/bin:/c/Program Files/NASM:`$PATH"" && make iso 2>&1"
-
     Write-Info "Running: make iso"
     Write-Info ""
 
-    $output = wsl bash -c $buildCmd
+    wsl bash -lc "cd '$wslProjectPath' && make iso"
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -ne 0) {
         Write-Host ""
         Write-Err "Build failed (exit code $exitCode)"
-        Write-Host ""
-        Write-Host "Last 50 lines of output:" -ForegroundColor DarkGray
-        Write-Host "─" * 40 -ForegroundColor DarkGray
-        ($output -split "`n") | Select-Object -Last 50 | ForEach-Object {
-            Write-Host $_
-        }
-        Write-Host "─" * 40 -ForegroundColor DarkGray
         exit 1
     }
 

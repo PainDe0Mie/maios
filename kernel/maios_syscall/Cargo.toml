@@ -30,6 +30,8 @@ scheduler = { path = "../scheduler" }
 sleep = { path = "../sleep" }
 mgi = { path = "../mgi" }
 mhc = { path = "../mhc" }
+net = { path = "../net" }
+smoltcp = { version = "0.10", default-features = false }
 
 [lib]
 crate-type = ["rlib"]

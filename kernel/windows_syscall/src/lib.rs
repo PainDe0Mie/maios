@@ -198,6 +198,175 @@ fn adapt_nt_perf_counter(counter_out: u64, frequency_out: u64) -> i64 {
     result_to_ntstatus(result)
 }
 
+/// Adaptateur pour NtQueryInformationFile.
+///
+/// NT prototype:
+///   NTSTATUS NtQueryInformationFile(
+///     HANDLE FileHandle,                     // arg0
+///     PIO_STATUS_BLOCK IoStatusBlock,        // arg1
+///     PVOID FileInformation,                 // arg2
+///     ULONG Length,                          // arg3
+///     FILE_INFORMATION_CLASS FileInfoClass   // arg4
+///   );
+fn adapt_nt_query_information_file(
+    handle: u64,
+    io_status_block: u64,
+    buffer: u64,
+    length: u64,
+    info_class: u64,
+) -> i64 {
+    use maios_syscall::resource::{self, Resource};
+
+    if buffer == 0 || length == 0 {
+        return ntstatus::STATUS_INVALID_PARAMETER;
+    }
+
+    let tid = task::get_my_current_task_id();
+
+    let result = resource::with_resources(tid, |table| {
+        let resource = match table.get(handle) {
+            Some(r) => r,
+            None => return ntstatus::STATUS_INVALID_HANDLE,
+        };
+
+        match resource {
+            Resource::File { file, offset } => {
+                let locked = file.lock();
+                let file_size = locked.len() as u64;
+                let file_name = locked.get_name();
+                let current_offset = *offset as u64;
+                drop(locked);
+
+                match info_class {
+                    // FileStandardInformation (5)
+                    5 => {
+                        // struct FILE_STANDARD_INFORMATION {
+                        //   LARGE_INTEGER AllocationSize;   // +0
+                        //   LARGE_INTEGER EndOfFile;        // +8
+                        //   ULONG         NumberOfLinks;    // +16
+                        //   BOOLEAN       DeletePending;    // +20
+                        //   BOOLEAN       Directory;        // +21
+                        // } // size = 24
+                        if length < 24 {
+                            return ntstatus::STATUS_BUFFER_TOO_SMALL;
+                        }
+                        unsafe {
+                            let p = buffer as *mut u8;
+                            // AllocationSize (round up to 4K)
+                            let alloc_size = (file_size + 4095) & !4095;
+                            *(p as *mut u64) = alloc_size;
+                            // EndOfFile
+                            *(p.add(8) as *mut u64) = file_size;
+                            // NumberOfLinks
+                            *(p.add(16) as *mut u32) = 1;
+                            // DeletePending
+                            *p.add(20) = 0;
+                            // Directory
+                            *p.add(21) = 0;
+                        }
+                        write_io_status(io_status_block, 0, 24);
+                        ntstatus::STATUS_SUCCESS
+                    }
+                    // FileBasicInformation (4)
+                    4 => {
+                        // struct FILE_BASIC_INFORMATION {
+                        //   LARGE_INTEGER CreationTime;     // +0
+                        //   LARGE_INTEGER LastAccessTime;   // +8
+                        //   LARGE_INTEGER LastWriteTime;    // +16
+                        //   LARGE_INTEGER ChangeTime;       // +24
+                        //   ULONG         FileAttributes;   // +32
+                        // } // size = 40
+                        if length < 40 {
+                            return ntstatus::STATUS_BUFFER_TOO_SMALL;
+                        }
+                        unsafe {
+                            let p = buffer as *mut u8;
+                            // All timestamps = 0 (not tracked yet)
+                            for i in 0..4 {
+                                *(p.add(i * 8) as *mut u64) = 0;
+                            }
+                            // FILE_ATTRIBUTE_NORMAL = 0x80
+                            *(p.add(32) as *mut u32) = 0x80;
+                        }
+                        write_io_status(io_status_block, 0, 40);
+                        ntstatus::STATUS_SUCCESS
+                    }
+                    // FileNameInformation (9)
+                    9 => {
+                        // struct FILE_NAME_INFORMATION {
+                        //   ULONG FileNameLength;  // +0  (bytes, not chars)
+                        //   WCHAR FileName[1];     // +4  (UTF-16LE)
+                        // }
+                        let utf16: alloc::vec::Vec<u16> = file_name.encode_utf16().collect();
+                        let name_bytes = utf16.len() * 2;
+                        let needed = 4 + name_bytes;
+                        if (length as usize) < needed {
+                            return ntstatus::STATUS_BUFFER_TOO_SMALL;
+                        }
+                        unsafe {
+                            let p = buffer as *mut u8;
+                            *(p as *mut u32) = name_bytes as u32;
+                            core::ptr::copy_nonoverlapping(
+                                utf16.as_ptr() as *const u8,
+                                p.add(4),
+                                name_bytes,
+                            );
+                        }
+                        write_io_status(io_status_block, 0, needed as u64);
+                        ntstatus::STATUS_SUCCESS
+                    }
+                    // FilePositionInformation (14)
+                    14 => {
+                        if length < 8 {
+                            return ntstatus::STATUS_BUFFER_TOO_SMALL;
+                        }
+                        unsafe {
+                            *(buffer as *mut u64) = current_offset;
+                        }
+                        write_io_status(io_status_block, 0, 8);
+                        ntstatus::STATUS_SUCCESS
+                    }
+                    other => {
+                        warn!("NtQueryInformationFile: unhandled info class {}", other);
+                        ntstatus::STATUS_NOT_IMPLEMENTED
+                    }
+                }
+            }
+            Resource::Stdin | Resource::Stdout | Resource::Stderr => {
+                // Console handles: return minimal info
+                match info_class {
+                    5 => {
+                        if length < 24 {
+                            return ntstatus::STATUS_BUFFER_TOO_SMALL;
+                        }
+                        unsafe {
+                            let p = buffer as *mut u8;
+                            core::ptr::write_bytes(p, 0, 24);
+                        }
+                        write_io_status(io_status_block, 0, 24);
+                        ntstatus::STATUS_SUCCESS
+                    }
+                    _ => ntstatus::STATUS_NOT_IMPLEMENTED,
+                }
+            }
+            _ => ntstatus::STATUS_INVALID_HANDLE,
+        }
+    });
+
+    result
+}
+
+/// Write an IO_STATUS_BLOCK: { NTSTATUS Status; ULONG_PTR Information; }
+fn write_io_status(io_status_block: u64, status: i64, info: u64) {
+    if io_status_block != 0 {
+        unsafe {
+            let p = io_status_block as *mut u8;
+            *(p as *mut i64) = status;
+            *(p.add(8) as *mut u64) = info;
+        }
+    }
+}
+
 // =============================================================================
 // Point d'entrée
 // =============================================================================
@@ -277,6 +446,17 @@ pub fn handle_syscall(
         }
         nr::NT_WAIT_FOR_MULTIPLE_OBJECTS => {
             return nt_threading::adapt_nt_wait_for_multiple_objects(arg0, arg1, arg2, arg3, arg4);
+        }
+
+        nr::NT_QUERY_INFORMATION_FILE => {
+            return adapt_nt_query_information_file(arg0, arg1, arg2, arg3, arg4);
+        }
+        nr::NT_QUERY_SYSTEM_INFORMATION | nr::NT_QUERY_INFORMATION_PROCESS => {
+            // Stub: zero-fill the buffer and return success
+            if arg1 != 0 && arg2 > 0 {
+                unsafe { core::ptr::write_bytes(arg1 as *mut u8, 0, arg2 as usize); }
+            }
+            return ntstatus::STATUS_SUCCESS;
         }
 
         _ => {}

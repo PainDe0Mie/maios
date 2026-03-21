@@ -9,12 +9,17 @@
 //! `alloc_handle()`.
 
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use spin::Mutex;
 
 #[cfg(target_arch = "x86_64")]
 use fs_node::FileRef;
 #[cfg(target_arch = "x86_64")]
 use memory::MappedPages;
+#[cfg(target_arch = "x86_64")]
+use smoltcp::iface::SocketHandle;
+#[cfg(target_arch = "x86_64")]
+use net::NetworkInterface;
 
 // ---------------------------------------------------------------------------
 // Resource enum — what a handle/fd points to
@@ -41,6 +46,20 @@ pub enum Resource {
         base: usize,
         size: usize,
     },
+    /// A network socket (TCP or UDP) backed by smoltcp.
+    Socket {
+        handle: SocketHandle,
+        interface: Arc<NetworkInterface>,
+        sock_type: SocketKind,
+    },
+}
+
+/// The kind of network socket.
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketKind {
+    Tcp,
+    Udp,
 }
 
 /// A handle/descriptor number visible to userspace.
@@ -156,6 +175,11 @@ impl ResourceTable {
                 offset: *offset,
             }),
             Resource::Memory { .. } => None, // Cannot dup memory mappings
+            Resource::Socket { handle, ref interface, sock_type } => Some(Resource::Socket {
+                handle: *handle,
+                interface: interface.clone(),
+                sock_type: *sock_type,
+            }),
         }?;
         Some(self.alloc_fd(dup_resource))
     }
@@ -178,6 +202,11 @@ impl ResourceTable {
                 offset: *offset,
             }),
             Resource::Memory { .. } => None,
+            Resource::Socket { handle, ref interface, sock_type } => Some(Resource::Socket {
+                handle: *handle,
+                interface: interface.clone(),
+                sock_type: *sock_type,
+            }),
         }?;
         // Close target if it exists (ignore if it's stdio)
         if !Self::is_stdio(target_fd) {
