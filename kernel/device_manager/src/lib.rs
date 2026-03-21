@@ -56,7 +56,7 @@ pub fn init(
         .filter_map(|sp| serial_port::init_serial_port(sp.base_port_address(), sp))
         .cloned();
     logger::init(None, logger_writers);
-    info!("Logger initialisé.");
+    warn!("Logger initialisé.");
 
     // 2. Serial
     #[cfg(target_arch = "x86_64")] {
@@ -92,14 +92,14 @@ pub fn init(
         if dev.class == nvme::NVME_PCI_CLASS && dev.subclass == nvme::NVME_PCI_SUBCLASS {
             match nvme::init_from_pci(dev) {
                 Ok(Some(nvme_drive_ref)) => {
-                    info!("NVMe à {:?}", dev.location);
+                    warn!("NVMe à {:?}", dev.location);
                     let nvme_as_storage: StorageDeviceRef = nvme_drive_ref;
                     mount_storage_device(nvme_as_storage, "nvme", &mut disk_idx);
-                    continue;
                 }
-                Ok(None)  => {}
-                Err(e)    => { error!("NVMe {:?}: {}", dev.location, e); continue; }
+                Ok(None) => debug!("NVMe {:?}: contrôleur présent, aucun drive", dev.location),
+                Err(e)   => error!("NVMe {:?}: {}", dev.location, e),
             }
+            continue; // ← always: NVMe class/subclass identifié = géré
         }
 
         // AHCI (SATA)
@@ -111,11 +111,11 @@ pub fn init(
                     for ahci_ref in drives {
                         mount_storage_device(ahci_ref, "sata", &mut disk_idx);
                     }
-                    continue;
                 }
-                Ok(None)  => {}
-                Err(e)    => { error!("AHCI {:?}: {}", dev.location, e); continue; }
+                Ok(None) => debug!("AHCI {:?}: contrôleur ICH9 présent, aucun drive attaché", dev.location),
+                Err(e)   => error!("AHCI {:?}: {}", dev.location, e),
             }
+            continue; // ← always
         }
 
         // ATA legacy
@@ -169,7 +169,21 @@ pub fn init(
             continue;
         }
 
-        warn!("PCI sans driver: {:X?}", dev);
+        // Suppress known Q35/ICH9 devices that have no driver in MaiOS yet.
+        // SMBus controller (class 0x0C, subclass 0x05) — Intel ICH9 SMBus
+        #[cfg(target_arch = "x86_64")]
+        if dev.class == 0x0C && dev.subclass == 0x05 {
+            debug!("SMBus {:?}: pas de driver (ignoré)", dev.location);
+            continue;
+        }
+        // ISA bridge, PCI bridge, etc. — already filtered by class == 0x06 above,
+        // but some Q35 devices use class 0x06 subclasses we may have missed.
+        #[cfg(target_arch = "x86_64")]
+        if dev.class == 0x06 {
+            continue;
+        }
+
+    warn!("PCI sans driver: {:X?}", dev);
     }
 
     #[cfg(target_arch = "x86_64")] {
@@ -184,15 +198,15 @@ pub fn init(
     #[cfg(target_arch = "x86_64")]
     match mhc::init() {
         Ok(()) => {
-            info!("MHC: GPU subsystem initialized");
+            warn!("MHC: GPU subsystem initialized");
             // Wire MHC VirtIO-GPU as the active display output.
             // Get the display resolution from MGI (already initialized by window_manager).
             #[cfg(target_arch = "x86_64")]
             if let Some(mgi_ref) = mgi::MGI.get() {
                 let (w, h) = mgi_ref.lock().resolution();
                 match mhc::setup_display(w as u32, h as u32) {
-                    Ok(())  => info!("MHC: VirtIO-GPU display output ready ({}x{})", w, h),
-                    Err(e)  => info!("MHC: VirtIO-GPU display not available: {}", e),
+                    Ok(())  => warn!("MHC: VirtIO-GPU display output ready ({}x{})", w, h),
+                    Err(e)  => warn!("MHC: VirtIO-GPU display not available: {}", e),
                 }
             }
         }
@@ -209,6 +223,8 @@ pub fn init(
 /// (or the raw device if no partition table is found) as FAT32 in the VFS.
 #[cfg(target_arch = "x86_64")]
 fn mount_storage_device(device: StorageDeviceRef, prefix: &str, disk_idx: &mut usize) {
+    storage_manager::add_storage_device(device.clone());
+    
     let cached_disk: StorageDeviceRef = Arc::new(Mutex::new(
         block_cache::BlockCache::new(device.clone())
     ));
@@ -219,7 +235,7 @@ fn mount_storage_device(device: StorageDeviceRef, prefix: &str, disk_idx: &mut u
         // No partition table — try mounting the raw device as FAT32
         let name = format!("{}{}", prefix, *disk_idx);
         match fat32::mount_and_get_root(cached_disk, &name) {
-            Ok(r)  => { info!("FAT32 sur {}", name); mount_disk_in_vfs(r, *disk_idx); }
+            Ok(r)  => { warn!("FAT32 sur {}", name); mount_disk_in_vfs(r, *disk_idx); }
             Err(e) => debug!("{}: pas FAT32 ({})", name, e),
         }
         *disk_idx += 1;
@@ -233,7 +249,7 @@ fn mount_storage_device(device: StorageDeviceRef, prefix: &str, disk_idx: &mut u
             );
             let name = format!("{}{}p{}", prefix, *disk_idx, part.index);
             match fat32::mount_and_get_root(part_dev, &name) {
-                Ok(r)  => { info!("FAT32 sur {} ({})", name, part.name); mount_disk_in_vfs(r, *disk_idx * 10 + part.index); }
+                Ok(r)  => { warn!("FAT32 sur {} ({})", name, part.name); mount_disk_in_vfs(r, *disk_idx * 10 + part.index); }
                 Err(e) => debug!("{}: pas FAT32 ({})", name, e),
             }
         }
@@ -262,6 +278,6 @@ fn mount_disk_in_vfs(fat32_root: DirRef, idx: usize) {
     if let Err(e) = result {
         error!("mount disk{}: {:?}", idx, e);
     } else {
-        info!("/disks/{} monté", idx);
+        warn!("/disks/{} monté", idx);
     }
 }

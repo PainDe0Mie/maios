@@ -22,6 +22,13 @@ pub use storage_device::*;
 
 /// A list of all of the available and initialized storage controllers that exist on this system.
 static STORAGE_CONTROLLERS: Mutex<Vec<StorageControllerRef>> = Mutex::new(Vec::new());
+static STORAGE_DEVICES: Mutex<Vec<StorageDeviceRef>> = Mutex::new(Vec::new());
+
+/// Enregistre un storage device directement (NVMe, etc.)
+/// sans passer par un StorageController.
+pub fn add_storage_device(device: StorageDeviceRef) {
+    STORAGE_DEVICES.lock().push(device);
+}
 
 /// Returns an iterator over all initialized storage controllers on this system.
 /// 
@@ -36,12 +43,17 @@ pub fn storage_controllers() -> impl Iterator<Item = StorageControllerRef> {
 /// This function requires allocation, as it currently clones the list of storage devices (lazily)
 /// within each storage controller, effectively a `Vec<Arc<Vec<Arc<StorageDevice>>>>`.
 pub fn storage_devices() -> impl Iterator<Item = StorageDeviceRef> {
-    storage_controllers()
+    let from_controllers: Vec<StorageDeviceRef> = storage_controllers()
         .flat_map(|c| c.lock()
             .devices()
             .collect::<Vec<StorageDeviceRef>>()
             .into_iter()
-    )
+        )
+        .collect();
+    
+    let direct: Vec<StorageDeviceRef> = STORAGE_DEVICES.lock().clone();
+    
+    from_controllers.into_iter().chain(direct.into_iter())
 }
 
 

@@ -6,7 +6,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use keycodes_ascii::{Keycode, KeyboardModifiers, KEY_RELEASED_OFFSET, KeyAction, KeyEvent};
 use log::{error, warn, debug};
-use once_cell::unsync::Lazy;
+use spin::Mutex;
 use spin::Once;
 use mpmc::Queue;
 use event_types::Event;
@@ -18,8 +18,8 @@ extern crate port_io;
 /// Because we perform the typical PIC remapping, the remapped IRQ vector number is 0x21.
 const PS2_KEYBOARD_IRQ: u8 = interrupts::IRQ_BASE_OFFSET + 0x1;
 
-// TODO: avoid unsafe static mut
-static mut KBD_MODIFIERS: Lazy<KeyboardModifiers> = Lazy::new(KeyboardModifiers::new);
+//static mut KBD_MODIFIERS: Lazy<KeyboardModifiers> = Lazy::new(KeyboardModifiers::new);
+static KBD_MODIFIERS: Mutex<KeyboardModifiers> = Mutex::new(KeyboardModifiers::empty());
 
 static KEYBOARD: Once<KeyboardInterruptParams> = Once::new();
 
@@ -125,7 +125,8 @@ extern "x86-interrupt" fn ps2_keyboard_handler(_stack_frame: InterruptStackFrame
 /// Otherwise, returns an error string.
 fn handle_keyboard_input(keyboard: &PS2Keyboard, queue: &Queue<Event>, scan_code: u8, extended: bool) -> Result<(), &'static str> {
     // SAFE: no real race conditions with keyboard presses
-    let modifiers = unsafe { &mut KBD_MODIFIERS };
+    let mut modifiers = KBD_MODIFIERS.lock();
+    //let modifiers = unsafe { &mut KBD_MODIFIERS };
     // debug!("KBD_MODIFIERS before {}: {:?}", scan_code, modifiers);
 
     // first, update the modifier keys
@@ -206,10 +207,10 @@ fn handle_keyboard_input(keyboard: &PS2Keyboard, queue: &Queue<Event>, scan_code
     };
 
     if let Ok(keycode) = Keycode::try_from(adjusted_scan_code) {
-        let event = Event::new_keyboard_event(KeyEvent::new(keycode, action, **modifiers));
+        let event = Event::new_keyboard_event(KeyEvent::new(keycode, action, *modifiers));
         queue.push(event).map_err(|_| "keyboard input queue is full")
     } else {
-        error!("handle_keyboard_input(): Unknown scancode: {scan_code:?}, adjusted scancode: {adjusted_scan_code:?}");
+        error!("handle_keyboard_input(): Unknown scancode: {scan_code:?}");
         Err("unknown keyboard scancode")
     }
 }
@@ -221,15 +222,9 @@ fn handle_keyboard_input(keyboard: &PS2Keyboard, queue: &Queue<Event>, scan_code
 pub fn process_deferred_led_update() {
     if PENDING_LED_UPDATE.swap(0, Ordering::AcqRel) != 0 {
         if let Some(KeyboardInterruptParams { keyboard, .. }) = KEYBOARD.get() {
-            // SAFE: we only read modifiers here, no real race with interrupt handler
-            let modifiers = unsafe { &*KBD_MODIFIERS };
-            // Disable interrupts during PS/2 LED I/O to prevent the keyboard IRQ
-            // handler from consuming ACK bytes (0xFA) meant for polling_receive().
-            // Without this, the IRQ steals the ACK → polling times out → the PS/2
-            // command is left incomplete → the controller misinterprets the next
-            // scancode as LED data, corrupting the keyboard state.
+            let modifiers = KBD_MODIFIERS.lock();
             x86_64::instructions::interrupts::without_interrupts(|| {
-                set_keyboard_led(keyboard, modifiers);
+                set_keyboard_led(keyboard, &*modifiers);
             });
         }
     }
