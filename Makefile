@@ -940,6 +940,9 @@ else ifneq (,$(net))
 $(error Error: unsupported option "net=$(net)")
 endif
 
+## Intel HDA audio controller + output codec
+QEMU_FLAGS += -device intel-hda -device hda-output
+
 ## Dump interrupts to the serial port log
 ifeq ($(int),yes)
 	QEMU_FLAGS += -d int

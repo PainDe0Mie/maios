@@ -1,0 +1,21 @@
+[package]
+name = "audio_test"
+version = "0.1.0"
+authors = ["MaiOS Contributors"]
+description = "Test app: plays a 440Hz sine wave for 2 seconds"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+
+[dependencies.app_io]
+path = "../../kernel/app_io"
+
+[dependencies.audio_mixer]
+path = "../../kernel/audio_mixer"
+
+[dependencies.sleep]
+path = "../../kernel/sleep"
+
+[lib]
+crate-type = ["rlib"]

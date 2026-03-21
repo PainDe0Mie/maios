@@ -30,6 +30,7 @@ scheduler = { path = "../scheduler" }
 sleep = { path = "../sleep" }
 mgi = { path = "../mgi" }
 mhc = { path = "../mhc" }
+audio_mixer = { path = "../audio_mixer" }
 net = { path = "../net" }
 smoltcp = { version = "0.10", default-features = false }
 

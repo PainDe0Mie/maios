@@ -129,6 +129,8 @@ if (-not $BuildOnly) {
         "-net", "none"
         "-display", "sdl,gl=on"
         "-s"
+        "-device", "intel-hda"
+        "-device", "hda-output"
     )
 
     if (Test-Path $DiskImage) {

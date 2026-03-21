@@ -169,6 +169,15 @@ pub fn init(
             continue;
         }
 
+        // Audio — Intel HDA (class 0x04, subclass 0x03)
+        #[cfg(target_arch = "x86_64")]
+        if dev.class == intel_hda::HDA_PCI_CLASS && dev.subclass == intel_hda::HDA_PCI_SUBCLASS {
+            match intel_hda::init_from_pci(dev) {
+                Ok(()) => { info!("Intel HDA audio initialized at {:?}", dev.location); continue; }
+                Err(e) => { error!("Intel HDA {:?}: {}", dev.location, e); continue; }
+            }
+        }
+
         warn!("PCI sans driver: {:X?}", dev);
     }
 
