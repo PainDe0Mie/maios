@@ -178,14 +178,14 @@ impl Queue {
         unsafe { core::ptr::write_bytes(va as *mut u8, 0, total_bytes); }
 
         // Pour les CQ (entry_size = 16 = CQE_SIZE), initialiser status avec phase bit = 1
-        if entry_size == 16 {  // CQE_SIZE
-            for i in 0..depth {
-                let offset = i as usize * entry_size;
-                // CompletionEntry.status est aux bytes 14-15, phase tag est au bit 0
-                let status_ptr = (va + offset + 14) as *mut u16;
-                unsafe { status_ptr.write_volatile(0x0001); }  // Phase = 1
-            }
-        }
+        // if entry_size == 16 {  // CQE_SIZE
+        //     for i in 0..depth {
+        //         let offset = i as usize * entry_size;
+        //         // CompletionEntry.status est aux bytes 14-15, phase tag est au bit 0
+        //         let status_ptr = (va + offset + 14) as *mut u16;
+        //         unsafe { status_ptr.write_volatile(0x0001); }  // Phase = 1
+        //     }
+        // }
 
         Ok(Queue { pages: mapped, phys, depth, head: 0, phase: 1 })
     }
@@ -270,8 +270,6 @@ impl NvmeInner {
         unsafe { ((self.bar0_va + offset) as *mut u64).write_volatile(val); }
     }
 
-    /// Attend que `CSTS.RDY` soit égal à `desired_ready` (0 ou 1).
-    /// Timeout arbitraire : 1M itérations.
     fn wait_ready(&self, desired: u32) -> Result<(), &'static str> {
         for _ in 0..1_000_000 {
             let csts = self.read32(REG_CSTS);
@@ -400,14 +398,17 @@ impl NvmeInner {
     }
 
     // ── CREATE_IO_CQ / CREATE_IO_SQ ──────────────────────────────────────────
-
     fn create_io_cq(&mut self, q_id: u16, phys: PhysicalAddress, depth: u16) -> Result<(), &'static str> {
+        let cdw10 = ((depth as u32 - 1) << 16) | q_id as u32;
+        warn!("NVMe: CREATE_IO_CQ phys={:#x} depth={} cdw10={:#010x}", phys.value(), depth, cdw10);
+        if phys.value() == 0 || phys.value() % 4096 != 0 {
+            return Err("NVMe: io_cq phys invalide (null ou non-aligné)");
+        }
+
         let cmd = SubmissionEntry {
             cdw0:  AdminOpcode::CreateIoCq as u32,
             prp1:  phys.value() as u64,
-            // cdw10 : QSIZE[31:16] | QID[15:0]
-            cdw10: ((depth as u32 - 1) << 16) | q_id as u32,
-            // cdw11 : IEN=0 (polling), PC=1 (physically contiguous)
+            cdw10,
             cdw11: 0x1,
             ..Default::default()
         };
@@ -446,8 +447,15 @@ impl NvmeDrive {
     /// Initialise le contrôleur NVMe à partir du PCI device fourni.
     pub fn new(pci_dev: &PciDevice) -> Result<NvmeDriveRef, &'static str> {
         // ── 1. Lire et mapper BAR0 ───────────────────────────────────────────
-        let bar0_phys = PhysicalAddress::new_canonical((pci_dev.bars[0] & !0xF) as usize);
-        // NVMe BAR0 fait au minimum 16 KiB (doorbells inclus)
+        //let bar0_phys = PhysicalAddress::new_canonical((pci_dev.bars[0] & !0xF) as usize);
+
+        // determine_mem_base() gère automatiquement les BARs 32-bit et 64-bit.
+        let bar0_phys = pci_dev.determine_mem_base(0)
+            .map_err(|_| "NVMe: BAR0 inaccessible ou non initialisé par le firmware")?;
+        if bar0_phys.value() == 0 {
+            return Err("NVMe: BAR0 est zéro");
+        }
+        warn!("NVMe: BAR0 PA={:#x}", bar0_phys.value());
         let bar0_size = 0x4000usize;
 
         let kernel_mmi = get_kernel_mmi_ref().ok_or("NVMe: no kernel MMI")?;
@@ -461,22 +469,54 @@ impl NvmeDrive {
                 flags)?;
         let bar0_va = bar0.start_address().value();
 
+        // // ── 2. Lire les capabilities ─────────────────────────────────────────
+        // let cap = unsafe { (bar0_va as *const u64).read_volatile() };
+        // let dbl_stride = ((cap >> 32) & 0xF) as u32; // DSTRD
+        // let mqes = (cap & 0xFFFF) as u16 + 1;        // Max Queue Entries Supported
+        // let depth = QUEUE_DEPTH.min(mqes);
+        // let vs = unsafe { ((bar0_va + REG_VS) as *const u32).read_volatile() };
+        // warn!("NVMe: CAP={:#018x} VS={:#010x} DSTRD={} MQES={}", cap, vs, dbl_stride, mqes);
+
+        // pci_dev.pci_write_u16(pci::PCI_COMMAND, pci_dev.command | 0x0006);
+        // //pci::pci_write(pci_dev.location, 0x04, (pci_dev.command | 0x06) as u32, 2);
+
         // ── 2. Lire les capabilities ─────────────────────────────────────────
         let cap = unsafe { (bar0_va as *const u64).read_volatile() };
-        let dbl_stride = ((cap >> 32) & 0xF) as u32; // DSTRD
-        let mqes = (cap & 0xFFFF) as u16 + 1;        // Max Queue Entries Supported
-        let depth = QUEUE_DEPTH.min(mqes);
-        let vs = unsafe { ((bar0_va + REG_VS) as *const u32).read_volatile() };
-        info!("NVMe: CAP={:#018x} VS={:#010x} DSTRD={} MQES={}", cap, vs, dbl_stride, mqes);
+        let dbl_stride = ((cap >> 32) & 0xF) as u32;
+        let mqes = (cap & 0xFFFF) as u32 + 1;  // 0xFFFF + 1 = 65536 en u32, pas d'overflow
+        let depth = (QUEUE_DEPTH as u32).min(mqes) as u16; // min(64, 65536) = 64 ✓
 
-        // ── 3. Reset du contrôleur (CC.EN=0) ─────────────────────────────────
+        warn!("NVMe: BAR0_PA={:#x} CAP_RAW={:#018x} MQES={} depth={}", 
+            bar0_phys.value(), cap, mqes, depth);
+        if depth == 0 {
+            return Err("NVMe: depth=0, overflow MQES non corrigé");
+        }
+
+        let vs = unsafe { ((bar0_va + REG_VS) as *const u32).read_volatile() };
+        if depth == 0 {
+            return Err("NVMe: depth calculé à 0, overflow MQES");
+        }
+        warn!("NVMe: CAP={:#018x} VS={:#010x} DSTRD={} MQES={} depth={}", 
+            cap, vs, dbl_stride, mqes, depth);
+
+        // Active Bus Master (bit 2) + Memory Space (bit 1) dans le PCI Command register.
+        // pci_set_command_bus_master_bit() est la seule méthode publique disponible (bit 2).
+        // On active aussi bit 1 manuellement via pci_write_16 sur la location.
+        pci_dev.pci_set_command_bus_master_bit(); // bit 2: Bus Master
+        pci_dev.pci_enable_mem_space();           // bit 1: Memory Space
+
+        // ── 3. Reset du contrôleur (CC.EN=0) ─────────────────────────────────────
+        // Un reset complet purge toutes les queues — pas besoin de DELETE explicite.
         unsafe { ((bar0_va + REG_CC) as *mut u32).write_volatile(0x0); }
-        // Attente CSTS.RDY=0
-        for _ in 0..1_000_000 {
+        let mut reset_ok = false;
+        for _ in 0..2_000_000 {
             let csts = unsafe { ((bar0_va + REG_CSTS) as *const u32).read_volatile() };
-            if csts & 1 == 0 { break; }
+            if csts & 0x2 != 0 { return Err("NVMe: CFS set during reset"); }
+            if csts & 0x1 == 0 { reset_ok = true; break; }
             core::hint::spin_loop();
         }
+        if !reset_ok { return Err("NVMe: timeout waiting for CSTS.RDY=0"); }
+        warn!("NVMe: controller reset OK");
 
         // ── 4. Allouer les queues admin ───────────────────────────────────────
         let admin_sq = Queue::alloc(depth, SQE_SIZE)?;
@@ -492,8 +532,7 @@ impl NvmeDrive {
 
         // ── 6. CC.EN=1 — démarrage ───────────────────────────────────────────
         // CC : MPS=0 (4KiB), AMS=000 (round-robin), CSS=000 (NVM cmd set),
-        //      IOSQES=6 (64B), IOCQES=4 (16B), EN=1
-        let cc: u32 = (6 << 20) | (4 << 16) | 0x1;
+        let cc: u32 = (4 << 20) | (6 << 16) | 0x1;
         unsafe { ((bar0_va + REG_CC) as *mut u32).write_volatile(cc); }
         // Attente CSTS.RDY=1
         for _ in 0..2_000_000 {
@@ -502,7 +541,7 @@ impl NvmeDrive {
             if csts & 2 != 0 { return Err("NVMe: CFS set during init"); }
             core::hint::spin_loop();
         }
-        info!("NVMe: controller ready");
+        warn!("NVMe: controller ready");
 
         // ── 7. Allouer les queues I/O ─────────────────────────────────────────
         let io_cq = Queue::alloc(depth, CQE_SIZE)?;
@@ -527,7 +566,7 @@ impl NvmeDrive {
         let mut id_ctrl = [0u8; 4096];
         inner.identify(0, 0x01, &mut id_ctrl)?;
         let mdts = id_ctrl[77]; // Maximum Data Transfer Size (log2 of pages)
-        info!("NVMe: IDENTIFY Controller OK, MDTS={}", mdts);
+        warn!("NVMe: IDENTIFY Controller OK, MDTS={}", mdts);
 
         // ── 9. IDENTIFY Namespace 1 ───────────────────────────────────────────
         let mut id_ns = [0u8; 4096];
@@ -540,16 +579,40 @@ impl NvmeDrive {
         let lbaf_offset = 128 + flbas as usize * 4;
         let lbads = id_ns[lbaf_offset + 2]; // data shift
         let lba_size = if lbads >= 9 { 1usize << lbads } else { SECTOR_SIZE };
-        info!("NVMe: ns1 nsze={} lba_size={}", ns_size, lba_size);
+        warn!("NVMe: ns1 nsze={} lba_size={}", ns_size, lba_size);
         inner.ns_size  = ns_size;
         inner.lba_size = lba_size;
 
-        // ── 10. Créer I/O CQ #1 puis I/O SQ #1 ───────────────────────────────
+        // ── 9.5. SET_FEATURES — Number of Queues ─────────────────────────────────
+        // Obligatoire avant CREATE_IO_CQ/SQ. Déclare combien de queues I/O on veut.
+        // NCQR=0 (1 CQ), NSQR=0 (1 SQ) — valeurs 0-based selon la spec NVMe 2.0 §5.27.
+        {
+            let cmd = SubmissionEntry {
+                cdw0:  AdminOpcode::SetFeatures as u32,
+                cdw10: 0x07,         // Feature ID: Number of Queues
+                cdw11: 0x0000_0000,  // NCQR=0 (1 CQ), NSQR=0 (1 SQ)
+                ..Default::default()
+            };
+            match inner.submit_admin(cmd) {
+                Ok(dw0) => {
+                    let ncqa = ((dw0 >> 16) & 0xFFFF) + 1;
+                    let nsqa = (dw0 & 0xFFFF) + 1;
+                    warn!("NVMe: SET_FEATURES Queues OK → controller supports {} CQ / {} SQ",
+                        ncqa, nsqa);
+                }
+                Err(e) => {
+                    // Certains contrôleurs rejettent SET_FEATURES sans que ce soit fatal.
+                    warn!("NVMe: SET_FEATURES Queues: {} (on continue)", e);
+                }
+            }
+        }
+
+        // ── 10. Créer I/O CQ #1 puis I/O SQ #1 ──────────────────────────────────
         let io_cq_phys = inner.io_cq.phys;
         let io_sq_phys = inner.io_sq.phys;
         inner.create_io_cq(1, io_cq_phys, depth)?;
         inner.create_io_sq(1, io_sq_phys, depth, 1)?;
-        info!("NVMe: I/O queues created (depth={})", depth);
+        warn!("NVMe: I/O queues created (depth={})", depth);
 
         let drive = NvmeDrive {
             inner:    Arc::new(Mutex::new(inner)),
@@ -667,7 +730,7 @@ pub fn init_from_pci(pci_dev: &PciDevice) -> Result<Option<NvmeDriveRef>, &'stat
     {
         return Ok(None);
     }
-    info!("NVMe: found device {:04x}:{:04x} at {}", pci_dev.vendor_id, pci_dev.device_id, pci_dev.location);
+    warn!("NVMe: found device {:04x}:{:04x} at {}", pci_dev.vendor_id, pci_dev.device_id, pci_dev.location);
     let drive = NvmeDrive::new(pci_dev)?;
     Ok(Some(drive))
 }

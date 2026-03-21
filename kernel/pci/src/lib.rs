@@ -819,6 +819,11 @@ impl PciDevice {
     /// TODO: currently we assume the BAR represents a memory space (memory mapped I/O) 
     ///       rather than I/O space like Port I/O. Obviously, this is not always the case.
     ///       Instead, we should return an enum specifying which kind of memory space the calculated base address is.
+    pub fn pci_enable_mem_space(&self) {
+        let value = self.pci_read_16(PCI_COMMAND);
+        self.pci_write_16(PCI_COMMAND, value | (1 << 1));
+    }
+
     pub fn determine_mem_base(&self, bar_index: usize) -> Result<PhysicalAddress, &'static str> {
         let mut bar = if let Some(bar_value) = self.bars.get(bar_index) {
             *bar_value
