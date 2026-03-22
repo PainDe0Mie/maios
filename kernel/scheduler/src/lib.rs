@@ -201,12 +201,18 @@ interrupt_handler!(timer_tick_handler, _, _stack_frame, {
     // Unblock any sleeping tasks whose timers have expired.
     sleep::unblock_sleeping_tasks();
 
+    // Pump audio hardware on CPU 0 only (avoids redundant work on other CPUs).
+    // This is lightweight: try_lock + check mixer + maybe refill DMA.
+    if cpu_id == 0 {
+        audio_mixer::pump_hardware();
+    }
+
     // Acknowledge the interrupt BEFORE the potential context switch.
     // (If we switch tasks here we must never return to the IRQ handler.)
     eoi(CPU_LOCAL_TIMER_IRQ);
 
     // Perform preemptive context switch if needed.
-    // rqs is behind RwLock; acquire a read lock.
+    // rqs is behind IrqSafeRwLock; IRQs are masked while the lock is held.
     let need_resched = {
         let rqs = mks::get().rqs.read();
         rqs.get(cpu_id)

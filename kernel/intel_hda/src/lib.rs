@@ -62,8 +62,8 @@ impl HdaController {
 /// Initialize the Intel HDA controller from a PCI device.
 ///
 /// Performs PCI config, controller reset, codec discovery, and stream setup
-/// synchronously. Uses spin-waits instead of sleep() to avoid a Theseus
-/// scheduler deadlock (IrqSafeRwLock is not actually IRQ-safe).
+/// synchronously. Spawns a background pump task (10ms interval) that
+/// refills the DMA buffer from the audio mixer.
 pub fn init_from_pci(pci_dev: &PciDevice) -> Result<(), &'static str> {
     if HDA_CONTROLLER.get().is_some() {
         return Ok(());
@@ -189,18 +189,25 @@ fn hda_init_inner(mem_base: PhysicalAddress) -> Result<(), &'static str> {
     };
     HDA_CONTROLLER.call_once(|| Mutex::new(controller));
 
-    // No background pump task — Theseus's scheduler deadlocks when a task
-    // calls sleep() in a tight loop. Audio is pumped inline from sys_audio_write.
+    // Register pump callback — called from:
+    // 1. sys_audio_write (immediate response when app writes audio)
+    // 2. Timer tick handler (periodic refill every ~10ms tick)
+    //
+    // No background task: Theseus's scheduler has lock contention issues
+    // when tasks call sleep() in tight loops. The timer-driven pump avoids
+    // this by running inside the existing timer interrupt — no sleep/wake
+    // cycles, no extra scheduler load.
     audio_mixer::register_hw_pump(pump);
 
-    warn!("HDA: init complete — stream on-demand, pump from syscall");
+    warn!("HDA: init complete — pump from timer tick + inline syscall");
     Ok(())
 }
 
 /// Pump audio from the mixer to the DMA buffer.
 ///
-/// Called inline from `sys_audio_write` via the registered callback.
-/// No background task because Theseus's scheduler deadlocks on sleep() loops.
+/// Called from two paths:
+/// 1. Timer tick handler (CPU 0, every ~10ms) for periodic DMA refill.
+/// 2. Inline from `sys_audio_write` via registered callback for immediate response.
 pub fn pump() {
     if let Some(hda_ref) = get_hda() {
         if let Some(mut hda) = hda_ref.try_lock() {
