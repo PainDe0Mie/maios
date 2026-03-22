@@ -59,16 +59,9 @@ pub fn init(
         .idle(cpu_id)
         .spawn_restartable(None)?.0;
 
-    cfg_if::cfg_if! {
-        if #[cfg(epoch_scheduler)] {
-            let scheduler = scheduler_epoch::Scheduler::new(idle_task);
-        } else if #[cfg(priority_scheduler)] {
-            let scheduler = scheduler_priority::Scheduler::new(idle_task);
-        } else {
-            let scheduler = scheduler_round_robin::Scheduler::new(idle_task);
-        }
-    }
-    task::scheduler::set_policy(cpu_id, scheduler);
+    // Register the idle task in MKS (per-CPU idle run queue).
+    task::scheduler::register_idle_task(cpu_id, idle_task.clone());
+    // Enqueue the bootstrap task on this CPU so it gets scheduled.
     task::scheduler::add_task_to(cpu_id, exitable_bootstrap_task.0.clone());
 
     Ok(BootstrapTaskRef {
@@ -351,6 +344,7 @@ impl<F, A, R> TaskBuilder<F, A, R>
         // Mark as idle task if requested.
         if self.idle {
             new_task.is_an_idle_task = true;
+            new_task.sched.policy = task_struct::SchedClass::Idle;
         }
 
         // Call the post-build hook if provided.

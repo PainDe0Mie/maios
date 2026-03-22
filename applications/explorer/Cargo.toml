@@ -35,3 +35,6 @@ path = "../../kernel/window_manager"
 
 [dependencies.scheduler]
 path = "../../kernel/scheduler"
+
+[dependencies.sleep]
+path = "../../kernel/sleep"

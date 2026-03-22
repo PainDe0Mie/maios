@@ -325,10 +325,60 @@ pub fn init(
     exceptions_full::init(idt);
 
     // =========================================================================
-    // Step 10 — AP (secondary CPU) bringup
+    // Step 10a — MKS phase-2: pre-expand run queues for all CPUs
+    //
+    // We MUST create per-CPU run queues BEFORE waking the APs, because each
+    // AP calls spawn::init() → register_idle_task(cpu_id) + add_task_to(cpu_id)
+    // during its bringup. If the run queue doesn't exist yet, those tasks
+    // are silently lost and the AP loops forever ("bootstrap task rescheduled
+    // after being dead").
+    //
+    // We count the expected CPUs from MADT (same source multicore_bringup uses).
+    // =========================================================================
+    #[cfg(target_arch = "x86_64")]
+    let total_cpus_expected = {
+        let acpi_tables = acpi::get_acpi_tables().lock();
+        let total = match madt::Madt::get(&acpi_tables) {
+            Some(madt) => {
+                let mut count: u32 = 0;
+                for entry in madt.iter() {
+                    let flags = match entry {
+                        madt::MadtEntry::LocalApic(e) => e.flags,
+                        madt::MadtEntry::LocalX2Apic(e) => e.flags,
+                        _ => continue,
+                    };
+                    if flags & 0x1 == 0x1 {
+                        count += 1;
+                    }
+                }
+                count
+            }
+            None => {
+                warn!("MADT not found — assuming single CPU");
+                1
+            }
+        };
+        total as usize
+    };
+    #[cfg(not(target_arch = "x86_64"))]
+    let total_cpus_expected: usize = 1;
+
+    {
+        let topology = discover_cpu_topology(total_cpus_expected);
+        scheduler::expand_to_all_cpus(total_cpus_expected, topology)
+            .map_err(|e| { error!("MKS phase-2 pre-expand failed: {}", e); e })?;
+        info!(
+            "MKS phase-2: pre-expanded to {} CPUs (from MADT), work-stealing active",
+            total_cpus_expected
+        );
+    }
+
+    // =========================================================================
+    // Step 10b — AP (secondary CPU) bringup
     //
     // Wakes all secondary CPUs, gives each one its own bootstrap stack,
     // and waits until every AP has checked in with the scheduler.
+    // Now safe: per-CPU run queues already exist for all CPUs.
     // =========================================================================
     let ap_count = multicore_bringup::handle_ap_cores(
         &kernel_mmi_ref,
@@ -338,27 +388,9 @@ pub fn init(
     info!("All {} APs online — {} total CPUs", ap_count, cpu_count);
 
     // =========================================================================
-    // Step 11 — MKS phase-2: expand to all CPUs + calibrate TSC
-    //
-    // Now that we know the final CPU count and have ACPI topology data,
-    // we reinitialize MKS with:
-    //   a) The full per-CPU run queues (one per logical CPU).
-    //   b) The real CPU topology (for cache-aware work stealing).
-    //   c) Calibrated TSC for accurate elapsed-time measurement.
-    //
-    // This call is idempotent: it reuses any tasks already enqueued on the
-    // BSP's run queue (the bootstrap task) by migrating them into the new
-    // multi-CPU scheduler.
+    // Step 11 — TSC calibration
     // =========================================================================
     {
-        let topology = discover_cpu_topology(cpu_count as usize);
-        scheduler::expand_to_all_cpus(cpu_count as usize, topology)
-            .map_err(|e| { error!("MKS phase-2 expand failed: {}", e); e })?;
-        info!(
-            "MKS phase-2: expanded to {} CPUs, work-stealing active",
-            cpu_count
-        );
-
         // Calibrate TSC → ns conversion for tick accounting.
         #[cfg(target_arch = "x86_64")]
         if let Some(ticks_per_ms) = tsc_ticks_per_ms {

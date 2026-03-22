@@ -227,8 +227,10 @@ impl MaiScheduler {
     pub fn enqueue(&self, task: TaskRef) {
         let cpu_id = self.select_cpu_for_task(&task);
         let rqs = self.rqs.read();
-        rqs[cpu_id].enqueue(task);
-        self.global_task_count.fetch_add(1, Ordering::Relaxed);
+        if let Some(rq) = rqs.get(cpu_id) {
+            rq.enqueue(task);
+            self.global_task_count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Dequeue a task from whichever CPU it is queued on.
@@ -251,10 +253,13 @@ impl MaiScheduler {
     ///
     /// If the local queue is empty, attempt work stealing before returning idle.
     pub fn pick_next(&self, cpu_id: usize) -> Option<TaskRef> {
-        debug_assert!(cpu_id < self.cpu_count(), "MKS: invalid cpu_id {}", cpu_id);
-
         let rqs = self.rqs.read();
-        let rq = &rqs[cpu_id];
+        // During early boot, APs may call schedule() before expand_to_all_cpus().
+        // Return None if this CPU's run queue doesn't exist yet.
+        let rq = match rqs.get(cpu_id) {
+            Some(rq) => rq,
+            None => return None,
+        };
 
         // --- 1. Deadline class (highest priority) ---
         if let Some(t) = rq.deadline_rq.lock().pick_next() {
