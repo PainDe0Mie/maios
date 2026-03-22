@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 log = "0.4.8"
+pte_flags = { path = "../../kernel/pte_flags" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 spin = "0.9.4"

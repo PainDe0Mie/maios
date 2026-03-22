@@ -1,16 +1,12 @@
-//! Socket syscalls for MaiOS — real implementation backed by smoltcp.
-//!
-//! Supports AF_INET (IPv4) with SOCK_STREAM (TCP) and SOCK_DGRAM (UDP).
-//! Sockets are stored in the per-task ResourceTable as `Resource::Socket`.
+//! Socket syscalls for MaiOS — real TCP/UDP via smoltcp.
 
-use crate::error::{SyscallResult, SyscallError};
-use crate::resource::{self, Resource, SocketKind};
 use alloc::sync::Arc;
+use crate::error::{SyscallResult, SyscallError};
 use net::NetworkInterface;
+use smoltcp::wire::{IpAddress, Ipv4Address, IpEndpoint, IpListenEndpoint};
 use smoltcp::socket::{tcp, udp};
-use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint, Ipv4Address};
+use crate::resource::{self, Resource, SocketKind};
 
-// Linux constants
 const AF_INET: u64 = 2;
 const SOCK_STREAM: u64 = 1;
 const SOCK_DGRAM: u64 = 2;
@@ -588,56 +584,11 @@ pub fn sys_socketpair(_domain: u64, _type_: u64, _protocol: u64, _sv: u64, _: u6
     Err(SyscallError::NotImplemented)
 }
 
-// ─── sys_sendmsg / sys_recvmsg ───────────────────────────────────────────────
 
-pub fn sys_sendmsg(fd: u64, msg: u64, flags: u64, _: u64, _: u64, _: u64) -> SyscallResult {
-    // Simplified: extract iov from msghdr and call sendto
-    if msg == 0 {
-        return Err(SyscallError::InvalidArgument);
-    }
-    unsafe {
-        let msghdr = msg as *const u8;
-        // struct msghdr { msg_name, msg_namelen, msg_iov, msg_iovlen, ... }
-        // offsets: name=0, namelen=8, iov=16, iovlen=24
-        let iov_ptr = *(msghdr.add(16) as *const u64);
-        let iov_len = *(msghdr.add(24) as *const u64);
-        let dest_addr = *(msghdr as *const u64);
-        let dest_len = *(msghdr.add(8) as *const u32) as u64;
-
-        let mut total = 0u64;
-        for i in 0..iov_len {
-            let iov = (iov_ptr as *const u8).add(i as usize * 16);
-            let base = *(iov as *const u64);
-            let len = *(iov.add(8) as *const u64);
-            let sent = sys_sendto(fd, base, len, flags, dest_addr, dest_len)?;
-            total += sent;
-        }
-        Ok(total)
-    }
+pub fn sys_sendmsg(_fd: u64, _msg: u64, _flags: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    Err(SyscallError::BadFileDescriptor)
 }
 
-pub fn sys_recvmsg(fd: u64, msg: u64, flags: u64, _: u64, _: u64, _: u64) -> SyscallResult {
-    if msg == 0 {
-        return Err(SyscallError::InvalidArgument);
-    }
-    unsafe {
-        let msghdr = msg as *const u8;
-        let iov_ptr = *(msghdr.add(16) as *const u64);
-        let iov_len = *(msghdr.add(24) as *const u64);
-        let src_addr = *(msghdr as *const u64);
-        let src_len_ptr = msghdr.add(8) as u64;
-
-        let mut total = 0u64;
-        for i in 0..iov_len {
-            let iov = (iov_ptr as *const u8).add(i as usize * 16);
-            let base = *(iov as *const u64);
-            let len = *(iov.add(8) as *const u64);
-            let received = sys_recvfrom(fd, base, len, flags, src_addr, src_len_ptr)?;
-            total += received;
-            if (received as u64) < len {
-                break; // Short read
-            }
-        }
-        Ok(total)
-    }
+pub fn sys_recvmsg(_fd: u64, _msg: u64, _flags: u64, _: u64, _: u64, _: u64) -> SyscallResult {
+    Err(SyscallError::BadFileDescriptor)
 }

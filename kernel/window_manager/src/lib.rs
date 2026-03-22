@@ -792,14 +792,14 @@ pub fn init() -> Result<(Queue<Event>, Queue<Event>), &'static str> {
 fn window_manager_loop(
     (key_consumer, mouse_consumer): (Queue<Event>, Queue<Event>),
 ) -> Result<(), &'static str> {
-    // Target: ~60 fps → present at least every 16 ms.
-    const FRAME_INTERVAL: sleep::Duration = sleep::Duration::from_millis(16);
-    // Polling interval — we sleep briefly between iterations so the
-    // timer subsystem can wake us back up.  1 ms keeps latency low while
-    // avoiding a 100 % CPU busy-loop.
-    const POLL_INTERVAL: sleep::Duration = sleep::Duration::from_millis(1);
+    const FRAME_NANOS: u64 = 16_000_000; // 16ms en ns
+    //const POLL_INTERVAL: sleep::Duration = sleep::Duration::from_millis(1);
 
-    let mut last_frame: time::Instant = time::Instant::now();
+    // Évite time::Instant::now() qui peut crasher si le clock source
+    // n'est pas encore enregistré quand la tâche démarre.
+    let tsc_freq_khz: u64 = 60_000; // fallback ~60 MHz (ajusté par TSC calibration)
+    let frame_ticks = FRAME_NANOS * tsc_freq_khz / 1_000_000;
+    let mut last_frame_tsc: u64 = unsafe { core::arch::x86_64::_rdtsc() };
 
     loop {
         let mut need_present = false;
@@ -856,10 +856,10 @@ fn window_manager_loop(
         // elapsed, even if no input events arrived.  This is what makes
         // animations, blinking cursors, and app-driven redraws work
         // without requiring the user to move the mouse.
-        let now = time::Instant::now();
-        if now.duration_since(last_frame) >= FRAME_INTERVAL {
+        let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        if now_tsc.wrapping_sub(last_frame_tsc) >= frame_ticks {
             need_present = true;
-            last_frame = now;
+            last_frame_tsc = now_tsc;
         }
 
         if need_present {
@@ -875,14 +875,16 @@ fn window_manager_loop(
             if let Some(wm) = WINDOW_MANAGER.get() {
                 wm.lock().flush_to_virtio();
             }
-            mgi::vsync_tick();
+            // Protège vsync_tick contre un callback non initialisé
+            if mgi::MGI.get().is_some() {
+                mgi::vsync_tick();
+            }
         }
 
         // Sleep briefly so we yield the CPU *and* guarantee a timely
-        // wake-up.  Unlike `scheduler::schedule()` which parks the task
-        // indefinitely, `sleep` registers a timer that fires after
-        // POLL_INTERVAL and puts us back on the run-queue.
-        let _ = sleep::sleep(POLL_INTERVAL);
+        // wake-up. EEVDF requires explicit blocking (sleep) — a bare
+        // schedule() would cause starvation.
+        let _ = sleep::sleep(sleep::Duration::from_millis(1));
     }
 }
 

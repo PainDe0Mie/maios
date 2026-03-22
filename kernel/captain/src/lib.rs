@@ -86,7 +86,7 @@ fn init_swap() {
             (locked.size_in_blocks() / 2048).saturating_sub(1)
         };
         memory_swap::init(device, swap_mb);
-        info!("Swap initialized: {} MB", swap_mb);
+        warn!("Swap initialized: {} MB", swap_mb);
     } else {
         warn!("Swap: no storage device found, running without swap");
     }
@@ -151,7 +151,7 @@ fn discover_cpu_topology(cpu_count: usize) -> mks::topology::CpuTopology {
         .collect();
 
     if entries.len() > 1 {
-        info!(
+        warn!(
             "MKS: topology discovered — {} CPUs, {} unique cores",
             entries.len(),
             {
@@ -211,7 +211,7 @@ pub fn init(
             time::register_clock_source::<tsc::Tsc>(period);
             let ticks_per_ms = 1_000_000_000_000u64.checked_div(period.into());
             if let Some(t) = ticks_per_ms {
-                info!("TSC calibrated: {} ticks/ms (~{} MHz)", t, t / 1_000);
+                warn!("TSC calibrated: {} ticks/ms (~{} MHz)", t, t / 1_000);
             } else {
                 warn!("TSC period is zero — skipping TSC clock registration");
             }
@@ -291,7 +291,7 @@ pub fn init(
     // =========================================================================
     scheduler::init_single_cpu()
         .map_err(|e| { error!("MKS phase-1 init failed: {}", e); e })?;
-    info!("MKS phase-1: single-CPU EEVDF scheduler active on BSP (CPU {})", bsp_id);
+    warn!("MKS phase-1: single-CPU EEVDF scheduler active on BSP (CPU {})", bsp_id);
 
     // =========================================================================
     // Step 8 — Kernel namespace + bootstrap task
@@ -312,7 +312,7 @@ pub fn init(
         kernel_namespace,
         kernel_env,
     )?;
-    info!("Bootstrap task created: {:?}", bootstrap_task);
+    warn!("Bootstrap task created: {:?}", bootstrap_task);
 
     // =========================================================================
     // Step 9 — Full exception handlers (x86_64)
@@ -385,7 +385,7 @@ pub fn init(
         multicore_info,
     )?;
     let cpu_count = ap_count + 1;
-    info!("All {} APs online — {} total CPUs", ap_count, cpu_count);
+    warn!("All {} APs online — {} total CPUs", ap_count, cpu_count);
 
     // =========================================================================
     // Step 11 — TSC calibration
@@ -395,7 +395,7 @@ pub fn init(
         #[cfg(target_arch = "x86_64")]
         if let Some(ticks_per_ms) = tsc_ticks_per_ms {
             scheduler::calibrate_tsc(ticks_per_ms);
-            info!("MKS: TSC calibration applied ({} ticks/ms)", ticks_per_ms);
+            warn!("MKS: TSC calibration applied ({} ticks/ms)", ticks_per_ms);
         } else {
             warn!("MKS: TSC not calibrated — using approximate 3 GHz default");
         }
@@ -419,7 +419,7 @@ pub fn init(
     // address spaces.
     // =========================================================================
     tlb_shootdown::init();
-    info!("TLB shootdown initialized");
+    warn!("TLB shootdown initialized");
 
     // =========================================================================
     // Step 14 — Per-core heaps (x86_64)
@@ -430,7 +430,7 @@ pub fn init(
     // =========================================================================
     #[cfg(target_arch = "x86_64")] {
         multiple_heaps::switch_to_multiple_heaps()?;
-        info!("Per-core heaps initialized ({} heaps)", cpu_count);
+        warn!("Per-core heaps initialized ({} heaps)", cpu_count);
     }
 
     // =========================================================================
@@ -443,7 +443,7 @@ pub fn init(
     if page_attribute_table::init().is_err() {
         error!("PAT not supported on this CPU — write-combining disabled for MGI");
     } else {
-        info!("PAT initialized — write-combining enabled for MGI framebuffer");
+        warn!("PAT initialized — write-combining enabled for MGI framebuffer");
     }
 
     // =========================================================================
@@ -456,7 +456,7 @@ pub fn init(
     match window_manager::init() {
         Ok((key_producer, mouse_producer)) => {
             device_manager::init(key_producer, mouse_producer)?;
-            info!("MGI window manager and input devices initialized");
+            warn!("MGI window manager and input devices initialized");
         }
         Err(e) => {
             error!("Window manager init failed (expected in --nographic): {}", e);
@@ -473,7 +473,7 @@ pub fn init(
     // e.g., /task/<id>/state, /task/<id>/sched_policy, etc.
     // =========================================================================
     task_fs::init()?;
-    info!("Task filesystem initialized");
+    warn!("Task filesystem initialized");
 
     // =========================================================================
     // Step 18 — SIMD personality (conditional compile feature)
@@ -496,7 +496,7 @@ pub fn init(
     // Swap allows the memory manager to evict cold pages to disk when RAM
     // is under pressure (part of MVA — Mai Virtual Allocator).
     // =========================================================================
-    info!("Initializing swap...");
+    warn!("Initializing swap...");
     init_swap();
 
     // =========================================================================
@@ -509,7 +509,7 @@ pub fn init(
     // =========================================================================
     #[cfg(target_arch = "x86_64")]
     match syscall::init() {
-        Ok(()) => info!("MEB syscall subsystem initialized (Linux + Windows NT + MaiOS)"),
+        Ok(()) => warn!("MEB syscall subsystem initialized (Linux + Windows NT + MaiOS)"),
         Err(e) => error!("MEB syscall init failed: {} — userspace binaries will not run", e),
     }
 
@@ -541,7 +541,7 @@ pub fn init(
     //
     // ORDER MATTERS. See comments on each step.
     // =========================================================================
-    info!(
+    warn!(
         "captain::init(): initialization done! \
          BSP CPU {} going idle. Enabling interrupts...",
         bsp_id
@@ -554,20 +554,27 @@ pub fn init(
     drop_after_init.drop_all();
 
     // 3. Mark all bootstrap tasks (BSP + APs) as finished.
+    // spawn::cleanup_bootstrap_tasks(cpu_count)?;
+
+    // // 4. Mark THIS bootstrap task as finished.
+    // bootstrap_task.finish();
+
+    // // 5. Enable interrupts — from this point, other tasks can be scheduled.
+    // enable_interrupts();
+
+    // // ****************************************************
+    // // NOTE: nothing below here is guaranteed to run again!
+    // // ****************************************************
+
+    // // Yield to the scheduler. The bootstrap task is dead; it will not be
+    // // rescheduled. The idle task for this CPU takes over.
+    // scheduler::schedule();
+
     spawn::cleanup_bootstrap_tasks(cpu_count)?;
-
-    // 4. Mark THIS bootstrap task as finished.
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    for _ in 0..100_000 { core::hint::spin_loop(); }
     bootstrap_task.finish();
-
-    // 5. Enable interrupts — from this point, other tasks can be scheduled.
     enable_interrupts();
-
-    // ****************************************************
-    // NOTE: nothing below here is guaranteed to run again!
-    // ****************************************************
-
-    // Yield to the scheduler. The bootstrap task is dead; it will not be
-    // rescheduled. The idle task for this CPU takes over.
     scheduler::schedule();
 
     // Should never reach here.
@@ -592,7 +599,7 @@ pub fn init(
 fn spawn_mks_stats_daemon() -> Result<(), &'static str> {
     use core::sync::atomic::{AtomicBool, Ordering};
 
-    info!("MKS: spawning stats daemon (SCHED_BATCH, nice +19)");
+    warn!("MKS: spawning stats daemon (SCHED_BATCH, nice +19)");
 
     let task = spawn::new_task_builder(move |_: ()| -> isize {
         loop {
@@ -612,6 +619,6 @@ fn spawn_mks_stats_daemon() -> Result<(), &'static str> {
         task.write().sched.update_weight();
     }
 
-    info!("MKS stats daemon spawned (task id={})", task.read().id);
+    warn!("MKS stats daemon spawned (task id={})", task.read().id);
     Ok(())
 }

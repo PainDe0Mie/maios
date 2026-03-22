@@ -648,18 +648,15 @@ impl Shell {
             .map(|f| f.lock().get_absolute_path())
             .ok_or(AppErr::NotFound(cmd))?;
 
-        log::warn!("shell: spawning app '{}'", app_path);
         let new_ns = mod_mgmt::create_application_namespace(None)
             .map_err(|e| AppErr::SpawnErr(e.to_string()))?;
-        log::warn!("shell: namespace created, building task");
         let taskref = spawn::new_application_task_builder(app_path.as_ref(), Some(new_ns))
-            .map_err(|e| { log::warn!("shell: task build failed: {}", e); AppErr::SpawnErr(e.to_string()) })?
+            .map_err(|e| AppErr::SpawnErr(e.to_string()))?
             .argument(args)
             .env(self.env.clone())
             .block()
             .spawn()
-            .map_err(|e| { log::warn!("shell: spawn failed: {}", e); AppErr::SpawnErr(e.to_string()) })?;
-        log::warn!("shell: task spawned id={}", taskref.id);
+            .map_err(|e| AppErr::SpawnErr(e.to_string()))?;
 
         // Gets the task id so we can reference this task if we need to kill it with Ctrl+C
         Ok(taskref)

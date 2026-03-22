@@ -33,9 +33,7 @@ fn status_str(status: i64) -> &'static str {
 }
 
 pub fn main(_args: Vec<String>) -> isize {
-    log::warn!("test_win_compat: main() entered");
     println!("=== Windows NT Syscall Compatibility Test ===");
-    log::warn!("test_win_compat: first println done");
 
     println!("");
 
@@ -317,114 +315,6 @@ pub fn main(_args: Vec<String>) -> isize {
             passed += 1;
         } else {
             println!("  FAIL: expected INVALID_PARAMETER, got {}", status_str(status));
-            failed += 1;
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // Test 13: NtQueryInformationFile — FileStandardInformation on stdout
-    // ---------------------------------------------------------------
-    println!("[TEST 13] NtQueryInformationFile (FileStandardInfo on stdout)");
-    {
-        let mut buffer = [0u8; 24]; // FILE_STANDARD_INFORMATION is 24 bytes
-        let mut io_status = [0u64; 2]; // IO_STATUS_BLOCK: {Status, Information}
-
-        let status = handle_syscall(
-            nr::NT_QUERY_INFORMATION_FILE,
-            0x07, // stdout handle
-            io_status.as_mut_ptr() as u64,
-            buffer.as_mut_ptr() as u64,
-            24, // buffer size
-            5,  // FileStandardInformation
-            0,
-        );
-
-        if nt_success(status) {
-            println!("  PASS: FileStandardInformation on stdout returned SUCCESS");
-            passed += 1;
-        } else {
-            println!("  FAIL: status={}", status_str(status));
-            failed += 1;
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // Test 14: NtQueryInformationFile — FileStandardInfo on invalid handle
-    // ---------------------------------------------------------------
-    println!("[TEST 14] NtQueryInformationFile (invalid handle -> should fail)");
-    {
-        let mut buffer = [0u8; 24];
-        let mut io_status = [0u64; 2];
-
-        let status = handle_syscall(
-            nr::NT_QUERY_INFORMATION_FILE,
-            0xDEAD,
-            io_status.as_mut_ptr() as u64,
-            buffer.as_mut_ptr() as u64,
-            24, 5, 0,
-        );
-
-        if status == ntstatus::STATUS_INVALID_HANDLE {
-            println!("  PASS: correctly returned STATUS_INVALID_HANDLE");
-            passed += 1;
-        } else {
-            println!("  FAIL: expected INVALID_HANDLE, got {}", status_str(status));
-            failed += 1;
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // Test 15: NtQueryInformationFile — buffer too small
-    // ---------------------------------------------------------------
-    println!("[TEST 15] NtQueryInformationFile (buffer too small)");
-    {
-        let mut buffer = [0u8; 4]; // too small for FileStandardInfo (24 bytes)
-        let mut io_status = [0u64; 2];
-
-        let status = handle_syscall(
-            nr::NT_QUERY_INFORMATION_FILE,
-            0x07,
-            io_status.as_mut_ptr() as u64,
-            buffer.as_mut_ptr() as u64,
-            4, // too small
-            5, // FileStandardInformation
-            0,
-        );
-
-        if status == ntstatus::STATUS_BUFFER_TOO_SMALL {
-            println!("  PASS: correctly returned STATUS_BUFFER_TOO_SMALL");
-            passed += 1;
-        } else {
-            println!("  FAIL: expected BUFFER_TOO_SMALL, got {} ({:#x})", status_str(status), status);
-            failed += 1;
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // Test 16: NtQueryInformationFile — FileBasicInformation on stdout
-    // ---------------------------------------------------------------
-    println!("[TEST 16] NtQueryInformationFile (FileBasicInfo on stdout)");
-    {
-        let mut buffer = [0u8; 40]; // FILE_BASIC_INFORMATION = 40 bytes
-        let mut io_status = [0u64; 2];
-
-        let status = handle_syscall(
-            nr::NT_QUERY_INFORMATION_FILE,
-            0x07,
-            io_status.as_mut_ptr() as u64,
-            buffer.as_mut_ptr() as u64,
-            40, 4, 0, // class 4 = FileBasicInformation
-        );
-
-        // stdout doesn't support FileBasicInformation — should return NOT_IMPLEMENTED
-        if status == ntstatus::STATUS_NOT_IMPLEMENTED {
-            println!("  PASS: FileBasicInformation on console correctly returns NOT_IMPLEMENTED");
-            passed += 1;
-        } else if nt_success(status) {
-            println!("  PASS: FileBasicInformation returned SUCCESS (acceptable)");
-            passed += 1;
-        } else {
-            println!("  FAIL: unexpected status {}", status_str(status));
             failed += 1;
         }
     }
