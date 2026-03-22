@@ -17,7 +17,7 @@
 
 extern crate alloc;
 
-use log::{info, error, warn};
+use log::{info, error, warn, debug};
 use alloc::format;
 
 use deferred_interrupt_tasks::InterruptRegistrationError;
@@ -336,7 +336,7 @@ fn serial_port_receive_deferred(
     }
 
     if let Err(e) = send_result {
-        error!("Failed to send data received for serial port at {:?}: {:?}.", base_port, e.1);
+        debug!("Failed to send data received for serial port at {:?}: {:?}.", base_port, e.1);
     }
 
     if input_was_ignored {
