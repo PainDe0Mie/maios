@@ -229,7 +229,7 @@ pub fn sys_prlimit64(_pid: u64, resource: u64, _new_limit: u64, old_limit: u64, 
 
 /// sys_sched_yield — voluntarily give up the CPU.
 pub fn sys_sched_yield(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> SyscallResult {
-    scheduler::schedule();
+    let _ = sleep::sleep(sleep::Duration::from_millis(1));
     Ok(0)
 }
 

@@ -93,7 +93,7 @@ where
             return result;
         }
         // Yield to other tasks
-        task::schedule();
+        let _ = sleep::sleep(sleep::Duration::from_millis(1));
     }
     Err(SyscallError::WouldBlock)
 }
@@ -368,7 +368,7 @@ pub fn sys_sendto(fd: u64, buf: u64, len: u64, _flags: u64, dest_addr: u64, addr
                     }
                 }
                 drop(sockets);
-                task::schedule();
+                let _ = sleep::sleep(sleep::Duration::from_millis(1));
             }
             if sent > 0 { Ok(sent as u64) } else { Err(SyscallError::WouldBlock) }
         }
@@ -400,7 +400,7 @@ pub fn sys_sendto(fd: u64, buf: u64, len: u64, _flags: u64, dest_addr: u64, addr
                     return Ok(len);
                 }
                 drop(sockets);
-                task::schedule();
+                let _ = sleep::sleep(sleep::Duration::from_millis(1));
             }
             Err(SyscallError::WouldBlock)
         }
@@ -440,7 +440,7 @@ pub fn sys_recvfrom(fd: u64, buf: u64, len: u64, _flags: u64, src_addr: u64, add
                     return Ok(0);
                 }
                 drop(sockets);
-                task::schedule();
+                let _ = sleep::sleep(sleep::Duration::from_millis(1));
             }
             Err(SyscallError::WouldBlock)
         }
@@ -461,7 +461,7 @@ pub fn sys_recvfrom(fd: u64, buf: u64, len: u64, _flags: u64, src_addr: u64, add
                     }
                 }
                 drop(sockets);
-                task::schedule();
+                let _ = sleep::sleep(sleep::Duration::from_millis(1));
             }
             Err(SyscallError::WouldBlock)
         }

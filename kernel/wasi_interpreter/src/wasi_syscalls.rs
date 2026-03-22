@@ -25,6 +25,7 @@ use fs_node::{DirRef, FileOrDir};
 use wasmi::{MemoryRef, RuntimeArgs, RuntimeValue, Trap};
 extern crate vfs_node;
 extern crate scheduler;
+extern crate sleep;
 extern crate path;
 
 
@@ -711,7 +712,7 @@ pub fn execute_system_call(
         // ── BATCH 1 ─────────────────────────────────────────────────────────
 
         SystemCall::SchedYield => {
-            scheduler::schedule();
+            let _ = sleep::sleep(sleep::Duration::from_millis(1));
             Ok(Some(RuntimeValue::I32(From::from(wasi::ERRNO_SUCCESS))))
         }
 
@@ -926,7 +927,7 @@ pub fn execute_system_call(
 
         SystemCall::PollOneoff => {
             let nevents_ptr: u32 = wasmi_args.nth_checked(3).unwrap();
-            scheduler::schedule();
+            let _ = sleep::sleep(sleep::Duration::from_millis(1));
             memory.set(nevents_ptr, &0u32.to_le_bytes()).unwrap();
             Ok(Some(RuntimeValue::I32(From::from(wasi::ERRNO_SUCCESS))))
         }

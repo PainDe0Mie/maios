@@ -20,6 +20,7 @@ extern crate spawn;
 extern crate path;
 extern crate heapfile;
 extern crate scheduler;
+extern crate sleep;
 extern crate libtest;
 extern crate memory;
 extern crate rendezvous;
@@ -1693,7 +1694,7 @@ fn print_header(tries: usize, iterations: usize) {
 fn yield_task(_a: u32) -> u32 {
 	let times = ITERATIONS*1000;
     for _i in 0..times {
-       scheduler::schedule();
+       let _ = sleep::sleep(sleep::Duration::from_millis(1));
     }
     _a
 }

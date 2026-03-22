@@ -16,6 +16,7 @@ shapes = { path = "../../kernel/shapes" }
 spawn = { path = "../../kernel/spawn" }
 task = { path = "../../kernel/task" }
 scheduler = { path = "../../kernel/scheduler" }
+sleep = { path = "../../kernel/sleep" }
 
 [dependencies.event_types]
 path = "../../kernel/event_types"

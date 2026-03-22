@@ -6,6 +6,7 @@ extern crate color;
 extern crate shapes;
 extern crate event_types;
 extern crate scheduler;
+extern crate sleep;
 
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -60,10 +61,10 @@ pub fn main(_args: Vec<String>) -> isize {
                 }
             }
             Ok(None) => {
-                let _ = scheduler::schedule();
+                let _ = sleep::sleep(sleep::Duration::from_millis(16));
             }
             Err(_) => {
-                let _ = scheduler::schedule();
+                let _ = sleep::sleep(sleep::Duration::from_millis(16));
             }
         }
     }

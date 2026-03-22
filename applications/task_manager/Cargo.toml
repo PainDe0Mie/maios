@@ -20,6 +20,7 @@ window          = { path = "../../kernel/window"          }
 window_manager  = { path = "../../kernel/window_manager"  }
 frame_allocator = { path = "../../kernel/frame_allocator" }
 scheduler       = { path = "../../kernel/scheduler"       }
+sleep           = { path = "../../kernel/sleep"          }
 event_types     = { path = "../../kernel/event_types"     }
 keycodes_ascii  = { path = "../../libs/keycodes_ascii"    }
 memory_swap     = { path = "../../kernel/memory_swap"     }
