@@ -482,7 +482,7 @@ libtheseus: theseus_cargo $(ROOT_DIR)/libtheseus/Cargo.* $(ROOT_DIR)/libtheseus/
 
 
 ### This target builds the `theseus_cargo` tool as a dedicated binary.
-theseus_cargo: $(wildcard $(THESEUS_CARGO)/Cargo.*)  $(wildcard$(THESEUS_CARGO)/src/*)
+theseus_cargo: $(wildcard $(THESEUS_CARGO)/Cargo.*) $(wildcard $(THESEUS_CARGO)/src/*)
 	@echo -e "\n=================== Building the theseus_cargo tool ==================="
 	cargo install --locked --force --path=$(THESEUS_CARGO) --root=$(THESEUS_CARGO)
 
