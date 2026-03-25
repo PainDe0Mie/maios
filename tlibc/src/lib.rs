@@ -1,4 +1,9 @@
-//! A libc implementation that is targeted for and runs atop Theseus. 
+//! MaiOS libc — a POSIX-compatible C standard library for MaiOS.
+//!
+//! Provides malloc/free, FILE* I/O, pthreads, time, signals, ctype, dirent,
+//! setjmp/longjmp, dlopen/dlsym, and 200+ C standard library functions.
+//!
+//! Built on top of Theseus kernel APIs (single-address-space, kernel-mode).
 
 #![no_std]
 #![feature(ptr_internals)]
@@ -11,11 +16,11 @@
 // Allowances for C-style syntax.
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
+#![allow(unused_unsafe)]
 
 // Needed for "staticlib" crate-type only
 extern crate panic_entry;
 extern crate heap;
-
 
 extern crate alloc;
 #[macro_use] extern crate log;
@@ -27,8 +32,17 @@ extern crate memory;
 extern crate task;
 extern crate cstr_core;
 extern crate core2;
+extern crate app_io;
+extern crate path;
+extern crate root;
+extern crate fs_node;
+extern crate vfs_node;
+extern crate spawn;
+extern crate scheduler;
+extern crate time;
+extern crate sleep;
 
-
+// Core modules (original)
 mod errno;
 mod io;
 mod globals;
@@ -36,6 +50,17 @@ mod stdio;
 mod stdlib;
 mod string;
 mod mm;
+
+// New modules
+pub mod ctype;
+pub mod file_io;
+pub mod unistd;
+pub mod time_funcs;
+pub mod pthread;
+pub mod dirent;
+pub mod signal_funcs;
+pub mod dlfcn;
+pub mod setjmp;
 
 
 use alloc::vec::Vec;
