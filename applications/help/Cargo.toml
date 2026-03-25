@@ -8,7 +8,7 @@ edition = "2021"
 app_io = { path = "../../kernel/app_io" }
 task   = { path = "../../kernel/task" }
 fs_node = { path = "../../kernel/fs_node" }
-getopts = { git = "https://github.com/AltOS-Rust/getopts" }
+getopts = "0.2.21"
 
 [lib]
 crate-type = ["rlib"]

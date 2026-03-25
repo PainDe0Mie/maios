@@ -12,7 +12,7 @@ path        = { path = "../../kernel/path" }
 spawn       = { path = "../../kernel/spawn" }
 mod_mgmt    = { path = "../../kernel/mod_mgmt" }
 elf_loader  = { path = "../../kernel/elf_loader" }
-getopts     = { git = "https://github.com/AltOS-Rust/getopts" }
+getopts     = "0.2.21"
 memory      = { path = "../../kernel/memory" }
 scheduler   = { path = "../../kernel/scheduler" }
 
