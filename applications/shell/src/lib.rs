@@ -114,8 +114,9 @@ pub fn main(_args: Vec<String>) -> isize {
     let _ = sleep::sleep(sleep::Duration::from_millis(16));
 
     loop {
-        warn!("BUG: blocked shell task was scheduled in unexpectedly");
-        let _ = sleep::sleep(sleep::Duration::from_millis(16));
+        // Re-block and sleep — the scheduler may spuriously wake us.
+        let _ = task::with_current_task(|t| t.block());
+        let _ = sleep::sleep(sleep::Duration::from_secs(1));
     }
 
     // TODO: when `join` puts this task to sleep instead of spinning, we can re-enable it.
