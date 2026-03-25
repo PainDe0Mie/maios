@@ -46,7 +46,7 @@ pub mod stats;
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
-use spin::RwLock;
+use sync_irq::IrqSafeRwLock;
 
 use task::TaskRef;
 use task_struct::{Task, RunState};
@@ -130,8 +130,8 @@ pub fn weight_for_nice(nice: i8) -> u32 {
 ///
 /// We use `spin::Once` for one-time initialization + interior mutability:
 ///   - The `MaiScheduler` itself is immutable once created…
-///   - …except for the `rqs` field, which is behind a `RwLock` so `expand()`
-///     can grow it without replacing the entire instance.
+///   - …except for the `rqs` field, which is behind an `IrqSafeRwLock` so
+///     `expand()` can grow it without replacing the entire instance.
 static MKS: spin::Once<MaiScheduler> = spin::Once::new();
 
 /// Initialize the global MKS instance (phase-1: single CPU at boot).
@@ -175,17 +175,18 @@ pub fn get() -> &'static MaiScheduler {
 ///
 /// Owns all per-CPU run queues and the CPU topology map used for work stealing.
 ///
-/// `rqs` and `topology_rw` are behind `RwLock` so that `expand()` can grow
-/// them after AP bringup without replacing the entire scheduler instance.
-/// On the hot path (tick), the read lock is uncontended (zero overhead
-/// on x86_64 with `spin::RwLock`).
+/// `rqs` and `topology_rw` are behind `IrqSafeRwLock` so that `expand()`
+/// can grow them after AP bringup without replacing the entire scheduler
+/// instance. Using IRQ-safe locks prevents deadlocks when the timer
+/// interrupt handler acquires a read lock while a writer is active.
 pub struct MaiScheduler {
     /// Per-CPU run queues. Indexed by logical CPU ID.
-    /// Behind RwLock for phase-2 expansion; hot-path uses read().
-    pub rqs: RwLock<Vec<PerCpuRunQueue>>,
+    /// Behind IrqSafeRwLock: the timer handler calls tick() → rqs.read(),
+    /// so IRQs must be masked while any writer holds the lock.
+    pub rqs: IrqSafeRwLock<Vec<PerCpuRunQueue>>,
     /// CPU topology for cache-aware work stealing.
     /// Immutable after phase-2; read-only on hot path.
-    pub topology_rw: RwLock<CpuTopology>,
+    pub topology_rw: IrqSafeRwLock<CpuTopology>,
     /// Total number of CPUs managed. Atomic for lock-free reads.
     pub num_cpus: AtomicUsize,
     /// Global task count (approximate, for telemetry).
@@ -201,8 +202,8 @@ impl MaiScheduler {
             rqs.push(PerCpuRunQueue::new(cpu_id));
         }
         MaiScheduler {
-            rqs: RwLock::new(rqs),
-            topology_rw: RwLock::new(topology),
+            rqs: IrqSafeRwLock::new(rqs),
+            topology_rw: IrqSafeRwLock::new(topology),
             num_cpus: AtomicUsize::new(num_cpus),
             global_task_count: AtomicUsize::new(0),
             context_switches: AtomicU64::new(0),
@@ -226,8 +227,10 @@ impl MaiScheduler {
     pub fn enqueue(&self, task: TaskRef) {
         let cpu_id = self.select_cpu_for_task(&task);
         let rqs = self.rqs.read();
-        rqs[cpu_id].enqueue(task);
-        self.global_task_count.fetch_add(1, Ordering::Relaxed);
+        if let Some(rq) = rqs.get(cpu_id) {
+            rq.enqueue(task);
+            self.global_task_count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Dequeue a task from whichever CPU it is queued on.
@@ -250,10 +253,13 @@ impl MaiScheduler {
     ///
     /// If the local queue is empty, attempt work stealing before returning idle.
     pub fn pick_next(&self, cpu_id: usize) -> Option<TaskRef> {
-        debug_assert!(cpu_id < self.cpu_count(), "MKS: invalid cpu_id {}", cpu_id);
-
         let rqs = self.rqs.read();
-        let rq = &rqs[cpu_id];
+        // During early boot, APs may call schedule() before expand_to_all_cpus().
+        // Return None if this CPU's run queue doesn't exist yet.
+        let rq = match rqs.get(cpu_id) {
+            Some(rq) => rq,
+            None => return None,
+        };
 
         // --- 1. Deadline class (highest priority) ---
         if let Some(t) = rq.deadline_rq.lock().pick_next() {

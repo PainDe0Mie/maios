@@ -11,6 +11,7 @@ path = "src/lib.rs"
 # MaiOS kernel crates
 task_struct   = { path = "../../kernel/task_struct" }
 task          = { path = "../../kernel/task" }
+sync_irq      = { path = "../../libs/sync_irq" }
 log           = { version = "0.4", default-features = false }
 spin          = { version = "0.9", features = ["once"] }
 

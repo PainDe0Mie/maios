@@ -169,21 +169,27 @@ pub fn init(
             continue;
         }
 
+        // Audio — Intel HDA (class 0x04, subclass 0x03)
+        #[cfg(target_arch = "x86_64")]
+        if dev.class == intel_hda::HDA_PCI_CLASS && dev.subclass == intel_hda::HDA_PCI_SUBCLASS {
+            match intel_hda::init_from_pci(dev) {
+                Ok(()) => { info!("Intel HDA audio initialized at {:?}", dev.location); continue; }
+                Err(e) => { error!("Intel HDA {:?}: {}", dev.location, e); continue; }
+            }
+        }
+
         // Suppress known Q35/ICH9 devices that have no driver in MaiOS yet.
-        // SMBus controller (class 0x0C, subclass 0x05) — Intel ICH9 SMBus
         #[cfg(target_arch = "x86_64")]
         if dev.class == 0x0C && dev.subclass == 0x05 {
             debug!("SMBus {:?}: pas de driver (ignoré)", dev.location);
             continue;
         }
-        // ISA bridge, PCI bridge, etc. — already filtered by class == 0x06 above,
-        // but some Q35 devices use class 0x06 subclasses we may have missed.
         #[cfg(target_arch = "x86_64")]
         if dev.class == 0x06 {
             continue;
         }
 
-    warn!("PCI sans driver: {:X?}", dev);
+        warn!("PCI sans driver: {:X?}", dev);
     }
 
     #[cfg(target_arch = "x86_64")] {

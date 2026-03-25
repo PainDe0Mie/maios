@@ -87,6 +87,38 @@ pub fn init(num_cpus: usize, topology: CpuTopology) -> Result<(), &'static str> 
     mks::init(num_cpus, topology);
     log::info!("MKS: initialized with {} CPUs, EEVDF + RT + Deadline + work-stealing", num_cpus);
 
+    // Register MKS as the scheduling backend for task::scheduler.
+    // This replaces the old global SCHEDULERS lock with lock-free per-CPU dispatch.
+    task::scheduler::register_backend(
+        |task| mks::get().enqueue(task),
+        |cpu, task| {
+            let rqs = mks::get().rqs.read();
+            if let Some(rq) = rqs.get(cpu) {
+                rq.enqueue(task);
+            }
+        },
+        |task| mks::get().dequeue(task),
+        |cpu| mks::get().pick_next(cpu),
+        |cpu| {
+            let rqs = mks::get().rqs.read();
+            rqs.get(cpu).map(|rq| rq.load()).unwrap_or(0)
+        },
+        |cpu, task| {
+            let rqs = mks::get().rqs.read();
+            if let Some(rq) = rqs.get(cpu) {
+                rq.idle_rq.lock().set_idle_task(task);
+            }
+        },
+    );
+
+    // Register put_prev: re-enqueue after yield/preemption (no vruntime reset).
+    task::scheduler::register_put_prev(|cpu, task| {
+        let rqs = mks::get().rqs.read();
+        if let Some(rq) = rqs.get(cpu) {
+            rq.put_prev(task);
+        }
+    });
+
     // Register the timer interrupt for preemptive scheduling.
     #[cfg(target_arch = "x86_64")]
     {
@@ -201,12 +233,18 @@ interrupt_handler!(timer_tick_handler, _, _stack_frame, {
     // Unblock any sleeping tasks whose timers have expired.
     sleep::unblock_sleeping_tasks();
 
+    // Pump audio hardware on CPU 0 only (avoids redundant work on other CPUs).
+    // This is lightweight: try_lock + check mixer + maybe refill DMA.
+    if cpu_id == 0 {
+        audio_mixer::pump_hardware();
+    }
+
     // Acknowledge the interrupt BEFORE the potential context switch.
     // (If we switch tasks here we must never return to the IRQ handler.)
     eoi(CPU_LOCAL_TIMER_IRQ);
 
     // Perform preemptive context switch if needed.
-    // rqs is behind RwLock; acquire a read lock.
+    // rqs is behind IrqSafeRwLock; IRQs are masked while the lock is held.
     let need_resched = {
         let rqs = mks::get().rqs.read();
         rqs.get(cpu_id)

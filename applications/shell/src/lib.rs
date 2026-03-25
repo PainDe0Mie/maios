@@ -15,6 +15,7 @@ extern crate window_manager;
 extern crate path;
 extern crate root;
 extern crate scheduler;
+extern crate sleep;
 use task::scheduler::remove_task;
 extern crate stdio;
 extern crate core2;
@@ -110,11 +111,11 @@ pub fn main(_args: Vec<String>) -> isize {
     task::with_current_task(|t| t.block())
         .expect("shell::main(): failed to get current task")
         .expect("shell:main(): failed to block the main shell task");
-    scheduler::schedule();
+    let _ = sleep::sleep(sleep::Duration::from_millis(16));
 
     loop {
         warn!("BUG: blocked shell task was scheduled in unexpectedly");
-        scheduler::schedule();
+        let _ = sleep::sleep(sleep::Duration::from_millis(16));
     }
 
     // TODO: when `join` puts this task to sleep instead of spinning, we can re-enable it.
@@ -425,7 +426,7 @@ impl Shell {
                     // lock. We wait for the application to finish its last time slice. It will then be
                     // removed from the run queue. We can thereafter release the lock.
                     loop {
-                        scheduler::schedule(); // yield the CPU
+                        let _ = sleep::sleep(sleep::Duration::from_millis(1)); // yield the CPU
                         if !task_ref.is_running() {
                             break;
                         }
@@ -464,7 +465,7 @@ impl Shell {
                     // lock. We wait for the application to finish its last time slice. It will then be
                     // truly blocked. We can thereafter release the lock.
                     loop {
-                        scheduler::schedule(); // yield the CPU
+                        let _ = sleep::sleep(sleep::Duration::from_millis(1)); // yield the CPU
                         if !task_ref.is_running() {
                             break;
                         }
@@ -1253,7 +1254,7 @@ impl Shell {
             // loop body. We do so to ensure that printing is handled before keypresses.
             if self.check_and_print_app_output() {
                 need_refresh = true;
-                scheduler::schedule(); // yield CPU even when processing output
+                let _ = sleep::sleep(sleep::Duration::from_millis(1)); // yield CPU even when processing output
                 continue;
             }
 
@@ -1332,7 +1333,7 @@ impl Shell {
                 self.terminal.lock().refresh_display()?;
             }
             // Always yield after each iteration to prevent starving other tasks
-            scheduler::schedule();
+            let _ = sleep::sleep(sleep::Duration::from_millis(16));
         }
     }
 }

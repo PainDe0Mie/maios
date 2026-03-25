@@ -203,6 +203,27 @@ name = "atomic_linked_list"
 version = "0.1.0"
 
 [[package]]
+name = "audio_mixer"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "memory",
+ "memory_structs",
+ "pte_flags",
+ "spin 0.9.4",
+]
+
+[[package]]
+name = "audio_test"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "audio_mixer",
+ "log",
+ "sleep",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -344,6 +365,7 @@ dependencies = [
  "rendezvous",
  "scheduler",
  "simple_ipc",
+ "sleep",
  "spawn",
  "sync_channel",
  "task",
@@ -409,6 +431,7 @@ dependencies = [
  "kernel_config",
  "log",
  "logger",
+ "madt",
  "memory",
  "memory_swap",
  "mks",
@@ -559,6 +582,7 @@ dependencies = [
  "mod_mgmt",
  "path",
  "serial_port",
+ "sleep",
  "spawn",
  "sync_channel",
  "sync_irq",
@@ -868,6 +892,7 @@ dependencies = [
  "interrupts",
  "log",
  "scheduler",
+ "sleep",
  "spawn",
  "task",
 ]
@@ -955,6 +980,7 @@ dependencies = [
  "event_types",
  "fat32",
  "fs_node",
+ "intel_hda",
  "interrupts",
  "ixgbe",
  "keyboard",
@@ -1237,6 +1263,7 @@ dependencies = [
  "root",
  "scheduler",
  "shapes",
+ "sleep",
  "spawn",
  "spin 0.9.4",
  "task",
@@ -1341,6 +1368,7 @@ dependencies = [
  "root",
  "scheduler",
  "shapes",
+ "sleep",
  "spawn",
  "spin 0.9.4",
  "task",
@@ -1763,6 +1791,7 @@ dependencies = [
  "path",
  "root",
  "scheduler",
+ "sleep",
  "spawn",
  "stdio",
  "sync_block",
@@ -1796,6 +1825,25 @@ dependencies = [
  "bit_field 0.7.0",
  "log",
  "memory",
+ "volatile 0.2.7",
+ "zerocopy",
+]
+
+[[package]]
+name = "intel_hda"
+version = "0.1.0"
+dependencies = [
+ "audio_mixer",
+ "log",
+ "memory",
+ "memory_structs",
+ "pci",
+ "pte_flags",
+ "sleep",
+ "spawn",
+ "spin 0.9.4",
+ "task",
+ "time",
  "volatile 0.2.7",
  "zerocopy",
 ]
@@ -2216,6 +2264,7 @@ name = "maios_syscall"
 version = "0.1.0"
 dependencies = [
  "app_io",
+ "audio_mixer",
  "elf_loader",
  "fs_node",
  "io",
@@ -2226,12 +2275,14 @@ dependencies = [
  "memory_structs",
  "mgi",
  "mhc",
+ "net",
  "path",
  "pte_flags",
  "root",
  "rtc",
  "scheduler",
  "sleep",
+ "smoltcp",
  "spawn",
  "spin 0.9.4",
  "task",
@@ -2441,6 +2492,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "spin 0.9.4",
+ "sync_irq",
  "task",
  "task_struct",
 ]
@@ -3551,6 +3603,7 @@ checksum = "f2cc38e8fa666e2de3c4aba7edeb5ffc5246c1c2ed0e3d17e560aeeba736b23f"
 name = "scheduler"
 version = "0.1.0"
 dependencies = [
+ "audio_mixer",
  "cpu",
  "generic_timer_aarch64",
  "interrupts",
@@ -3754,6 +3807,7 @@ dependencies = [
  "path",
  "root",
  "scheduler",
+ "sleep",
  "spawn",
  "spin 0.9.4",
  "stdio",
@@ -3904,9 +3958,6 @@ dependencies = [
  "path",
  "preemption",
  "scheduler",
- "scheduler_epoch",
- "scheduler_priority",
- "scheduler_round_robin",
  "spin 0.9.4",
  "stack",
  "task",
@@ -4224,6 +4275,7 @@ dependencies = [
  "memory_swap",
  "scheduler",
  "shapes",
+ "sleep",
  "spin 0.9.4",
  "task",
  "task_struct",
@@ -4255,6 +4307,7 @@ dependencies = [
  "event_types",
  "scheduler",
  "shapes",
+ "sleep",
  "spawn",
  "task",
  "window",
@@ -5030,6 +5083,7 @@ dependencies = [
  "path",
  "root",
  "scheduler",
+ "sleep",
  "task",
  "vfs_node",
  "wasi 0.10.0+wasi-snapshot-preview1",

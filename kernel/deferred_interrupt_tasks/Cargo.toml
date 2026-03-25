@@ -10,6 +10,7 @@ log = "0.4.8"
 
 task = { path = "../task" }
 scheduler = { path = "../scheduler" }
+sleep = { path = "../sleep" }
 spawn = { path = "../spawn" }
 interrupts = { path = "../interrupts" }
 debugit = { path = "../../libs/debugit" }

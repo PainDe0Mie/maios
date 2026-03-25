@@ -21,6 +21,7 @@ task            = { path = "../../kernel/task"               }
 window          = { path = "../../kernel/window"             }
 window_manager  = { path = "../../kernel/window_manager"     }
 scheduler       = { path = "../../kernel/scheduler"          }
+sleep           = { path = "../../kernel/sleep"              }
 event_types     = { path = "../../kernel/event_types"        }
 keycodes_ascii  = { path = "../../libs/keycodes_ascii"       }
 spawn           = { path = "../../kernel/spawn"              }

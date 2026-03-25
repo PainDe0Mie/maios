@@ -49,7 +49,7 @@ fn console_connection_detector(
         // of a race condition or state corruption in the blocking path.
         let serial_port_address = loop {
             if let Ok(addr) = connection_listener.try_receive() { break addr; }
-            task::schedule();
+            let _ = sleep::sleep(sleep::Duration::from_millis(1));
         };
 
         if IGNORED_SERIAL_PORT_INPUT.load(Ordering::Relaxed) == serial_port_address as u16 {

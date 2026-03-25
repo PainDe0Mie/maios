@@ -169,20 +169,23 @@ impl EevdfRunQueue {
 
     /// Pick the next task to run: min vdeadline among eligible tasks.
     /// Returns `None` if no eligible task exists.
+    ///
+    /// **Removes** the task from the tree. The caller (schedule) must ensure
+    /// the previously-running task is re-inserted via `put_prev()` if it is
+    /// still runnable.
     pub fn pick_next(&mut self) -> Option<TaskRef> {
-        // Advance eligibility: move tasks whose ve <= min_vruntime to eligible.
         self.advance_eligibility();
-
-        // The first entry of `eligible` is the minimum-vdeadline task.
         let (&key, _) = self.eligible.iter().next()?;
         self.eligible.remove(&key)
     }
 
-    /// Put a task back after it has run its slice.
+    /// Re-insert a task that was removed by `pick_next` after it has run.
     ///
-    /// Updates its vruntime, computes a new vdeadline, and re-enqueues.
+    /// Removes any stale entry first (handles tasks that are still in the
+    /// tree because they were enqueued but never picked), then re-inserts
+    /// with `is_wakeup=false` (preserves accumulated vruntime).
     pub fn put_prev(&mut self, task: TaskRef) {
-        // `enqueue` with is_wakeup=false will use the updated vruntime.
+        self.dequeue(&task);
         self.enqueue(task, false);
     }
 

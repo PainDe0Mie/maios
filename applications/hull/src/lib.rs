@@ -258,7 +258,7 @@ impl Shell {
                         };
                 }
             }
-            scheduler::schedule();
+            let _ = sleep::sleep(sleep::Duration::from_millis(1));
         }
     }
 

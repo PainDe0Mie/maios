@@ -8,6 +8,7 @@ edition = "2018"
 [dependencies]
 log = "0.4.8"
 
+audio_mixer = { path = "../audio_mixer" }
 cpu = { path = "../cpu" }
 interrupts = { path = "../interrupts" }
 mks = { path = "../mks" }

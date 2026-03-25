@@ -34,3 +34,6 @@ path = "../../kernel/vfs_node"
 
 [dependencies.scheduler]
 path = "../../kernel/scheduler"
+
+[dependencies.sleep]
+path = "../../kernel/sleep"

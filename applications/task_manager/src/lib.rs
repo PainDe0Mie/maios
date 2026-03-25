@@ -23,6 +23,7 @@ extern crate task_struct;
 extern crate window;
 extern crate window_manager;
 extern crate scheduler;
+extern crate sleep;
 extern crate event_types;
 extern crate keycodes_ascii;
 extern crate cpu;
@@ -495,7 +496,7 @@ pub fn main(_args: Vec<String>) -> isize {
             state.dirty = false;
         }
 
-        scheduler::schedule();
+        let _ = sleep::sleep(sleep::Duration::from_millis(16));
     }
 
     #[allow(unreachable_code)]

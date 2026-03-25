@@ -44,6 +44,9 @@ path = "../../kernel/fs_node"
 [dependencies.scheduler]
 path = "../../kernel/scheduler"
 
+[dependencies.sleep]
+path = "../../kernel/sleep"
+
 [dependencies.libtest]
 path = "../../kernel/libtest"
 

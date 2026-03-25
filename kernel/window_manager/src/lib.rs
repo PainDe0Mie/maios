@@ -30,6 +30,7 @@ extern crate mhc;
 extern crate cpu;
 extern crate keyboard;
 extern crate time;
+extern crate sleep;
 
 use alloc::collections::VecDeque;
 use alloc::string::ToString;
@@ -817,16 +818,21 @@ fn window_manager_loop(
         // Process any deferred keyboard LED updates (toggled Lock keys).
         keyboard::process_deferred_led_update();
 
-        // Coalesce mouse movement: accumulate deltas, keep only the last
-        // event for button state.
+        // Coalesce mouse movement: accumulate deltas.
+        // Button state: if any event in the batch had a button pressed,
+        // keep that "pressed" state so fast click+release isn't lost.
         let mut dx = 0isize;
         let mut dy = 0isize;
         let mut last_mouse: Option<MouseEvent> = None;
+        let mut any_left_pressed = false;
+        let mut any_right_pressed = false;
         for _ in 0..32 {
             match mouse_consumer.pop() {
                 Some(Event::MouseMovementEvent(ref m)) => {
                     dx += m.movement.x_movement as isize;
                     dy += m.movement.y_movement as isize;
+                    if m.buttons.left()  { any_left_pressed = true; }
+                    if m.buttons.right() { any_right_pressed = true; }
                     last_mouse = Some(m.clone());
                 }
                 _ => break,
@@ -836,8 +842,8 @@ fn window_manager_loop(
         if let Some(m) = last_mouse {
             if let Some(wm) = WINDOW_MANAGER.get() {
                 let mut wm = wm.lock();
-                wm.mouse_btn_left  = m.buttons.left();
-                wm.mouse_btn_right = m.buttons.right();
+                wm.mouse_btn_left  = any_left_pressed  || m.buttons.left();
+                wm.mouse_btn_right = any_right_pressed || m.buttons.right();
                 if dx != 0 || dy != 0 {
                     wm.move_mouse(Coord::new(dx, -dy))?;
                     need_present = true;
@@ -876,10 +882,9 @@ fn window_manager_loop(
         }
 
         // Sleep briefly so we yield the CPU *and* guarantee a timely
-        // wake-up.  Unlike `scheduler::schedule()` which parks the task
-        // indefinitely, `sleep` registers a timer that fires after
-        // POLL_INTERVAL and puts us back on the run-queue.
-        scheduler::schedule();
+        // wake-up. EEVDF requires explicit blocking (sleep) — a bare
+        // schedule() would cause starvation.
+        let _ = sleep::sleep(sleep::Duration::from_millis(1));
     }
 }
 

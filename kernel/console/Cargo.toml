@@ -18,6 +18,7 @@ serial_port = { path = "../serial_port" }
 spawn = { path = "../spawn" }
 sync_irq = { path = "../../libs/sync_irq" }
 task = { path = "../task" }
+sleep = { path = "../sleep" }
 tty = { path = "../tty" }
 
 ## In general, Theseus kernel crates *cannot* depend on application crates.

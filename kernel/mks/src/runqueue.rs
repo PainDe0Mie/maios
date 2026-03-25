@@ -98,6 +98,9 @@ impl PerCpuRunQueue {
 
     /// Enqueue a task into the appropriate sub-queue based on its class.
     pub fn enqueue(&self, task: TaskRef) {
+        // Track which CPU this task is on so dequeue() knows where to find it.
+        task.sched.last_cpu.store(self.cpu_id, core::sync::atomic::Ordering::Relaxed);
+
         let class = task.read().sched.policy.class();
         match class {
             SchedClassId::Deadline => {
@@ -122,9 +125,28 @@ impl PerCpuRunQueue {
             }
         }
         self.load_count.fetch_add(1, Ordering::Relaxed);
+    }
 
-        // Update last_cpu so pick_next on this CPU is fast.
-        // (Done after enqueue so the task is visible in the queue.)
+    /// Re-enqueue the previously running task after a yield or preemption.
+    ///
+    /// Uses `is_wakeup=false` so the vruntime is NOT reset — the task keeps
+    /// its accumulated CPU time. This prevents a yielding task from
+    /// monopolizing the CPU by always having the lowest vdeadline.
+    pub fn put_prev(&self, task: TaskRef) {
+        task.sched.last_cpu.store(self.cpu_id, core::sync::atomic::Ordering::Relaxed);
+
+        let class = task.read().sched.policy.class();
+        match class {
+            SchedClassId::Normal | SchedClassId::Batch | SchedClassId::Compute => {
+                self.cfs_rq.lock().put_prev(task);
+            }
+            _ => {
+                // RT, Deadline, Idle: just use regular enqueue
+                self.enqueue(task);
+                return;
+            }
+        }
+        self.load_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Dequeue a task (block, exit, migration).

@@ -55,8 +55,14 @@ pub enum SyscallError {
     NoChild,
     /// Operation not permitted (EPERM)
     NotPermitted,
-    /// InternalError
-    InternalError,
+    /// Connection refused (ECONNREFUSED / STATUS_CONNECTION_REFUSED)
+    ConnectionRefused,
+    /// Connection reset (ECONNRESET)
+    ConnectionReset,
+    /// Address already in use (EADDRINUSE)
+    AddressInUse,
+    /// Network unreachable (ENETUNREACH)
+    NetworkUnreachable,
 }
 
 /// The canonical result type for all MaiOS syscall implementations.
@@ -92,7 +98,10 @@ impl SyscallError {
             Self::BufferTooSmall    => "ERANGE",
             Self::NoChild           => "ECHILD",
             Self::NotPermitted      => "EPERM",
-            Self::InternalError     => "EIO",
+            Self::ConnectionRefused => "ECONNREFUSED",
+            Self::ConnectionReset   => "ECONNRESET",
+            Self::AddressInUse      => "EADDRINUSE",
+            Self::NetworkUnreachable=> "ENETUNREACH",
         }
     }
 
@@ -122,7 +131,10 @@ impl SyscallError {
             Self::ReadOnlyFs        => -30,  // EROFS
             Self::BufferTooSmall    => -34,  // ERANGE
             Self::NotImplemented    => -38,  // ENOSYS
-            Self::InternalError     => -5,   // EIO
+            Self::ConnectionRefused => -111, // ECONNREFUSED
+            Self::ConnectionReset   => -104, // ECONNRESET
+            Self::AddressInUse      => -98,  // EADDRINUSE
+            Self::NetworkUnreachable=> -101, // ENETUNREACH
         }
     }
 
@@ -144,6 +156,10 @@ impl SyscallError {
             Self::WouldBlock        => 0x0000_0103_u32 as i32 as i64, // STATUS_PENDING
             Self::NoSpace           => 0xC000_007F_u32 as i32 as i64, // STATUS_DISK_FULL
             Self::ReadOnlyFs        => 0xC000_00A2_u32 as i32 as i64, // STATUS_MEDIA_WRITE_PROTECTED
+            Self::ConnectionRefused => 0xC000_0236_u32 as i32 as i64, // STATUS_CONNECTION_REFUSED
+            Self::ConnectionReset   => 0xC000_020D_u32 as i32 as i64, // STATUS_CONNECTION_RESET
+            Self::AddressInUse      => 0xC000_0048_u32 as i32 as i64, // STATUS_ADDRESS_ALREADY_EXISTS
+            Self::NetworkUnreachable=> 0xC000_0233_u32 as i32 as i64, // STATUS_NETWORK_UNREACHABLE
             _                       => 0xC000_0002_u32 as i32 as i64, // fallback: NOT_IMPLEMENTED
         }
     }

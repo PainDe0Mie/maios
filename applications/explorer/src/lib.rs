@@ -22,6 +22,7 @@ extern crate spawn;
 extern crate task;
 extern crate window_manager;
 extern crate scheduler;
+extern crate sleep;
 extern crate path;
 extern crate mod_mgmt;
 extern crate window_inner;
@@ -557,7 +558,11 @@ pub fn main(_args: Vec<String>) -> isize {
             }
         }
 
-        scheduler::schedule();
+        // Use sleep instead of bare schedule() — EEVDF needs tasks to
+        // explicitly block so they are dequeued from the CFS tree.
+        // A bare schedule() yield keeps the task in the tree and may
+        // cause starvation with EEVDF's vruntime-based selection.
+        let _ = sleep::sleep(sleep::Duration::from_millis(16));
     }
 
     #[allow(unreachable_code)]

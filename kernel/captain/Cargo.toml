@@ -42,6 +42,7 @@ multiple_heaps = { path = "../multiple_heaps" }
 time = { path = "../time" }
 tsc = { path = "../tsc" }
 acpi = { path = "../acpi" }
+madt = { path = "../acpi/madt" }
 page_attribute_table = { path = "../page_attribute_table" }
 e1000 = { path = "../e1000" }
 app_io = { path = "../app_io" }

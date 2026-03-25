@@ -37,6 +37,7 @@ pub mod futex;
 pub mod socket;
 pub mod signals;
 pub mod graphics;
+pub mod audio;
 pub mod trace;
 
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -413,6 +414,9 @@ pub fn init() {
         register(nr::SYS_PRESENT,         graphics::sys_present,         "sys_present",         1, 0);
         register(nr::SYS_GET_EVENT,       graphics::sys_get_event,       "sys_get_event",       4, 0);
         register(nr::SYS_VSYNC_WAIT,      graphics::sys_vsync_wait,      "sys_vsync_wait",      0, FLAG_BLOCKING);
+
+        // --- Audio (0x0805) ---
+        register(nr::SYS_AUDIO_WRITE,    audio::sys_audio_write,        "sys_audio_write",     2, 0);
     }
 
     INITIALIZED.store(true, Ordering::SeqCst);

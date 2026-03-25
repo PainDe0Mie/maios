@@ -132,7 +132,7 @@ pub fn sys_nanosleep(req: u64, _rem: u64, _: u64, _: u64, _: u64, _: u64) -> Sys
 
     if duration.is_zero() {
         // Just yield the CPU
-        scheduler::schedule();
+        let _ = sleep::sleep(sleep::Duration::from_millis(1));
         return Ok(0);
     }
 
@@ -140,7 +140,7 @@ pub fn sys_nanosleep(req: u64, _rem: u64, _: u64, _: u64, _: u64, _: u64) -> Sys
     let deadline = time::Instant::now() + duration;
     // Busy-wait with yield until deadline (sleep crate uses wait_until internally)
     while time::Instant::now() < deadline {
-        scheduler::schedule();
+        let _ = sleep::sleep(sleep::Duration::from_millis(1));
     }
 
     Ok(0)

@@ -14,6 +14,7 @@ nb = "1.0"
 path = { path = "../../kernel/path" }
 root = { path = "../../kernel/root" }
 scheduler = { path = "../../kernel/scheduler" }
+sleep = { path = "../../kernel/sleep" }
 spawn = { path = "../../kernel/spawn" }
 stdio = { path = "../../libs/stdio" }
 sync_block = { path = "../../kernel/sync_block" }
