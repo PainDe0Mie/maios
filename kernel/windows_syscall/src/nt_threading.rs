@@ -33,8 +33,13 @@ const KERNEL_HANDLE_STEP: u64 = 4;
 static NEXT_KERNEL_HANDLE: AtomicU64 = AtomicU64::new(KERNEL_HANDLE_BASE);
 
 /// Alloue un nouveau handle kernel.
-fn alloc_kernel_handle() -> u64 {
+pub fn alloc_kernel_handle() -> u64 {
     NEXT_KERNEL_HANDLE.fetch_add(KERNEL_HANDLE_STEP, Ordering::Relaxed)
+}
+
+/// Accès à la table des objets kernel (pour nt_memory).
+pub fn kernel_objects() -> &'static Mutex<BTreeMap<u64, KernelObject>> {
+    &KERNEL_OBJECTS
 }
 
 // =============================================================================
@@ -74,12 +79,22 @@ pub struct NtThread {
     pub task_id: usize,
 }
 
+/// Objet Section NT — région mémoire partageable (simplifié : anonyme seulement).
+#[derive(Debug)]
+pub struct NtSection {
+    /// Taille maximale de la section en octets.
+    pub max_size: u64,
+    /// Protection de page NT (PAGE_READWRITE, etc.).
+    pub protection: u32,
+}
+
 /// Union de tous les types d'objets kernel NT.
 #[derive(Debug)]
 pub enum KernelObject {
     Event(NtEvent),
     Mutant(NtMutant),
     Thread(NtThread),
+    Section(NtSection),
 }
 
 /// Table globale des objets kernel NT.
@@ -216,7 +231,7 @@ pub fn adapt_nt_create_event(
 // =============================================================================
 
 pub const NT_SET_EVENT: u64 = 0x000E;
-pub const NT_RESET_EVENT: u64 = 0x0028;
+pub const NT_RESET_EVENT: u64 = 0x017A;
 
 /// NtSetEvent — met un événement en état signalé.
 ///
@@ -444,6 +459,7 @@ fn check_and_acquire(handle: u64) -> WaitResult {
                 WaitResult::Satisfied
             }
         }
+        Some(KernelObject::Section(_)) => WaitResult::InvalidHandle,
         None => WaitResult::InvalidHandle,
     }
 }
@@ -535,4 +551,46 @@ pub fn adapt_nt_wait_for_multiple_objects(
 pub fn try_close_kernel_object(handle: u64) -> bool {
     let mut objects = KERNEL_OBJECTS.lock();
     objects.remove(&handle).is_some()
+}
+
+// =============================================================================
+// NtDelayExecution (0x0034)
+// =============================================================================
+
+/// NtDelayExecution — suspend le thread courant pendant un intervalle donné.
+///
+///   NtDelayExecution(
+///     BOOLEAN Alertable,             // arg0 (ignoré)
+///     PLARGE_INTEGER DelayInterval,  // arg1 (négatif = relatif en unités de 100ns)
+///   )
+pub fn adapt_nt_delay_execution(_alertable: u64, delay_interval_ptr: u64) -> i64 {
+    if delay_interval_ptr == 0 {
+        return ntstatus::STATUS_INVALID_PARAMETER;
+    }
+
+    let raw = unsafe { *(delay_interval_ptr as *const i64) };
+
+    let ns: u64 = if raw < 0 {
+        // Négatif = relatif en unités de 100ns
+        ((-raw) as u64) * 100
+    } else if raw == 0 {
+        // Zéro = yield (sleep minimal)
+        0
+    } else {
+        // Positif = absolu — on le traite comme relatif (simplification)
+        (raw as u64) * 100
+    };
+
+    let secs = ns / 1_000_000_000;
+    let rem_ns = ns % 1_000_000_000;
+
+    // Construire un timespec sur la pile et appeler SYS_NANOSLEEP
+    let timespec: [u64; 2] = [secs, rem_ns];
+    let result = maios_syscall::dispatch(
+        maios_syscall::nr::SYS_NANOSLEEP,
+        timespec.as_ptr() as u64,
+        0, 0, 0, 0, 0,
+    );
+
+    maios_syscall::error::result_to_ntstatus(result)
 }
