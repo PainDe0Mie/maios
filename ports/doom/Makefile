@@ -11,7 +11,8 @@
 # Result: doom.elf (load in MaiOS with: loadc /path/to/doom.elf)
 # ─────────────────────────────────────────────────────────────────────────────
 
-CC        = x86_64-elf-gcc
+# Use x86_64-elf-gcc if available, otherwise fall back to system gcc
+CC        = $(shell which x86_64-elf-gcc 2>/dev/null || echo gcc)
 CFLAGS    = -nostdlib -nostartfiles -nostdinc -mno-red-zone -mcmodel=large \
             -ffunction-sections -fdata-sections -fno-pie -fno-stack-protector \
             -I../../tlibc/include \
