@@ -5,9 +5,32 @@ use alloc::string::ToString;
 use app_io::println;
 use path::Path;
 
-// TODO: Decide which builtins we don't need.
-
 impl Shell {
+    pub(crate) fn help(&self, args: &[&str]) -> Result<()> {
+        if args.is_empty() {
+            println!("MaiOS Shell — Commandes intégrées :");
+            println!();
+            println!("  cd [DIR]     Changer de répertoire");
+            println!("  exit         Quitter le shell");
+            println!("  history      Historique des commandes");
+            println!("  jobs         Tâches en arrière-plan");
+            println!("  bg [%N]      Reprendre une tâche en arrière-plan");
+            println!("  fg [%N]      Reprendre une tâche au premier plan");
+            println!("  help         Afficher cette aide");
+            println!();
+            println!("Tapez 'help' (commande externe) pour la liste complète.");
+            println!("Tapez '<commande> --help' pour l'aide d'une commande.");
+            println!();
+            println!("Opérateurs :");
+            println!("  cmd1 | cmd2  Pipe (redirige stdout vers stdin)");
+            println!("  cmd &        Exécuter en arrière-plan");
+        } else {
+            // Rediriger vers la commande help externe
+            println!("Tapez 'help {}' (sans guillemets) en tant que commande externe.", args[0]);
+        }
+        Ok(())
+    }
+
     pub(crate) fn alias(&self, _args: &[&str]) -> Result<()> {
         println!("not yet implemented");
         Err(Error::Command(1))

@@ -57,9 +57,26 @@ pub fn start() -> Result<(), &'static str> {
     let app_file = found.ok_or("Couldn't find first application (desktop or default) in default app namespace")?;
     let path = app_file.lock().get_absolute_path();
     info!("Starting first application: crate at {:?}", path);
-    spawn::new_application_task_builder(path.as_ref(), Some(new_app_ns))?
-        .name(format!("first_{}", &path))
-        .spawn()?;
 
-    Ok(())
+    let task_builder = match spawn::new_application_task_builder(path.as_ref(), Some(new_app_ns)) {
+        Ok(tb) => {
+            info!("first_application: task builder created successfully for {:?}", path);
+            tb
+        }
+        Err(e) => {
+            error!("first_application: FAILED to create task builder for {:?}: {}", path, e);
+            return Err(e);
+        }
+    };
+
+    match task_builder.name(format!("first_{}", &path)).spawn() {
+        Ok(joinable) => {
+            info!("first_application: spawned task successfully");
+            Ok(())
+        }
+        Err(e) => {
+            error!("first_application: FAILED to spawn task for {:?}: {}", path, e);
+            Err(e)
+        }
+    }
 }

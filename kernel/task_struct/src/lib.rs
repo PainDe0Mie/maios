@@ -10,89 +10,9 @@ use core::{
     any::Any,
     fmt,
     hash::{Hash, Hasher},
-    sync::atomic::{AtomicU8, AtomicUsize, Ordering},
+    sync::atomic::{AtomicU8, AtomicUsize},
     task::Waker,
 };
-
-// ---------------------------------------------------------------------------
-// Scheduler types — used by MKS (Mai Kernel Scheduler)
-// ---------------------------------------------------------------------------
-
-/// Scheduling policy / class for a task.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SchedClass {
-    /// Background/batch tasks (lowest priority, no fairness guarantee).
-    Idle,
-    /// Batch processing (lower than Normal, no interactive boost).
-    Batch,
-    /// Normal timesharing (EEVDF fairness).
-    Normal,
-    /// GPU-compute task (eligible for MHC offload).
-    Compute,
-    /// Real-time round-robin with `timeslice_ns` nanoseconds per slice.
-    RoundRobin(u64),
-    /// Real-time FIFO (runs until blocked or preempted by higher RT).
-    Fifo,
-    /// Hard real-time: EDF within deadline class.
-    Deadline { period_ns: u64, runtime_ns: u64 },
-}
-
-impl Default for SchedClass {
-    fn default() -> Self { SchedClass::Normal }
-}
-
-/// Per-task scheduling metadata — owned by MKS, stored inside `Task`.
-pub struct TaskSchedInfo {
-    /// EEVDF virtual runtime (ns, weighted by inverse nice).
-    pub vruntime: u64,
-    /// Virtual eligible time — earliest point this task may be picked.
-    pub ve: u64,
-    /// Virtual deadline — used for EEVDF preemption decisions.
-    pub vdeadline: u64,
-    /// Scheduling weight derived from nice value (1024 = nice 0).
-    pub weight: u64,
-    /// Inverse weight for fast fixed-point division (2^32 / weight).
-    pub wmult: u32,
-    /// Nice value in [-20, 19].
-    pub nice: i8,
-    /// Real-time priority [0, 99] (FIFO/RR tasks only).
-    pub rt_priority: u8,
-    /// Remaining RR timeslice in nanoseconds.
-    pub rr_timeslice_remaining: u64,
-    /// Hard CPU affinity: task is pinned to this CPU if `Some`.
-    pub pinned_cpu: Option<usize>,
-    /// Current scheduling class.
-    pub policy: SchedClass,
-    /// Last CPU this task executed on (atomic for lock-free reads by stealer).
-    pub last_cpu: AtomicUsize,
-    /// Absolute timestamp (ns) at which a sleeping task should wake.
-    pub wakeup_time_ns: u64,
-    /// Whether this task is currently on a run queue.
-    pub on_rq: bool,
-    /// Total wall-clock execution time in nanoseconds.
-    pub exec_runtime: u64,
-}
-
-impl Default for TaskSchedInfo {
-    fn default() -> Self {
-        TaskSchedInfo {
-            vruntime: 0,
-            ve: 0,
-            vdeadline: 0,
-            weight: 1024,      // nice 0
-            wmult: 4_194_304,  // NICE_TO_WMULT[20]
-            nice: 0,
-            rt_priority: 0,
-            rr_timeslice_remaining: 100_000_000, // 100 ms
-            pinned_cpu: None,
-            policy: SchedClass::Normal,
-            last_cpu: AtomicUsize::new(0),
-            wakeup_time_ns: 0,
-            on_rq: false,
-            exec_runtime: 0,
-        }
-    }
-}
 use alloc::{
     boxed::Box,
     string::String,
@@ -156,9 +76,6 @@ pub struct Task {
     pub is_an_idle_task: bool,
 
     pub restart_info: Option<RestartInfo>,
-
-    /// MKS scheduling metadata (vruntime, nice, policy, etc.).
-    pub sched: TaskSchedInfo,
 }
 
 pub struct RestartInfo {
@@ -198,44 +115,7 @@ impl Task {
             address_space: None,
             is_an_idle_task: false,
             restart_info: None,
-            sched: TaskSchedInfo::default(),
         }
-    }
-
-    /// Update scheduling weight table after a nice value change.
-    ///
-    /// Must be called whenever `sched.nice` is modified.
-    pub fn update_weight(&mut self) {
-        let idx = (self.sched.nice + 20).clamp(0, 39) as usize;
-        // Linux-derived weight table: each step is a 1.25× multiplier.
-        const WEIGHT: [u32; 40] = [
-            88761, 71755, 56483, 46273, 36291,
-            29154, 23254, 18705, 14949, 11916,
-             9548,  7620,  6100,  4904,  3906,
-             3121,  2501,  1991,  1586,  1277,
-             1024,   820,   655,   526,   423,
-              335,   272,   215,   172,   137,
-              110,    87,    70,    56,    45,
-               36,    29,    23,    18,    15,
-        ];
-        const WMULT: [u32; 40] = [
-              48388,   59856,   76040,   92818,  118348,
-             147320,  184698,  229616,  287308,  360437,
-             449829,  563644,  704093,  875809, 1099582,
-            1376151, 1717300, 2157191, 2708050, 3363326,
-            4194304, 5237765, 6557202, 8165337,10153587,
-           12820798,15790321,19976592,24970740,31350126,
-           39045157,49367440,61356676,76695844,95443717,
-          119304647,148102320,186737708,238609294,286331153,
-        ];
-        self.sched.weight = WEIGHT[idx] as u64;
-        self.sched.wmult  = WMULT[idx];
-    }
-
-    /// Set nice value and recompute scheduling weight.
-    pub fn set_nice(&mut self, nice: i8) {
-        self.sched.nice = nice.clamp(-20, 19);
-        self.update_weight();
     }
 
     pub fn block_initing_task(&mut self) -> Result<(), RunState> {

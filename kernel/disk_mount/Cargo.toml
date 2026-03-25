@@ -1,0 +1,18 @@
+[package]
+name = "disk_mount"
+version = "0.1.0"
+description = "Monte les volumes FAT32 dans le VFS de MaiOS au démarrage"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+log            = { version = "0.4", default-features = false }
+fat32          = { path = "../fat32" }
+storage_manager = { path = "../storage_manager" }
+storage_device = { path = "../storage_device" }
+root           = { path = "../root" }
+fs_node        = { path = "../fs_node" }
+vfs_node       = { path = "../vfs_node" }
+spin           = { version = "0.9", default-features = false, features = ["mutex"] }

@@ -908,17 +908,21 @@ QEMU_FLAGS += -m $(QEMU_MEMORY)
 QEMU_CPUS ?= 4
 QEMU_FLAGS += -smp $(QEMU_CPUS)
 
-## Add a disk drive, a PATA drive over an IDE controller interface.
-## Currently this is only supported on x86_64.
+## Add a persistent SATA disk via the q35's built-in ICH9 AHCI controller.
+##
+## On the q35 machine, the ICH9 SATA/AHCI is at PCI b0:1f.2.
+## We attach the drive to it so the MaiOS AHCI driver (kernel/ahci) can detect it.
+##
+## To create a FAT32 disk image (run once from the repo root):
+##   dd if=/dev/zero of=fat32.img bs=1M count=64
+##   mkfs.fat -F 32 fat32.img
 DISK_IMAGE ?= fat32.img
 ifeq ($(ARCH),x86_64)
-ifneq ($(wildcard $(DISK_IMAGE)),) 
-	QEMU_FLAGS += -drive format=raw,file=fat32.img,if=ide
+ifneq ($(wildcard $(DISK_IMAGE)),)
+	QEMU_FLAGS += -drive id=maios_disk,file=$(DISK_IMAGE),format=raw,if=none
+	QEMU_FLAGS += -device ide-hd,drive=maios_disk,bus=ide.2
 endif
 endif
-
-## We don't yet support SATA in Theseus, but this is how to add a SATA drive over the AHCI interface.
-# QEMU_FLAGS += -drive id=my_disk,file=$(DISK_IMAGE),if=none  -device ahci,id=ahci  -device ide-drive,drive=my_disk,bus=ahci.0
 
 ## QEMU's OUI dictates that the MAC addr start with "52:54:00:"
 MAC_ADDR ?= 52:54:00:d1:55:01
