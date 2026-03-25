@@ -889,6 +889,22 @@ fn window_manager_loop(
 }
 
 fn handle_keyboard(key: KeyEvent) -> Result<(), &'static str> {
+    // ── Push to MGI global event queue (for SYS_GET_EVENT / Doom) ─────────
+    let ascii_val = key.keycode.to_ascii(key.modifiers).map(|c| c as u32).unwrap_or(0);
+    let mods = {
+        let mut m = 0u32;
+        if key.modifiers.is_shift()   { m |= 1; }
+        if key.modifiers.is_control() { m |= 2; }
+        if key.modifiers.is_alt()     { m |= 4; }
+        m
+    };
+    mgi::push_key_event(
+        key.keycode as u32,
+        key.action == KeyAction::Pressed,
+        ascii_val,
+        mods,
+    );
+
     let wm_ref = WINDOW_MANAGER.get().ok_or("window manager not initialised")?;
 
     // ── Global keyboard shortcuts ─────────────────────────────────────────────

@@ -165,8 +165,25 @@ pub fn sys_get_event(
             Ok(0)
         }
         0 => {
-            // TODO: get_event normal (input events)
-            Err(SyscallError::NotImplemented)
+            // Read next input event from the MGI global queue.
+            // arg1 = pointer to maios_event_t (16 bytes)
+            //   struct maios_event_t { u32 type; u32 keycode; u32 ascii; u32 modifiers; }
+            let event_ptr = arg1 as *mut u32;
+            if event_ptr.is_null() {
+                return Err(SyscallError::InvalidArgument);
+            }
+            match mgi::pop_input_event() {
+                Some(ev) => {
+                    unsafe {
+                        core::ptr::write_unaligned(event_ptr,            ev.event_type);
+                        core::ptr::write_unaligned(event_ptr.add(1),     ev.keycode);
+                        core::ptr::write_unaligned(event_ptr.add(2),     ev.ascii);
+                        core::ptr::write_unaligned(event_ptr.add(3),     ev.modifiers);
+                    }
+                    Ok(1) // 1 = event available
+                }
+                None => Ok(0), // 0 = no event pending
+            }
         }
         _ => Err(SyscallError::InvalidArgument),
     }

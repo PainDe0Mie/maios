@@ -36,6 +36,8 @@ path = "../kernel/scheduler"
 path = "../kernel/time"
 [dependencies.sleep]
 path = "../kernel/sleep"
+[dependencies.maios_syscall]
+path = "../kernel/maios_syscall"
 
 ## Needed for building tlibc as a "staticlib" crate-type,
 ## and for avoiding having to link a C program to the nano_core.

@@ -32,10 +32,12 @@ extern crate log;
 extern crate spin;
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use color::Color;
 use shapes::{Coord, Rectangle};
 use framebuffer::{Framebuffer, AlphaPixel};
 use spin::{Mutex, Once};
+use core::sync::atomic::{AtomicU64, AtomicBool, AtomicUsize, Ordering};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Instance globale
@@ -51,6 +53,176 @@ pub fn init() -> Result<(), &'static str> {
     let provider = Box::new(SoftwareGraphicsProvider::new(fb)?);
     MGI.call_once(|| Mutex::new(Mgi::new(provider)));
     Ok(())
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// VSync counter
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Global VSync frame counter — incremented each time `present()` completes.
+static VSYNC_FRAME: AtomicU64 = AtomicU64::new(0);
+
+/// Returns the current VSync frame number.
+/// Applications use this to wait for the next frame.
+pub fn vsync_counter() -> u64 {
+    VSYNC_FRAME.load(Ordering::Acquire)
+}
+
+/// Increments the VSync counter. Called by present().
+fn bump_vsync() {
+    VSYNC_FRAME.fetch_add(1, Ordering::Release);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Backbuffer direct access (for SYS_MAP_FRAMEBUFFER)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Returns `(backbuffer_ptr, width, height)` for direct pixel access.
+///
+/// The pointer points to BGRA8888 pixels (4 bytes each) in a contiguous
+/// row-major buffer. stride = width * 4.
+pub fn get_backbuffer_info() -> Option<(usize, usize, usize)> {
+    let mgi_ref = MGI.get()?;
+    let guard = mgi_ref.lock();
+    let (w, h) = guard.provider.resolution();
+    // Get a raw pointer to the backbuffer data
+    let ptr = guard.backbuffer_ptr();
+    Some((ptr, w, h))
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Exclusive fullscreen mode
+// ────────────────────────────────────────────────────────────────────────────
+
+static EXCLUSIVE_FS: AtomicBool = AtomicBool::new(false);
+static EXCLUSIVE_BUF_PTR: AtomicUsize = AtomicUsize::new(0);
+static EXCLUSIVE_BUF_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// Enables exclusive fullscreen mode with the given user buffer.
+pub fn set_exclusive_fullscreen(buf_ptr: usize, buf_len: usize) {
+    EXCLUSIVE_BUF_PTR.store(buf_ptr, Ordering::Release);
+    EXCLUSIVE_BUF_LEN.store(buf_len, Ordering::Release);
+    EXCLUSIVE_FS.store(true, Ordering::Release);
+    info!("MGI: exclusive fullscreen enabled (buf={:#x}, len={})", buf_ptr, buf_len);
+}
+
+/// Disables exclusive fullscreen mode.
+pub fn clear_exclusive_fullscreen() {
+    EXCLUSIVE_FS.store(false, Ordering::Release);
+    EXCLUSIVE_BUF_PTR.store(0, Ordering::Relaxed);
+    EXCLUSIVE_BUF_LEN.store(0, Ordering::Relaxed);
+    info!("MGI: exclusive fullscreen disabled");
+}
+
+/// Returns `true` if exclusive fullscreen mode is active.
+pub fn is_exclusive_fullscreen() -> bool {
+    EXCLUSIVE_FS.load(Ordering::Acquire)
+}
+
+/// Presents the exclusive fullscreen buffer by copying it to the backbuffer.
+pub fn present_exclusive() {
+    let buf_ptr = EXCLUSIVE_BUF_PTR.load(Ordering::Acquire);
+    let buf_len = EXCLUSIVE_BUF_LEN.load(Ordering::Acquire);
+    if buf_ptr == 0 || buf_len == 0 { return; }
+
+    if let Some(mgi_ref) = MGI.get() {
+        let mut guard = mgi_ref.lock();
+        let (w, h) = guard.provider.resolution();
+        let pixels_needed = w * h;
+        let copy_len = buf_len.min(pixels_needed);
+
+        // Copy user buffer directly into backbuffer
+        let back = guard.backbuffer_ptr_mut();
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                buf_ptr as *const AlphaPixel,
+                back as *mut AlphaPixel,
+                copy_len,
+            );
+        }
+
+        // Mark all dirty and present
+        guard.provider.invalidate_all();
+        guard.provider.present();
+    }
+
+    bump_vsync();
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Input event queue (for SYS_GET_EVENT)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A raw input event that can be read by C programs via SYS_GET_EVENT.
+///
+/// Layout: 16 bytes, matching the C struct `maios_event_t`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RawInputEvent {
+    /// Event type: 1 = key press, 2 = key release, 0 = none
+    pub event_type: u32,
+    /// Keycode (scancode-based, matching Doom's key numbering)
+    pub keycode: u32,
+    /// ASCII character (0 if not printable)
+    pub ascii: u32,
+    /// Modifier flags (shift, ctrl, alt)
+    pub modifiers: u32,
+}
+
+/// Global input event ring buffer.
+const EVENT_QUEUE_SIZE: usize = 64;
+static EVENT_QUEUE: Mutex<EventRing> = Mutex::new(EventRing::new());
+
+struct EventRing {
+    buf: [RawInputEvent; EVENT_QUEUE_SIZE],
+    head: usize,
+    tail: usize,
+}
+
+impl EventRing {
+    const fn new() -> Self {
+        Self {
+            buf: [RawInputEvent { event_type: 0, keycode: 0, ascii: 0, modifiers: 0 }; EVENT_QUEUE_SIZE],
+            head: 0,
+            tail: 0,
+        }
+    }
+
+    fn push(&mut self, ev: RawInputEvent) {
+        let next = (self.head + 1) % EVENT_QUEUE_SIZE;
+        if next == self.tail {
+            // Queue full — drop oldest
+            self.tail = (self.tail + 1) % EVENT_QUEUE_SIZE;
+        }
+        self.buf[self.head] = ev;
+        self.head = next;
+    }
+
+    fn pop(&mut self) -> Option<RawInputEvent> {
+        if self.head == self.tail {
+            None
+        } else {
+            let ev = self.buf[self.tail];
+            self.tail = (self.tail + 1) % EVENT_QUEUE_SIZE;
+            Some(ev)
+        }
+    }
+}
+
+/// Push a keyboard event into the global input queue.
+/// Called by the window manager / keyboard handler.
+pub fn push_key_event(keycode: u32, pressed: bool, ascii: u32, modifiers: u32) {
+    EVENT_QUEUE.lock().push(RawInputEvent {
+        event_type: if pressed { 1 } else { 2 },
+        keycode,
+        ascii,
+        modifiers,
+    });
+}
+
+/// Pop the next input event, or return None if the queue is empty.
+pub fn pop_input_event() -> Option<RawInputEvent> {
+    EVENT_QUEUE.lock().pop()
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -102,6 +274,12 @@ pub trait GraphicsProvider {
     fn resolution(&self) -> (usize, usize);
     /// Invalide la totalité de l'écran (force un repaint complet).
     fn invalidate_all(&mut self);
+    /// Returns raw pointer to backbuffer pixel data (immutable).
+    fn backbuffer_raw_ptr(&self) -> usize;
+    /// Returns raw pointer to backbuffer pixel data (mutable).
+    fn backbuffer_raw_ptr_mut(&mut self) -> usize;
+    /// Returns raw pointer to frontbuffer pixel data (immutable).
+    fn frontbuffer_raw_ptr(&self) -> usize;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -140,6 +318,21 @@ impl Mgi {
     #[inline]
     pub fn invalidate_all(&mut self) {
         self.provider.invalidate_all();
+    }
+
+    /// Returns a raw pointer to the backbuffer pixel data (for SYS_MAP_FRAMEBUFFER).
+    pub fn backbuffer_ptr(&self) -> usize {
+        self.provider.backbuffer_raw_ptr()
+    }
+
+    /// Returns a mutable raw pointer to the backbuffer pixel data.
+    pub fn backbuffer_ptr_mut(&mut self) -> usize {
+        self.provider.backbuffer_raw_ptr_mut()
+    }
+
+    /// Returns a raw pointer to the frontbuffer pixel data (for VirtIO-GPU flush).
+    pub fn frontbuffer_ptr(&self) -> usize {
+        self.provider.frontbuffer_raw_ptr()
     }
 }
 
@@ -561,6 +754,9 @@ impl GraphicsProvider for SoftwareGraphicsProvider {
 
         // Remettre le tilemap à zéro pour la prochaine frame
         self.tilemap.clear();
+
+        // Incrémenter le compteur VSync
+        bump_vsync();
     }
 
     fn resolution(&self) -> (usize, usize) {
@@ -569,5 +765,17 @@ impl GraphicsProvider for SoftwareGraphicsProvider {
 
     fn invalidate_all(&mut self) {
         self.tilemap.mark_all();
+    }
+
+    fn backbuffer_raw_ptr(&self) -> usize {
+        self.backbuffer.buffer().as_ptr() as usize
+    }
+
+    fn backbuffer_raw_ptr_mut(&mut self) -> usize {
+        self.backbuffer.buffer_mut().as_mut_ptr() as usize
+    }
+
+    fn frontbuffer_raw_ptr(&self) -> usize {
+        self.frontbuffer.buffer().as_ptr() as usize
     }
 }

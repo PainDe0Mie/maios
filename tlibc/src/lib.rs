@@ -41,6 +41,7 @@ extern crate spawn;
 extern crate scheduler;
 extern crate time;
 extern crate sleep;
+extern crate maios_syscall;
 
 // Core modules (original)
 mod errno;
@@ -61,6 +62,7 @@ pub mod dirent;
 pub mod signal_funcs;
 pub mod dlfcn;
 pub mod setjmp;
+pub mod maios_syscall;
 
 
 use alloc::vec::Vec;
