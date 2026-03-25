@@ -320,6 +320,149 @@ pub fn main(_args: Vec<String>) -> isize {
     }
 
     // ---------------------------------------------------------------
+    // Test 13: NtDelayExecution (sleep 50ms)
+    // ---------------------------------------------------------------
+    println!("[TEST 13] NtDelayExecution (50ms sleep)");
+    {
+        // -500_000 = 50ms en unités de 100ns (négatif = relatif)
+        let mut delay: i64 = -500_000;
+        let delay_ptr = &mut delay as *mut i64 as u64;
+
+        let before = {
+            let mut counter: u64 = 0;
+            let counter_ptr = &mut counter as *mut u64 as u64;
+            let _ = handle_syscall(nr::NT_QUERY_PERFORMANCE_COUNTER, counter_ptr, 0, 0, 0, 0, 0);
+            counter
+        };
+
+        let status = handle_syscall(
+            nr::NT_DELAY_EXECUTION,
+            0, // Alertable = FALSE
+            delay_ptr,
+            0, 0, 0, 0,
+        );
+
+        let after = {
+            let mut counter: u64 = 0;
+            let counter_ptr = &mut counter as *mut u64 as u64;
+            let _ = handle_syscall(nr::NT_QUERY_PERFORMANCE_COUNTER, counter_ptr, 0, 0, 0, 0, 0);
+            counter
+        };
+
+        if nt_success(status) && after > before {
+            println!("  PASS: NtDelayExecution returned SUCCESS, time elapsed (counter delta={})", after - before);
+            passed += 1;
+        } else {
+            println!("  FAIL: status={} before={} after={}", status_str(status), before, after);
+            failed += 1;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Test 14: NtCreateSection (anonymous, 8KB)
+    // ---------------------------------------------------------------
+    println!("[TEST 14] NtCreateSection (8KB anonymous)");
+    let section_handle;
+    {
+        let mut handle: u64 = 0;
+        let handle_ptr = &mut handle as *mut u64 as u64;
+        let mut max_size: u64 = 0x2000; // 8KB
+        let max_size_ptr = &mut max_size as *mut u64 as u64;
+
+        let status = handle_syscall(
+            nr::NT_CREATE_SECTION,
+            handle_ptr,
+            0x000F_0000, // SECTION_ALL_ACCESS
+            0,           // ObjectAttributes = NULL
+            max_size_ptr,
+            0x04,        // PAGE_READWRITE
+            0x0800_0000, // SEC_COMMIT
+        );
+
+        section_handle = handle;
+
+        if nt_success(status) && handle >= 0x1000 {
+            println!("  PASS: section created, handle={:#x}", handle);
+            passed += 1;
+        } else {
+            println!("  FAIL: status={} handle={:#x}", status_str(status), handle);
+            failed += 1;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Test 15: NtMapViewOfSection (map the section)
+    // ---------------------------------------------------------------
+    println!("[TEST 15] NtMapViewOfSection");
+    {
+        let mut base_addr: u64 = 0;
+        let base_ptr = &mut base_addr as *mut u64 as u64;
+
+        let status = handle_syscall(
+            nr::NT_MAP_VIEW_OF_SECTION,
+            section_handle,
+            0xFFFF_FFFF_FFFF_FFFF, // current process
+            base_ptr,
+            0, 0, 0,
+        );
+
+        if nt_success(status) && base_addr != 0 {
+            // Verify we can write to mapped memory
+            let ptr = base_addr as *mut u8;
+            unsafe {
+                *ptr = 0xBB;
+                let val = *ptr;
+                if val == 0xBB {
+                    println!("  PASS: mapped at {:#x}, memory R/W OK", base_addr);
+                    passed += 1;
+                } else {
+                    println!("  FAIL: mapped at {:#x} but read back {:#x} instead of 0xBB", base_addr, val);
+                    failed += 1;
+                }
+            }
+        } else {
+            println!("  FAIL: status={} base_addr={:#x}", status_str(status), base_addr);
+            failed += 1;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Test 16: NtQueryVirtualMemory (MemoryBasicInformation)
+    // ---------------------------------------------------------------
+    println!("[TEST 16] NtQueryVirtualMemory (MemoryBasicInformation)");
+    {
+        let mut mbi = [0u8; 48];
+        let mut return_length: u64 = 0;
+
+        let status = handle_syscall(
+            nr::NT_QUERY_VIRTUAL_MEMORY,
+            0xFFFF_FFFF_FFFF_FFFF, // current process
+            0x1000,                // BaseAddress (some address)
+            0,                     // MemoryBasicInformation
+            mbi.as_mut_ptr() as u64,
+            48,                    // sizeof(MEMORY_BASIC_INFORMATION)
+            &mut return_length as *mut u64 as u64,
+        );
+
+        if nt_success(status) && return_length == 48 {
+            // Check State = MEM_COMMIT (0x1000) at offset 32
+            let state = unsafe { *(mbi.as_ptr().add(32) as *const u32) };
+            // Check Type = MEM_PRIVATE (0x20000) at offset 40
+            let mem_type = unsafe { *(mbi.as_ptr().add(40) as *const u32) };
+            if state == 0x1000 && mem_type == 0x20000 {
+                println!("  PASS: MBI returned State=MEM_COMMIT, Type=MEM_PRIVATE");
+                passed += 1;
+            } else {
+                println!("  FAIL: unexpected State={:#x} Type={:#x}", state, mem_type);
+                failed += 1;
+            }
+        } else {
+            println!("  FAIL: status={} return_length={}", status_str(status), return_length);
+            failed += 1;
+        }
+    }
+
+    // ---------------------------------------------------------------
     // Summary
     // ---------------------------------------------------------------
     let total = passed + failed;

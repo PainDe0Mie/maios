@@ -15,9 +15,10 @@
 extern crate alloc;
 
 use log::warn;
-use maios_syscall::error::{SyscallResult, SyscallError, result_to_ntstatus};
+use maios_syscall::error::result_to_ntstatus;
 
 pub mod nt_threading;
+pub mod nt_memory;
 
 /// Codes NTSTATUS Windows.
 pub mod ntstatus {
@@ -54,10 +55,15 @@ pub mod nr {
     pub const NT_WAIT_FOR_MULTIPLE_OBJECTS: u64 = 0x000B;
     pub const NT_SET_EVENT: u64 = 0x000E;
     pub const NT_RELEASE_MUTANT: u64 = 0x001B;
-    pub const NT_RESET_EVENT: u64 = 0x0028;
+    pub const NT_RESET_EVENT: u64 = 0x017A;
     pub const NT_CREATE_EVENT: u64 = 0x0048;
     pub const NT_CREATE_MUTANT: u64 = 0x004B;
     pub const NT_CREATE_THREAD_EX: u64 = 0x00C2;
+    pub const NT_DELAY_EXECUTION: u64 = 0x0034;
+    pub const NT_CREATE_SECTION: u64 = 0x004A;
+    pub const NT_MAP_VIEW_OF_SECTION: u64 = 0x0028;
+    pub const NT_QUERY_VIRTUAL_MEMORY: u64 = 0x0023;
+    pub const NT_UNMAP_VIEW_OF_SECTION: u64 = 0x002A;
 }
 
 // =============================================================================
@@ -446,6 +452,20 @@ pub fn handle_syscall(
         }
         nr::NT_WAIT_FOR_MULTIPLE_OBJECTS => {
             return nt_threading::adapt_nt_wait_for_multiple_objects(arg0, arg1, arg2, arg3, arg4);
+        }
+        nr::NT_DELAY_EXECUTION => {
+            return nt_threading::adapt_nt_delay_execution(arg0, arg1);
+        }
+
+        // --- Memory sections ---
+        nr::NT_CREATE_SECTION => {
+            return nt_memory::adapt_nt_create_section(arg0, arg1, arg2, arg3, arg4, arg5);
+        }
+        nr::NT_MAP_VIEW_OF_SECTION => {
+            return nt_memory::adapt_nt_map_view_of_section(arg0, arg1, arg2, arg3, arg4, arg5);
+        }
+        nr::NT_QUERY_VIRTUAL_MEMORY => {
+            return nt_memory::adapt_nt_query_virtual_memory(arg0, arg1, arg2, arg3, arg4, arg5);
         }
 
         nr::NT_QUERY_INFORMATION_FILE => {
