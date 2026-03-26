@@ -99,7 +99,7 @@ if (-not $BuildOnly) {
     $isoSize = [math]::Round((Get-Item $IsoPath).Length / 1MB, 1)
     Write-Info "ISO: $IsoPath ($isoSize MB)"
     Write-Info "RAM: 4 GB"
-    Write-Info "CPUs: 2 (SMP)"
+    Write-Info "CPUs: 4 (SMP)"
     Write-Info "Machine: Q35"
     Write-Info "Boot: CD-ROM"
 
@@ -121,7 +121,7 @@ if (-not $BuildOnly) {
         "-boot", "d"
         "-cpu", "Broadwell"
         "-m", "4G"
-        "-smp", "2"
+        "-smp", "4"
         "-no-reboot"
         "-no-shutdown"
         "-serial", "stdio"
