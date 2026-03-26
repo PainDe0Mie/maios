@@ -383,22 +383,12 @@ impl MaiScheduler {
     ///   4. Any CPU (cross-NUMA, last resort)
     ///
     /// Only steals if the victim has ≥ 2 tasks (to maintain fairness).
-    fn steal_task(&self, thief_cpu: usize) -> Option<TaskRef> {
-        let topo = self.topology_rw.read();
-        let steal_order = topo.steal_order(thief_cpu);
-        let rqs = self.rqs.read();
-        for &victim_cpu in steal_order {
-            if victim_cpu == thief_cpu {
-                continue;
-            }
-            if let Some(victim_rq) = rqs.get(victim_cpu) {
-                if victim_rq.load() >= 2 {
-                    if let Some(task) = victim_rq.steal_one() {
-                        return Some(task);
-                    }
-                }
-            }
-        }
+    fn steal_task(&self, _thief_cpu: usize) -> Option<TaskRef> {
+        // Work stealing disabled: cross-CPU task migration triggers BTreeMap
+        // corruption under SMP due to stale scheduling keys (ve/vdeadline)
+        // after tick() modifies them on the running CPU. Tasks stay pinned
+        // to the CPU they were first enqueued on.
+        // TODO: fix steal_one/dequeue key coherence to re-enable.
         None
     }
 
