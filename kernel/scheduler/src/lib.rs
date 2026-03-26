@@ -23,6 +23,7 @@
 
 #![no_std]
 #![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
+#![feature(thread_local)]
 
 extern crate alloc;
 
@@ -161,8 +162,14 @@ pub fn init_single_cpu() -> Result<(), &'static str> {
 // ---------------------------------------------------------------------------
 
 /// TSC value at the last timer tick, per CPU.
-/// We use a single global for now; per-CPU storage needs CLS crate integration.
-static LAST_TICK_TSC: AtomicU64 = AtomicU64::new(0);
+///
+/// Each CPU maintains its own TSC snapshot so that `elapsed_ns_tsc()` computes
+/// the correct delta for *this* CPU's timer interval.  Without per-CPU storage
+/// multiple CPUs would swap the same global, producing near-zero deltas on all
+/// CPUs except the one that happened to swap last — corrupting vruntime
+/// accounting and causing scheduling chaos under SMP.
+#[cls::cpu_local]
+static LAST_TICK_TSC: u64 = 0;
 
 /// Nanoseconds per TSC tick, calibrated at boot (approximate default: 1/3GHz).
 /// Updated by `calibrate_tsc()` if called.
@@ -182,9 +189,13 @@ fn rdtsc() -> u64 {
 }
 
 /// Compute elapsed nanoseconds since the last tick using TSC.
+///
+/// Uses per-CPU `LAST_TICK_TSC` so each CPU computes its own delta correctly.
+/// Called from the timer interrupt handler where preemption is already disabled.
 fn elapsed_ns_tsc() -> u64 {
     let now = rdtsc();
-    let prev = LAST_TICK_TSC.swap(now, Ordering::Relaxed);
+    let prev = LAST_TICK_TSC.load();
+    LAST_TICK_TSC.set(now);
     if prev == 0 { return 1_000_000; } // first tick: assume 1ms
     let delta_tsc = now.saturating_sub(prev);
     // ns = tsc_delta / (tsc_freq_ghz) ≈ delta / 3

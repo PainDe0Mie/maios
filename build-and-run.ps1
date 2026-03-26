@@ -99,7 +99,7 @@ if (-not $BuildOnly) {
     $isoSize = [math]::Round((Get-Item $IsoPath).Length / 1MB, 1)
     Write-Info "ISO: $IsoPath ($isoSize MB)"
     Write-Info "RAM: 4 GB"
-    Write-Info "CPUs: 4 (SMP)"
+    Write-Info "CPUs: 2 (SMP)"
     Write-Info "Machine: Q35"
     Write-Info "Boot: CD-ROM"
 
@@ -121,16 +121,18 @@ if (-not $BuildOnly) {
         "-boot", "d"
         "-cpu", "Broadwell"
         "-m", "4G"
-        "-smp", "4"
+        "-smp", "2"
         "-no-reboot"
         "-no-shutdown"
         "-serial", "stdio"
+        "-serial", "null"
         "-monitor", "telnet:localhost:55555,server,nowait"
         "-net", "none"
         "-display", "sdl,gl=on"
         "-s"
         "-device", "intel-hda,id=hda0,msi=off"
         "-device", "hda-output,bus=hda0.0"
+        # "-device", "virtio-gpu-pci"
     )
 
     if (Test-Path $DiskImage) {

@@ -267,13 +267,17 @@ pub fn task_switch(next: TaskRef, cpu_id: CpuId, preemption_guard: PreemptionGua
     // *** CRITICAL: Prevent double-scheduling ***
     // If another CPU is already running this task, we must NOT switch to it.
     // Two CPUs on the same stack causes catastrophic corruption.
-    let running_on: Option<CpuId> = next.running_on_cpu.load().into();
-    if running_on.is_some() {
+    //
+    // Use compare_exchange (not load+store) to atomically claim the task.
+    // Without CAS, two CPUs could both see running_on_cpu == None and both
+    // proceed to switch — a classic TOCTOU race causing stack corruption.
+    let none_val: cpu::OptionalCpuId = Option::<CpuId>::None.into();
+    let some_val: cpu::OptionalCpuId = Option::<CpuId>::Some(cpu_id).into();
+    if next.running_on_cpu.compare_exchange(none_val, some_val).is_err() {
         return (false, preemption_guard);
     }
 
     curr.running_on_cpu.store(Option::<CpuId>::None.into());
-    next.running_on_cpu.store(Option::<CpuId>::Some(cpu_id).into());
     CURRENT_TASK.set(Some(next.clone()));
 
     if let Some(ref new_space) = next.address_space {
