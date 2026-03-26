@@ -240,22 +240,28 @@ impl EevdfRunQueue {
         if self.nr_running <= 1 {
             return None;
         }
-        // Steal from ineligible (highest ve = most recently blocked/ran).
-        if let Some((&key, _)) = self.ineligible.iter().next_back() {
-            return self.ineligible.remove(&key);
+
+        // Try ineligible first (highest ve = most recently blocked/ran),
+        // then fall back to eligible (highest vdeadline).
+        let task = if let Some((&key, _)) = self.ineligible.iter().next_back() {
+            self.ineligible.remove(&key)?
+        } else if let Some((&key, _)) = self.eligible.iter().next_back() {
+            self.eligible.remove(&key)?
+        } else {
+            return None;
+        };
+
+        // Mark the task as off-queue so a concurrent dequeue() on
+        // the old CPU is a no-op (otherwise it would try to remove
+        // with stale BTreeMap keys → corruption).
+        {
+            let mut t = task.write();
+            t.sched.on_rq = false;
+            self.total_weight = self.total_weight.saturating_sub(t.sched.weight);
         }
-        // Fall back to eligible with highest vdeadline.
-        if let Some((&key, _)) = self.eligible.iter().next_back() {
-            let task = self.eligible.remove(&key)?;
-            {
-                let weight = task.read().sched.weight;
-                self.total_weight = self.total_weight.saturating_sub(weight);
-                self.nr_running = self.nr_running.saturating_sub(1);
-            }
-            // Caller will re-enqueue on the thief CPU.
-            return Some(task);
-        }
-        None
+        self.nr_running = self.nr_running.saturating_sub(1);
+
+        Some(task)
     }
 
     // -----------------------------------------------------------------------
