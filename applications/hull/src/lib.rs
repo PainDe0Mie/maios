@@ -96,10 +96,20 @@ impl Shell {
             stdout: app_io::stdout().expect("no stdout"),
         };
         let mut io = Io::new(wrapper);
-        let mut editor = EditorBuilder::new_unbounded()
+        // noline sends ANSI escape sequences (DSR / cursor position report)
+        // during init. If the other end isn't a real terminal (e.g. COM2 with
+        // no connection), build_sync returns ParserError. Exit gracefully
+        // instead of panicking — console will clean up.
+        let mut editor = match EditorBuilder::new_unbounded()
             .with_unbounded_history()
             .build_sync(&mut io)
-            .expect("couldn't instantiate line editor");
+        {
+            Ok(ed) => ed,
+            Err(e) => {
+                warn!("hull: terminal init failed ({:?}), exiting", e);
+                return Err(Error::Other("terminal not available"));
+            }
+        };
 
         loop {
             editor.dedup_history();

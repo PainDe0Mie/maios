@@ -241,12 +241,17 @@ impl SerialPort {
         &mut self,
         sender: Sender<DataChunk>
     ) -> Result<(), DataSenderAlreadyExists> {
-        if self.data_sender.is_some() { 
+        if self.data_sender.is_some() {
             Err(DataSenderAlreadyExists)
         } else {
             self.data_sender = Some(sender);
             Ok(())
         }
+    }
+
+    /// Clears the data sender so the port can accept a new connection.
+    pub fn clear_data_sender(&mut self) {
+        self.data_sender = None;
     }
 
 }
@@ -348,7 +353,7 @@ fn serial_port_receive_deferred(
                 );
             }
         } else {
-            warn!("Warning: no connection detector; ignoring {}-byte input read from serial port {:?}.",
+            debug!("no connection detector; ignoring {}-byte input read from serial port {:?}.",
                 bytes_read, base_port
             );
         }
