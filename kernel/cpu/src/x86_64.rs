@@ -57,7 +57,7 @@ pub fn current_cpu() -> CpuId {
 /// A wrapper around `Option<CpuId>` with a forced type alignment of 8 bytes,
 /// which guarantees that it compiles down to lock-free native atomic instructions
 /// when using it inside of an atomic type like [`AtomicCell`].
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 #[repr(align(8))]
 pub struct OptionalCpuId(Option<CpuId>);
 impl From<Option<CpuId>> for OptionalCpuId {

@@ -9,6 +9,7 @@ edition = "2018"
 log = "0.4.8"
 
 audio_mixer = { path = "../audio_mixer" }
+cls = { path = "../cls" }
 cpu = { path = "../cpu" }
 interrupts = { path = "../interrupts" }
 mks = { path = "../mks" }

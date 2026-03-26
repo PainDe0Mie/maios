@@ -3604,6 +3604,7 @@ name = "scheduler"
 version = "0.1.0"
 dependencies = [
  "audio_mixer",
+ "cls",
  "cpu",
  "generic_timer_aarch64",
  "interrupts",
