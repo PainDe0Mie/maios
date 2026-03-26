@@ -112,7 +112,6 @@ fn shell_loop(
         .name(format!("{address:?}_to_tty"))
         .spawn()?;
 
-
     let new_app_ns = mod_mgmt::create_application_namespace(None)?;
 
     let (app_file, _ns) =
@@ -140,8 +139,11 @@ fn shell_loop(
     task.unblock().map_err(|_| "couldn't unblock hull task")?;
     task.join()?;
 
-    reader_task.kill(KillReason::Requested).unwrap();
-    writer_task.kill(KillReason::Requested).unwrap();
+    // DON'T clear the data sender — keep it set so that the connection
+    // detector won't try to reconnect on this port. The reader/writer
+    // tasks stay alive and silently absorb any data from the port,
+    // preventing reconnection loops on ports with no real terminal
+    // (e.g. COM2 noise in QEMU).
 
     // Flush the tty in case the reader task didn't run between the last time the
     // shell wrote something to the slave end and us killing the task.
@@ -151,8 +153,6 @@ fn shell_loop(
             .write(&data[..len])
             .map_err(|_| "couldn't write to serial port")?;
     };
-
-    // TODO: Close port?
 
     Ok(())
 }
@@ -178,9 +178,10 @@ fn port_to_tty_loop((receiver, master): (Receiver<DataChunk>, tty::Master)) {
     loop {
         let DataChunk { data, len } = match receiver.receive() {
             Ok(d) => d,
-            Err(e) => {
-                error!("couldn't read from port: {e:?}");
-                continue;
+            Err(_) => {
+                // Channel disconnected — sender was cleared (hull exited).
+                // Exit cleanly instead of spinning on errors.
+                return;
             },
         };
 

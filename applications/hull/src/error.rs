@@ -28,6 +28,8 @@ pub enum Error {
     ///
     /// The current runstate is stored in the field.
     UnblockFailed(RunState),
+    /// A generic error with a static message.
+    Other(&'static str),
 }
 
 impl Error {
@@ -43,6 +45,7 @@ impl Error {
             Error::UnblockFailed(state) => {
                 println!("failed to unblock task with state {:?}", state)
             }
+            Error::Other(msg) => println!("error: {msg}"),
         }
         Ok(())
     }
