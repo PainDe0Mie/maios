@@ -216,16 +216,14 @@ pub fn init(
     match mhc::init() {
         Ok(()) => {
             warn!("MHC: GPU subsystem initialized");
-            // Wire MHC VirtIO-GPU as the active display output.
-            // Get the display resolution from MGI (already initialized by window_manager).
-            #[cfg(target_arch = "x86_64")]
-            if let Some(mgi_ref) = mgi::MGI.get() {
-                let (w, h) = mgi_ref.lock().resolution();
-                match mhc::setup_display(w as u32, h as u32) {
-                    Ok(())  => warn!("MHC: VirtIO-GPU display output ready ({}x{})", w, h),
-                    Err(e)  => warn!("MHC: VirtIO-GPU display not available: {}", e),
-                }
-            }
+            // NOTE: VirtIO-GPU scanout setup is intentionally skipped.
+            // With `virtio-vga`, the VGA compatibility mode displays the
+            // MGI framebuffer directly (zero-copy).  Enabling the VirtIO
+            // scanout would require copying 8 MB per frame via
+            // TRANSFER_TO_HOST_2D, which is too expensive under QEMU TCG.
+            // The VirtIO-GPU 2D/3D command path remains available for
+            // future use (off-screen rendering, compute, etc.).
+            warn!("MHC: VirtIO-GPU scanout skipped (using VGA compat mode)");
         }
         Err(e) => warn!("MHC: init failed: {}", e),
     }
