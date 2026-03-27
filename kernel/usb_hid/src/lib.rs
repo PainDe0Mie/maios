@@ -128,14 +128,11 @@ pub fn configure_hid_devices() {
         let poll_slot_id = slot_id;
         let task_name = String::from("usb_hid_poll_") + &alloc::format!("{}", slot_id);
 
-        if let Err(e) = spawn::new_task_builder(hid_poll_task, poll_slot_id)
-            .name(task_name)
-            .spawn()
-        {
-            warn!("USB_HID:   slot {}: failed to spawn poll task: {:?}", slot_id, e);
-        } else {
-            warn!("USB_HID:   slot {}: poll task spawned", slot_id);
-        }
+        // TODO: re-enable once control_transfer uses interrupt-driven completion
+        // instead of busy-wait spin_loop(). The current spin poll at 125 Hz
+        // burns an entire CPU core under QEMU TCG.
+        warn!("USB_HID:   slot {}: poll task DISABLED (busy-wait too expensive)", slot_id);
+        let _ = (poll_slot_id, task_name); // suppress unused warnings
     }
 }
 
