@@ -42,3 +42,4 @@ mhc             = { path = "../mhc" }
 mgi             = { path = "../mgi" }
 intel_hda       = { path = "../intel_hda" }
 xhci            = { path = "../xhci" }
+usb_hid         = { path = "../usb_hid" }

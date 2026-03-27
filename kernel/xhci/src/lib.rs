@@ -565,6 +565,40 @@ impl XhciController {
         warn!("XHCI: {} device(s) enumerated", self.devices.len());
     }
 
+    /// Perform a USB control transfer on a device identified by its slot ID.
+    ///
+    /// This is a public wrapper around `control_transfer` that locates the
+    /// device's EP0 ring internally, avoiding borrow conflicts for callers
+    /// outside this crate.
+    pub fn control_transfer_to_device(
+        &mut self,
+        slot_id: u8,
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        length: u16,
+    ) -> Result<Vec<u8>, &'static str> {
+        // Temporarily take the ep0_ring out of the device to satisfy the borrow
+        // checker (control_transfer needs &mut self + &mut TrbRing).
+        let dev_idx = self.devices.iter().position(|d| d.slot_id == slot_id)
+            .ok_or("XHCI: device not found for slot")?;
+
+        // Swap the ring out with a freshly-allocated one (allocation is cheap).
+        let mut ring = TrbRing::new()?;
+        core::mem::swap(&mut ring, &mut self.devices[dev_idx].ep0_ring);
+
+        let result = self.control_transfer(
+            slot_id, &mut ring,
+            request_type, request, value, index, length,
+        );
+
+        // Swap the ring back.
+        core::mem::swap(&mut ring, &mut self.devices[dev_idx].ep0_ring);
+
+        result
+    }
+
     /// Get a mutable pointer to interrupter N.
     fn interrupter_mut(&self, index: u32) -> *mut XhciInterrupter {
         // Interrupter 0 is at runtime_base + 0x20.

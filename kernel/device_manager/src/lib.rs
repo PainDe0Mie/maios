@@ -72,6 +72,8 @@ pub fn init(
     }
 
     // 3. PS/2
+    #[cfg(target_arch = "x86_64")]
+    let usb_key_producer = key_producer.clone();
     #[cfg(target_arch = "x86_64")] {
         let ps2 = ps2::init()?;
         if let Some(kb) = ps2.keyboard_ref() { keyboard::init(kb, key_producer)?; }
@@ -230,6 +232,13 @@ pub fn init(
 
     #[cfg(target_arch = "x86_64")]
     if disk_idx == 0 { warn!("Aucun storage device trouvé"); }
+
+    // Initialize USB HID driver — configure enumerated HID devices and
+    // spawn polling tasks that feed keyboard events into the input pipeline.
+    #[cfg(target_arch = "x86_64")] {
+        usb_hid::init(usb_key_producer);
+        usb_hid::configure_hid_devices();
+    }
 
     Ok(())
 }

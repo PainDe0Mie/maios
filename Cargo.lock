@@ -1003,6 +1003,7 @@ dependencies = [
  "spin 0.9.4",
  "storage_device",
  "storage_manager",
+ "usb_hid",
  "vfs_node",
  "xhci",
 ]
@@ -4908,6 +4909,21 @@ dependencies = [
  "app_io",
  "task",
  "time",
+]
+
+[[package]]
+name = "usb_hid"
+version = "0.1.0"
+dependencies = [
+ "event_types",
+ "keycodes_ascii",
+ "log",
+ "mpmc",
+ "sleep",
+ "spawn",
+ "spin 0.9.4",
+ "task",
+ "xhci",
 ]
 
 [[package]]
