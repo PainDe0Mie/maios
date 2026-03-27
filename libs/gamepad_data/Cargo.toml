@@ -1,0 +1,7 @@
+[package]
+name = "gamepad_data"
+version = "0.1.0"
+description = "Gamepad/joystick data types for MaiOS input pipeline"
+edition = "2021"
+
+[dependencies]

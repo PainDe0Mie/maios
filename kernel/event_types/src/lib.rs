@@ -5,6 +5,7 @@ extern crate alloc;
 use alloc::string::String;
 use keycodes_ascii::KeyEvent;
 use mouse_data::MouseEvent;
+use gamepad_data::GamepadState;
 use shapes::{Coord, Rectangle};
 
 /// An event describing mouse position rather than movement differential from last event.
@@ -61,6 +62,8 @@ pub enum Event {
     WindowResizeEvent(Rectangle),
     /// The event tells application about mouse's position currently (including relative to a window and relative to a screen)
     MousePositionEvent(MousePositionEvent),
+    /// An input event from a USB gamepad/joystick.
+    GamepadEvent(GamepadState),
     ExitEvent,
 }
 

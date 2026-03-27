@@ -134,6 +134,8 @@ if (-not $BuildOnly) {
         "-device", "intel-hda,id=hda0,msi=off"
         "-device", "hda-output,bus=hda0.0"
         "-device", "virtio-vga"
+        "-device", "qemu-xhci,id=xhci0"
+        "-device", "usb-kbd,bus=xhci0.0"
     )
 
     if (Test-Path $DiskImage) {

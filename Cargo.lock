@@ -1004,6 +1004,7 @@ dependencies = [
  "storage_device",
  "storage_manager",
  "vfs_node",
+ "xhci",
 ]
 
 [[package]]
@@ -1194,6 +1195,7 @@ dependencies = [
 name = "event_types"
 version = "0.1.0"
 dependencies = [
+ "gamepad_data",
  "keycodes_ascii",
  "mouse_data",
  "shapes",
@@ -1542,6 +1544,10 @@ dependencies = [
  "pin-project-lite",
  "pin-utils",
 ]
+
+[[package]]
+name = "gamepad_data"
+version = "0.1.0"
 
 [[package]]
 name = "gdt"
@@ -5376,6 +5382,21 @@ dependencies = [
  "bitflags 1.3.2",
  "rustversion",
  "volatile 0.4.6",
+]
+
+[[package]]
+name = "xhci"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "memory",
+ "memory_structs",
+ "pci",
+ "pte_flags",
+ "sleep",
+ "spin 0.9.4",
+ "volatile 0.2.7",
+ "zerocopy",
 ]
 
 [[package]]

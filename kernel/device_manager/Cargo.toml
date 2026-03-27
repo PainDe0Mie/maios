@@ -41,3 +41,4 @@ partition_device = { path = "../partition_device" }
 mhc             = { path = "../mhc" }
 mgi             = { path = "../mgi" }
 intel_hda       = { path = "../intel_hda" }
+xhci            = { path = "../xhci" }

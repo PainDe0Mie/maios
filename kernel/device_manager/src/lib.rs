@@ -178,6 +178,15 @@ pub fn init(
             }
         }
 
+        // USB — xHCI controller (class 0x0C, subclass 0x03)
+        #[cfg(target_arch = "x86_64")]
+        if dev.class == xhci::XHCI_PCI_CLASS && dev.subclass == xhci::XHCI_PCI_SUBCLASS {
+            match xhci::init_from_pci(dev) {
+                Ok(()) => { info!("xHCI USB controller initialized at {:?}", dev.location); continue; }
+                Err(e) => { error!("xHCI {:?}: {}", dev.location, e); continue; }
+            }
+        }
+
         // Suppress known Q35/ICH9 devices that have no driver in MaiOS yet.
         #[cfg(target_arch = "x86_64")]
         if dev.class == 0x0C && dev.subclass == 0x05 {
