@@ -1,0 +1,24 @@
+[package]
+name = "download"
+version = "0.1.0"
+description = "Telecharger des fichiers via HTTP et les sauvegarder sur le disque"
+edition = "2021"
+
+[lib]
+name = "download"
+crate-type = ["rlib"]
+
+[dependencies]
+log         = "0.4.8"
+getopts     = "0.2.21"
+app_io      = { path = "../../kernel/app_io" }
+task        = { path = "../../kernel/task" }
+fs_node     = { path = "../../kernel/fs_node" }
+root        = { path = "../../kernel/root" }
+path        = { path = "../../kernel/path" }
+net         = { path = "../../kernel/net" }
+http_client = { path = "../../kernel/http_client" }
+dns_resolver = { path = "../../kernel/dns_resolver" }
+heapfile    = { path = "../../kernel/heapfile" }
+vfs_node    = { path = "../../kernel/vfs_node" }
+time        = { path = "../../kernel/time" }

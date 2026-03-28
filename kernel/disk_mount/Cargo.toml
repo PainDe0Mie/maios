@@ -15,4 +15,6 @@ storage_device = { path = "../storage_device" }
 root           = { path = "../root" }
 fs_node        = { path = "../fs_node" }
 vfs_node       = { path = "../vfs_node" }
+heapfile       = { path = "../heapfile" }
+io             = { path = "../io" }
 spin           = { version = "0.9", default-features = false, features = ["mutex"] }

@@ -516,7 +516,8 @@ pub fn init(
         let mounted = disk_mount::init();
         if mounted > 0 {
             disk_mount::create_system_dirs();
-            info!("Persistent filesystem: {} volume(s) mounted", mounted);
+            disk_mount::install_system_files();
+            info!("Persistent filesystem: {} volume(s) mounted and installed", mounted);
         }
     }
 
