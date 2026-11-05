@@ -801,8 +801,17 @@ fn window_manager_loop(
     let frame_ticks = FRAME_NANOS * tsc_freq_khz / 1_000_000;
     let mut last_frame_tsc: u64 = unsafe { core::arch::x86_64::_rdtsc() };
 
+    // VirtIO-GPU flush rate limiter — only flush the (expensive) 8 MB
+    // framebuffer copy when something actually changed on screen, and
+    // at most every ~33 ms (30 fps) to keep emulated environments smooth.
+    const VIRTIO_MIN_TICKS: u64 = 33_000_000; // 33ms
+    let virtio_frame_ticks = VIRTIO_MIN_TICKS * tsc_freq_khz / 1_000_000;
+    let mut last_virtio_tsc: u64 = unsafe { core::arch::x86_64::_rdtsc() };
+    let mut content_dirty = true; // first frame always flush
+
     loop {
         let mut need_present = false;
+        let mut had_input = false;
 
         // Drain up to 16 keyboard events per iteration.
         for _ in 0..16 {
@@ -810,6 +819,7 @@ fn window_manager_loop(
                 Some(Event::KeyboardEvent(ref e)) => {
                     handle_keyboard(e.key_event)?;
                     need_present = true;
+                    had_input = true;
                 }
                 _ => break,
             }
@@ -847,6 +857,7 @@ fn window_manager_loop(
                 if dx != 0 || dy != 0 {
                     wm.move_mouse(Coord::new(dx, -dy))?;
                     need_present = true;
+                    had_input = true;
                 }
             }
             handle_mouse(m)?;
@@ -862,6 +873,8 @@ fn window_manager_loop(
             last_frame_tsc = now_tsc;
         }
 
+        if had_input { content_dirty = true; }
+
         if need_present {
             if mgi::is_exclusive_fullscreen() {
                 mgi::present_exclusive();
@@ -872,8 +885,17 @@ fn window_manager_loop(
                     }
                 }
             }
-            if let Some(wm) = WINDOW_MANAGER.get() {
-                wm.lock().flush_to_virtio();
+            // VirtIO-GPU flush: only when content changed AND enough
+            // time has passed (rate-limited to ~30 fps).  The MGI
+            // framebuffer (VGA) is always presented immediately above;
+            // VirtIO is the expensive copy so we throttle it.
+            let now_virtio = unsafe { core::arch::x86_64::_rdtsc() };
+            if content_dirty && now_virtio.wrapping_sub(last_virtio_tsc) >= virtio_frame_ticks {
+                if let Some(wm) = WINDOW_MANAGER.get() {
+                    wm.lock().flush_to_virtio();
+                }
+                content_dirty = false;
+                last_virtio_tsc = now_virtio;
             }
             // Protège vsync_tick contre un callback non initialisé
             if mgi::MGI.get().is_some() {

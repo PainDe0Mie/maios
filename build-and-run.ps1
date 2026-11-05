@@ -128,11 +128,13 @@ if (-not $BuildOnly) {
         "-serial", "null"
         "-monitor", "telnet:localhost:55555,server,nowait"
         "-net", "none"
+        "-vga", "std"
         "-display", "sdl,gl=on"
         "-s"
         "-device", "intel-hda,id=hda0,msi=off"
         "-device", "hda-output,bus=hda0.0"
-        # "-device", "virtio-gpu-pci"
+        "-device", "qemu-xhci,id=xhci0"
+        "-device", "usb-kbd,bus=xhci0.0"
     )
 
     if (Test-Path $DiskImage) {

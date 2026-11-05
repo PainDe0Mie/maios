@@ -14,5 +14,8 @@ path = "../shapes"
 [dependencies.mouse_data]
 path = "../../libs/mouse_data"
 
+[dependencies.gamepad_data]
+path = "../../libs/gamepad_data"
+
 [lib]
 crate-type = ["rlib"]

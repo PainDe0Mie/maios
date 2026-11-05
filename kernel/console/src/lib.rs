@@ -44,12 +44,9 @@ fn console_connection_detector(
     connection_listener: Receiver<SerialPortAddress>,
 ) -> Result<(), &'static str> {
     loop {
-        // WORKAROUND: Use try_receive() + yield to avoid panic in wait_queue block()
-        // The panic "called Result::unwrap() on an Err value: Blocked" happens because
-        // of a race condition or state corruption in the blocking path.
-        let serial_port_address = loop {
-            if let Ok(addr) = connection_listener.try_receive() { break addr; }
-            let _ = sleep::sleep(sleep::Duration::from_millis(1));
+        let serial_port_address = match connection_listener.receive() {
+            Ok(addr) => addr,
+            Err(_) => return Ok(()),
         };
 
         if IGNORED_SERIAL_PORT_INPUT.load(Ordering::Relaxed) == serial_port_address as u16 {

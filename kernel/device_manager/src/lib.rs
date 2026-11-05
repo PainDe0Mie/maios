@@ -72,6 +72,8 @@ pub fn init(
     }
 
     // 3. PS/2
+    #[cfg(target_arch = "x86_64")]
+    let usb_key_producer = key_producer.clone();
     #[cfg(target_arch = "x86_64")] {
         let ps2 = ps2::init()?;
         if let Some(kb) = ps2.keyboard_ref() { keyboard::init(kb, key_producer)?; }
@@ -178,6 +180,15 @@ pub fn init(
             }
         }
 
+        // USB — xHCI controller (class 0x0C, subclass 0x03)
+        #[cfg(target_arch = "x86_64")]
+        if dev.class == xhci::XHCI_PCI_CLASS && dev.subclass == xhci::XHCI_PCI_SUBCLASS {
+            match xhci::init_from_pci(dev) {
+                Ok(()) => { info!("xHCI USB controller initialized at {:?}", dev.location); continue; }
+                Err(e) => { error!("xHCI {:?}: {}", dev.location, e); continue; }
+            }
+        }
+
         // Suppress known Q35/ICH9 devices that have no driver in MaiOS yet.
         #[cfg(target_arch = "x86_64")]
         if dev.class == 0x0C && dev.subclass == 0x05 {
@@ -205,22 +216,27 @@ pub fn init(
     match mhc::init() {
         Ok(()) => {
             warn!("MHC: GPU subsystem initialized");
-            // Wire MHC VirtIO-GPU as the active display output.
-            // Get the display resolution from MGI (already initialized by window_manager).
-            #[cfg(target_arch = "x86_64")]
-            if let Some(mgi_ref) = mgi::MGI.get() {
-                let (w, h) = mgi_ref.lock().resolution();
-                match mhc::setup_display(w as u32, h as u32) {
-                    Ok(())  => warn!("MHC: VirtIO-GPU display output ready ({}x{})", w, h),
-                    Err(e)  => warn!("MHC: VirtIO-GPU display not available: {}", e),
-                }
-            }
+            // NOTE: VirtIO-GPU scanout setup is intentionally skipped.
+            // With `virtio-vga`, the VGA compatibility mode displays the
+            // MGI framebuffer directly (zero-copy).  Enabling the VirtIO
+            // scanout would require copying 8 MB per frame via
+            // TRANSFER_TO_HOST_2D, which is too expensive under QEMU TCG.
+            // The VirtIO-GPU 2D/3D command path remains available for
+            // future use (off-screen rendering, compute, etc.).
+            warn!("MHC: VirtIO-GPU scanout skipped (using VGA compat mode)");
         }
         Err(e) => warn!("MHC: init failed: {}", e),
     }
 
     #[cfg(target_arch = "x86_64")]
     if disk_idx == 0 { warn!("Aucun storage device trouvé"); }
+
+    // Initialize USB HID driver — configure enumerated HID devices and
+    // spawn polling tasks that feed keyboard events into the input pipeline.
+    #[cfg(target_arch = "x86_64")] {
+        usb_hid::init(usb_key_producer);
+        usb_hid::configure_hid_devices();
+    }
 
     Ok(())
 }
