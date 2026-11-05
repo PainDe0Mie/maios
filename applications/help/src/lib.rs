@@ -42,6 +42,7 @@ const COMMANDS: &[CmdInfo] = &[
     CmdInfo { name: "head",     category: "Fichiers",  description: "Afficher les premières lignes d'un fichier" },
     CmdInfo { name: "tail",     category: "Fichiers",  description: "Afficher les dernières lignes d'un fichier" },
     CmdInfo { name: "wc",       category: "Fichiers",  description: "Compter lignes, mots et octets" },
+    CmdInfo { name: "less",     category: "Fichiers",  description: "Naviguer dans un fichier page par page" },
 
     // ── Traitement de texte ──
     CmdInfo { name: "grep",     category: "Texte",     description: "Rechercher un motif dans des fichiers" },
@@ -67,6 +68,10 @@ const COMMANDS: &[CmdInfo] = &[
     CmdInfo { name: "du",       category: "Système",   description: "Estimer l'utilisation d'espace par fichier" },
     CmdInfo { name: "date",     category: "Système",   description: "Afficher la date et l'heure" },
     CmdInfo { name: "lspci",    category: "Système",   description: "Lister les périphériques PCI" },
+    CmdInfo { name: "deps",     category: "Système",   description: "Afficher les dépendances d'un crate" },
+    CmdInfo { name: "ns",       category: "Système",   description: "Afficher les espaces de noms du noyau" },
+    CmdInfo { name: "rq",       category: "Système",   description: "Afficher les files d'attente d'exécution" },
+    CmdInfo { name: "print_fault_log", category: "Système", description: "Afficher le journal des fautes système" },
 
     // ── Environnement ──
     CmdInfo { name: "env",      category: "Environnement", description: "Afficher les variables d'environnement" },
@@ -81,21 +86,30 @@ const COMMANDS: &[CmdInfo] = &[
     CmdInfo { name: "true_cmd", category: "Utilitaires", description: "Retourner le code de succès (0)" },
     CmdInfo { name: "false_cmd",category: "Utilitaires", description: "Retourner le code d'erreur (1)" },
     CmdInfo { name: "sleep_cmd",category: "Utilitaires", description: "Attendre N secondes" },
+    CmdInfo { name: "hello",    category: "Utilitaires", description: "Afficher un message de bienvenue" },
+    CmdInfo { name: "bm",       category: "Utilitaires", description: "Benchmark de performances système" },
 
     // ── Réseau ──
     CmdInfo { name: "ping",     category: "Réseau",    description: "Envoyer des paquets ICMP" },
+    CmdInfo { name: "download", category: "Réseau",    description: "Télécharger un fichier via HTTP" },
+
+    // ── Audio ──
+    CmdInfo { name: "audio_test",   category: "Audio", description: "Tester la sortie audio Intel HDA" },
 
     // ── Applications graphiques ──
     CmdInfo { name: "file_manager",  category: "GUI",  description: "Gestionnaire de fichiers graphique" },
-    CmdInfo { name: "explorer",      category: "GUI",  description: "Explorateur de fichiers" },
-    CmdInfo { name: "task_manager",  category: "GUI",  description: "Gestionnaire de tâches" },
+    CmdInfo { name: "explorer",      category: "GUI",  description: "Bureau avec icônes et barre des tâches" },
+    CmdInfo { name: "task_manager",  category: "GUI",  description: "Gestionnaire de tâches graphique" },
     CmdInfo { name: "taskbar",       category: "GUI",  description: "Barre des tâches" },
 
     // ── Exécution ──
-    CmdInfo { name: "run",      category: "Exécution", description: "Exécuter un binaire ELF Linux depuis le disque" },
+    CmdInfo { name: "run",      category: "Exécution", description: "Exécuter un binaire ELF Linux via MEB" },
+    CmdInfo { name: "loadc",    category: "Exécution", description: "Charger et exécuter un binaire C/ELF natif" },
+    CmdInfo { name: "wasm",     category: "Exécution", description: "Exécuter un module WebAssembly (.wasm)" },
 
     // ── Shell ──
-    CmdInfo { name: "hull",     category: "Shell",     description: "Shell interactif MaiOS" },
+    CmdInfo { name: "hull",     category: "Shell",     description: "Shell interactif MaiOS (Hull)" },
+    CmdInfo { name: "shell",    category: "Shell",     description: "Shell interactif MaiOS (legacy)" },
     CmdInfo { name: "help",     category: "Shell",     description: "Afficher cette aide" },
 ];
 
@@ -113,6 +127,10 @@ const BUILTINS: &[(&str, &str)] = &[
     ("set",     "Afficher ou modifier les options du shell"),
     ("exec",    "Remplacer le shell par une commande"),
     ("wait",    "Attendre la fin d'un processus"),
+    ("echo",    "Afficher du texte"),
+    ("whoami",  "Afficher l'utilisateur courant"),
+    ("uname",   "Afficher les informations système"),
+    ("clear",   "Effacer le terminal (alias: cls)"),
     ("help",    "Afficher l'aide"),
 ];
 
@@ -163,7 +181,7 @@ fn print_all_commands(show_dev: bool) {
 
     let categories = [
         "Fichiers", "Texte", "Chemins", "Système", "Environnement",
-        "Utilitaires", "Réseau", "GUI", "Exécution", "Shell",
+        "Utilitaires", "Réseau", "Audio", "GUI", "Exécution", "Shell",
     ];
 
     for cat in &categories {
@@ -181,12 +199,20 @@ fn print_all_commands(show_dev: bool) {
 
     if show_dev {
         println!("── Développement & Tests ──");
-        println!("  {:16} {}", "rq", "Afficher les files d'attente d'exécution");
-        println!("  {:16} {}", "ns", "Afficher les espaces de noms");
-        println!("  {:16} {}", "loadc", "Charger un crate dynamiquement");
-        println!("  {:16} {}", "swap", "Échanger un crate à chaud");
-        println!("  {:16} {}", "syscall_trace", "Tracer les appels système");
-        println!("  {:16} {}", "test_*", "Suites de tests (test_async, test_libc, ...)");
+        println!("  {:16} {}", "swap", "Échanger un crate à chaud (live patching)");
+        println!("  {:16} {}", "upd", "Mettre à jour un crate depuis le réseau (OTA)");
+        println!("  {:16} {}", "syscall_trace", "Tracer les appels système en temps réel");
+        println!("  {:16} {}", "raw_mode", "Passer le terminal en mode brut");
+        println!("  {:16} {}", "serial_echo", "Echo sur le port série");
+        println!("  {:16} {}", "seconds_counter", "Compteur de secondes (test timer)");
+        println!("  {:16} {}", "qemu_test", "Tests spécifiques à QEMU");
+        println!("  {:16} {}", "heap_eval", "Benchmark de l'allocateur (shbench)");
+        println!("  {:16} {}", "scheduler_eval", "Benchmark du scheduler MKS");
+        println!("  {:16} {}", "channel_eval", "Benchmark des canaux IPC");
+        println!("  {:16} {}", "rq_eval", "Benchmark des run queues");
+        println!("  {:16} {}", "pmu_sample_start", "Démarrer l'échantillonnage PMU (x86)");
+        println!("  {:16} {}", "pmu_sample_stop", "Arrêter l'échantillonnage PMU");
+        println!("  {:16} {}", "test_*", "Suites de tests (test_async, test_libc, test_win_compat, ...)");
         println!();
     }
 
