@@ -1,0 +1,39 @@
+[package]
+name = "task_fs"
+version = "0.1.0"
+authors = ["PainDe0Mie"]
+description = "x. "
+
+
+[dependencies]
+spin = "0.9.4"
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.fs_node]
+path = "../fs_node"
+
+[dependencies.memory]
+path = "../../mm/memory"
+
+[dependencies.path]
+path = "../path"
+
+[dependencies.task]
+path = "../../sched/task"
+
+[dependencies.task_struct]
+path = "../../sched/task_struct"
+
+[dependencies.root]
+path = "../root"
+
+[dependencies.io]
+path = "../../console/io"
+
+[dependencies.cpu]
+path = "../../arch/common/cpu"
+
+[lib]
+crate-type = ["rlib"]

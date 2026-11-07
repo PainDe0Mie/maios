@@ -33,9 +33,23 @@ github_pages/doc/
 # log files
 *.pcap
 *.out
+*.log
+
+# Fichiers générés : pas de binaires dans git, les scripts les recréent.
+# Disque de test : tools/create_disk.{sh,ps1}
+/fat32.img
+# Doom relié et copie du WAD : scripts/rebuild_all.sh
+/extra_files/doom.elf
+/extra_files/DOOM1.WAD
+/userland/ports/doom/doom.elf
+# Binaires Linux de test (musl, BusyBox) : userland/tests/linux_abi/build.sh
+/extra_files/linux/
+# Archive d'origine du shareware : assets/DOOM1.WAD suffit
+/assets/*.zip
+*.bak
 
 # limine bootloader files
-/limine-prebuilt/
+/tools/limine/bin/
 
 # library lock files
 /libs/**/Cargo.lock

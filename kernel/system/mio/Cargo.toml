@@ -1,0 +1,26 @@
+[package]
+name = "mio"
+version = "0.1.0"
+authors = ["MaiOS Contributors"]
+description = "MIO — Mai I/O: high-performance async I/O subsystem with io_uring-inspired ring buffers"
+edition = "2021"
+
+[lib]
+name = "mio"
+path = "src/lib.rs"
+
+[dependencies]
+# MaiOS kernel crates
+log  = { version = "0.4", default-features = false }
+spin = { version = "0.9", features = ["once"] }
+
+[features]
+default = []
+## Enable kernel-side SQ polling (SQPOLL thread drains submissions without syscall)
+sqpoll = []
+## Enable registered buffer pool for zero-copy I/O
+registered_buffers = []
+## Enable linked/chained operation support
+linked_ops = []
+## Enable I/O statistics and telemetry
+stats = []

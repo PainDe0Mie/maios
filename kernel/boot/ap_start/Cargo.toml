@@ -1,0 +1,31 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "ap_start"
+description = "High-level initialization code that runs on each AP (core) after it has booted up"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+
+irq_safety = { git = "https://github.com/theseus-os/irq_safety" }
+sync_irq = { path = "../../../libs/sync_irq" }
+memory = { path = "../../mm/memory" }
+stack = { path = "../../mm/stack" }
+interrupts = { path = "../../arch/common/interrupts" }
+scheduler = { path = "../../sched/scheduler" }
+spawn = { path = "../../sched/spawn" }
+kernel_config = { path = "../kernel_config" }
+cls_allocator = { path = "../../mm/cls_allocator" }
+cpu = { path = "../../arch/common/cpu" }
+no_drop = { path = "../../mm/no_drop" }
+early_tls = { path = "../early_tls" }
+environment = { path = "../../sched/environment" }
+mod_mgmt = { path = "../../loader/mod_mgmt" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+page_attribute_table = { path = "../../arch/x86_64/page_attribute_table" }
+apic = { path = "../../arch/x86_64/apic" }
+
+[lib]
+crate-type = ["rlib"]

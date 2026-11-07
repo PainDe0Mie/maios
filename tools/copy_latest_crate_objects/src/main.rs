@@ -94,10 +94,10 @@ fn main() -> Result<(), String> {
          or a file listing each kernel crate name, one per line",
         "KERNEL_CRATES"
     );
-    opts.reqopt(
+    opts.optmulti(
         "a", 
         "app",  
-        "(required) path to either the directory of application crates,
+        "(required, repeatable) path to either a directory of application crates,
          or a file listing each application crate name, one per line",
         "APP_CRATES"
     );
@@ -154,7 +154,10 @@ fn main() -> Result<(), String> {
     let output_objects_dir = matches.opt_str("output-objects").expect("no --output-objects arg provided");
     let output_deps_dir    = matches.opt_str("output-deps").expect("no --output-deps arg provided");
     let kernel_arg         = matches.opt_str("k").expect("no -k or --kernel arg provided");
-    let app_arg            = matches.opt_str("a").expect("no -a or --app arg provided");
+    let app_args           = matches.opt_strs("a");
+    if app_args.is_empty() {
+        return Err("no -a or --app arg provided".to_string());
+    }
 
     let kernel_arg_path = fs::canonicalize(kernel_arg)
         .map_err(|e| format!("kernel arg was invalid path, error: {:?}", e))?;
@@ -168,17 +171,21 @@ fn main() -> Result<(), String> {
         return Err(format!("Couldn't access -k/--kernel argument {:?} as a file or directory", kernel_arg_path));
     };
 
-    let app_arg_path = fs::canonicalize(app_arg)
-        .map_err(|e| format!("app arg was invalid path, error: {:?}", e))?;
-    let mut app_crates_set = if app_arg_path.is_file() {
-        populate_crates_from_file(app_arg_path)
-            .map_err(|e| format!("Error parsing app arg as file: {:?}", e))?
-    } else if app_arg_path.is_dir() {
-        populate_crates_from_dir(app_arg_path)
-            .map_err(|e| format!("Error parsing app arg as directory: {:?}", e))?
-    } else {
-        return Err(format!("Couldn't access -k/--app argument {:?} as a file or directory", app_arg_path));
-    };
+    let mut app_crates_set = HashSet::new();
+    for app_arg in app_args {
+        let app_arg_path = fs::canonicalize(app_arg)
+            .map_err(|e| format!("app arg was invalid path, error: {:?}", e))?;
+        let crates = if app_arg_path.is_file() {
+            populate_crates_from_file(app_arg_path)
+                .map_err(|e| format!("Error parsing app arg as file: {:?}", e))?
+        } else if app_arg_path.is_dir() {
+            populate_crates_from_dir(app_arg_path)
+                .map_err(|e| format!("Error parsing app arg as directory: {:?}", e))?
+        } else {
+            return Err(format!("Couldn't access -a/--app argument {:?} as a file or directory", app_arg_path));
+        };
+        app_crates_set.extend(crates);
+    }
 
     let extra_app_names = matches.opt_strs("e");
     app_crates_set.extend(extra_app_names.iter().flat_map(|n| n.split_whitespace()).map(|s| s.to_string()));

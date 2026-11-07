@@ -1,0 +1,29 @@
+[package]
+name = "cd"
+version = "0.1.0"
+authors = ["Christine Wang <chrissywang54@gmail.com>"]
+
+[dependencies]
+getopts = "0.2.21"
+log = "0.4.8"
+
+[dependencies.app_io]
+path = "../../../kernel/console/app_io"
+
+[dependencies.task]
+path = "../../../kernel/sched/task"
+
+[dependencies.path]
+path = "../../../kernel/fs/path"
+
+[dependencies.fs_node]
+path = "../../../kernel/fs/fs_node"
+
+[dependencies.root]
+path = "../../../kernel/fs/root"
+
+[dependencies.environment]
+path = "../../../kernel/sched/environment"
+
+# [dependencies.application_main_fn]
+# path = "../../../compiler_plugins"

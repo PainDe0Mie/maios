@@ -1,0 +1,44 @@
+[package]
+name    = "device_manager"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name       = "device_manager"
+crate-type = ["rlib"]
+
+[dependencies]
+log             = { version = "0.4", default-features = false }
+spin            = { version = "0.9", default-features = false, features = ["mutex", "once"] }
+
+acpi            = { path = "../acpi" }
+console         = { path = "../../../console/console" }
+e1000           = { path = "../../net/e1000" }
+event_types     = { path = "../../../gfx/event_types" }
+interrupts      = { path = "../../../arch/common/interrupts" }
+ixgbe           = { path = "../../net/ixgbe" }
+keyboard        = { path = "../../input/keyboard" }
+logger          = { path = "../../../console/logger" }
+memory          = { path = "../../../mm/memory" }
+mouse           = { path = "../../input/mouse" }
+mpmc = "0.1.6"
+net             = { path = "../../../net/net" }
+pci             = { path = "../pci" }
+ps2             = { path = "../../input/ps2" }
+serial_port     = { path = "../../serial/serial_port" }
+storage_manager = { path = "../../../fs/storage_manager" }
+nvme            = { path = "../../storage/nvme" }
+ahci            = { path = "../../storage/ahci" }
+fat32           = { path = "../../../fs/fat32" }
+block_cache     = { path = "../../../fs/block_cache" }
+storage_device  = { path = "../../storage/storage_device" }
+fs_node         = { path = "../../../fs/fs_node" }
+vfs_node        = { path = "../../../fs/vfs_node" }
+root            = { path = "../../../fs/root" }
+partition_table = { path = "../../../fs/partition_table" }
+partition_device = { path = "../../../fs/partition_device" }
+mhc             = { path = "../../../system/mhc" }
+mgi             = { path = "../../../gfx/mgi" }
+intel_hda       = { path = "../../audio/intel_hda" }
+xhci            = { path = "../../input/xhci" }
+usb_hid         = { path = "../../input/usb_hid" }

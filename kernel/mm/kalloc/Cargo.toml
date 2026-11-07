@@ -1,0 +1,7 @@
+[package]
+name = "kalloc"
+version = "0.1.0"
+edition = "2021"
+description = "MaiMM M2 : allocateur d'objets noyau (segments, listes libres par page, libérations distantes sans verrou), sans dépendance, testé sur l'hôte."
+
+[dependencies]

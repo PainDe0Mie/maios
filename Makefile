@@ -20,11 +20,15 @@ include cfg/Config.mk
 ## By default, we just build the standard OS image via the `iso` target.
 .DEFAULT_GOAL := iso
 
+## Doom is a userspace port and does not require the ISO bootloader toolchain.
+DOOM_ONLY := $(filter doom,$(MAKECMDGOALS))
+
 ## Default values for various configuration options.
 debug ?= none
 net ?= none
 merge_sections ?= yes
-bootloader ?= grub
+## Limine (protocole natif) par défaut : une seule image démarre en BIOS et en UEFI.
+bootloader ?= limine
 
 ## aarch64 only supports booting via UEFI
 ifeq ($(ARCH),aarch64)
@@ -34,7 +38,15 @@ else
 endif
 
 ## Set up configuration based on the chosen bootloader specification (boot_spec).
-export override FEATURES+=--features nano_core/$(boot_spec)
+## Avec Limine, l'image ISO (boot_spec=bios) démarre aussi en UEFI, et le nano_core est construit
+## pour le protocole Limine natif plutôt que pour Multiboot2.
+ifeq ($(boot_spec)-$(bootloader), bios-limine)
+	NANO_CORE_BOOT := limine
+	export override FEATURES+=--no-default-features --features nano_core/limine
+else
+	NANO_CORE_BOOT := $(boot_spec)
+	export override FEATURES+=--features nano_core/$(boot_spec)
+endif
 
 ifeq ($(boot_spec), bios)
 	ISO_EXTENSION := iso
@@ -67,7 +79,9 @@ THESEUS_BUILD_TOML      := $(DEPS_BUILD_DIR)/TheseusBuild.toml
 THESEUS_CARGO           := $(ROOT_DIR)/tools/theseus_cargo
 THESEUS_CARGO_BIN       := $(THESEUS_CARGO)/bin/theseus_cargo
 EXTRA_FILES             := $(ROOT_DIR)/extra_files
-LIMINE_DIR              := $(ROOT_DIR)/limine-prebuilt
+## Limine compilé par scripts/fetch_limine.sh (version épinglée, empreinte vérifiée).
+LIMINE_DIR              := $(ROOT_DIR)/tools/limine/bin
+LIMINE_ISO_ROOT         := $(BUILD_DIR)/limine_iso
 
 
 ### Set up tool names/locations for cross-compiling on a Mac OS / macOS host (Darwin).
@@ -91,6 +105,7 @@ else
 endif
 
 ### Handle multiple bootloader options and ensure the corresponding tools are installed.
+ifeq ($(DOOM_ONLY),)
 ifeq ($(boot_spec),uefi)
 	## A bootloader isn't required with UEFI.
 else ifeq ($(bootloader),grub)
@@ -103,14 +118,14 @@ else ifeq ($(bootloader),grub)
 $(error Error: could not find 'grub-mkrescue' or 'grub2-mkrescue', please install 'grub' or 'grub2')
 	endif
 else ifeq ($(bootloader),limine)
-	## Check if the limine directory exists. 
-	ifneq (,$(wildcard $(LIMINE_DIR)/.))
-		export override FEATURES += --features extract_boot_modules
-	else
-$(error Error: missing '$(LIMINE_DIR)' directory! Please follow the limine instructions in the README)
+	## Les modules voyagent dans une seule archive compressée, extraite au démarrage.
+	export override FEATURES += --features mod_mgmt/extract_boot_modules
+	ifeq (,$(shell command -v xorriso))
+$(error Error: could not find 'xorriso', please install it)
 	endif
 else
 $(error Error: unsupported option "bootloader=$(bootloader)". Options are 'grub' or 'limine')
+endif
 endif
 
 
@@ -125,12 +140,16 @@ nano_core_static_lib := $(ROOT_DIR)/target/$(TARGET)/$(BUILD_MODE)/libnano_core.
 ## The output file path of the fully-linked nano_core kernel binary.
 nano_core_binary := $(NANO_CORE_BUILD_DIR)/nano_core-$(ARCH).bin
 ## The linker script for linking the `nano_core_binary` with the compiled assembly files.
-linker_script := $(ROOT_DIR)/kernel/nano_core/linker_higher_half-$(ARCH).ld
+ifeq ($(NANO_CORE_BOOT),limine)
+linker_script := $(ROOT_DIR)/kernel/boot/nano_core/linker_limine-$(ARCH).ld
+else
+linker_script := $(ROOT_DIR)/kernel/boot/nano_core/linker_higher_half-$(ARCH).ld
+endif
 efi_firmware := $(BUILD_DIR)/$(OVMF_FILE)
 
 ifeq ($(ARCH),x86_64)
 ## The assembly files compiled by the nano_core build script.
-compiled_nano_core_asm := $(NANO_CORE_BUILD_DIR)/compiled_asm/$(boot_spec)/*.o
+compiled_nano_core_asm := $(NANO_CORE_BUILD_DIR)/compiled_asm/$(NANO_CORE_BOOT)/*.o
 endif
 
 ## Specify which crates should be considered as application-level libraries. 
@@ -144,7 +163,7 @@ endif
 EXTRA_APP_CRATE_NAMES += getopts unicode_width
 
 # get all the subdirectories in applications/, i.e., the list of application crates
-APP_CRATE_NAMES := $(notdir $(wildcard applications/*))
+APP_CRATE_NAMES := $(notdir $(wildcard userland/apps/*) $(wildcard userland/tests/*))
 # exclude the build directory 
 APP_CRATE_NAMES := $(filter-out build/. target/., $(APP_CRATE_NAMES))
 # exclude hidden directories starting with a "."
@@ -157,11 +176,12 @@ APP_CRATE_NAMES += $(EXTRA_APP_CRATE_NAMES)
 ### PHONY is the list of targets that *always* get rebuilt regardless of dependent files' modification timestamps.
 ### Most targets are PHONY because cargo itself handles whether or not to rebuild the Rust code base.
 .PHONY: all full \
+		doom \
 		check-usb \
 		clean clean-doc clean-old-build \
 		orun orun_pause run run_pause iso build cargo copy_kernel $(bootloader) extra_files \
 		libtheseus \
-		simd_personality_sse build_sse simd_personality_avx build_avx \
+		build_sse build_avx \
 		gdb gdb_aarch64 \
 		clippy doc docs view-doc view-docs book view-book
 
@@ -184,13 +204,18 @@ export override RUSTFLAGS += $(patsubst %,--cfg %, $(THESEUS_CONFIG))
 
 ### Convenience targets for building the entire Theseus workspace
 ### with all optional components included. 
-### See `theseus_features/src/lib.rs` for more details on what this includes.
+### See `maios_features/src/lib.rs` for more details on what this includes.
 all: full
-full : export override FEATURES += --features theseus_features/everything
+full : export override FEATURES += --features maios_features/everything
 ifeq (,$(findstring --workspace,$(FEATURES)))
 full : export override FEATURES += --workspace
 endif
 full: iso
+
+## Build the standalone Doom userspace binary using the WAD at the repository root.
+doom:
+	$(MAKE) FEATURES= boot_spec=uefi iso
+	$(MAKE) -C userland/ports/doom WAD_SOURCE="$(ROOT_DIR)/assets/DOOM1.WAD"
 
 
 ### Convenience target for building the ISO using the below $(iso) target
@@ -250,7 +275,8 @@ build: $(nano_core_binary)
 		--output-deps $(DEPS_BUILD_DIR) \
 		--output-sysroot $(DEPS_SYSROOT_DIR)/lib/rustlib/$(TARGET)/lib \
 		-k ./kernel \
-		-a ./applications \
+		-a ./userland/apps \
+		-a ./userland/tests \
 		--kernel-prefix $(KERNEL_PREFIX) \
 		--app-prefix $(APP_PREFIX) \
 		-e "$(EXTRA_APP_CRATE_NAMES) libtheseus"
@@ -399,19 +425,36 @@ grub:
 
 ### This target uses limine to build a bootable ISO.
 ### This target should be invoked when all of contents of `ISOFILES` are ready to be packaged into an ISO.
-limine:
-	@cd $(OBJECT_FILES_BUILD_DIR)/ && ls | cpio --no-absolute-filenames -o > $(ISOFILES)/modules.cpio
-	@RUSTFLAGS="" cargo run -r --manifest-path $(ROOT_DIR)/tools/limine_compress_modules/Cargo.toml -- -i $(ISOFILES)/modules.cpio -o $(ISOFILES)/modules.cpio.lz4
-	@rm $(ISOFILES)/modules.cpio
-	@cp cfg/limine.cfg $(LIMINE_DIR)/limine-cd.bin $(LIMINE_DIR)/limine-cd-efi.bin $(LIMINE_DIR)/limine.sys $(ISOFILES)/
+###
+### Image hybride BIOS + UEFI (CD, clé USB, disque) :
+###  * les modules (crates, applications, fichiers) sont regroupés en une archive cpio compressée
+###    en LZ4 : un seul fichier à lire pour le chargeur au lieu de plusieurs centaines ;
+###  * la configuration porte l'empreinte BLAKE2b du noyau et de l'archive : Limine refuse de
+###    démarrer une image altérée (et c'est la condition pour le Secure Boot).
+limine: $(LIMINE_DIR)/limine
+	@rm -rf $(LIMINE_ISO_ROOT)
+	@mkdir -p $(LIMINE_ISO_ROOT)/boot/limine $(LIMINE_ISO_ROOT)/EFI/BOOT
+	@cd $(OBJECT_FILES_BUILD_DIR)/ && ls | cpio --quiet --no-absolute-filenames -o -H newc > $(BUILD_DIR)/modules.cpio
+	@RUSTFLAGS="" cargo run -r -q --manifest-path $(ROOT_DIR)/tools/limine_compress_modules/Cargo.toml -- -i $(BUILD_DIR)/modules.cpio -o $(LIMINE_ISO_ROOT)/boot/modules.cpio.lz4
+	@rm -f $(BUILD_DIR)/modules.cpio
+	@cp $(ISOFILES)/boot/kernel.bin $(LIMINE_ISO_ROOT)/boot/kernel.bin
+	@sed -e "s|@KERNEL_HASH@|$$(b2sum $(LIMINE_ISO_ROOT)/boot/kernel.bin | cut -d' ' -f1)|" \
+	     -e "s|@MODULES_HASH@|$$(b2sum $(LIMINE_ISO_ROOT)/boot/modules.cpio.lz4 | cut -d' ' -f1)|" \
+	     $(CFG_DIR)/limine.conf > $(LIMINE_ISO_ROOT)/boot/limine/limine.conf
+	@cp $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin $(LIMINE_DIR)/limine-uefi-cd.bin $(LIMINE_ISO_ROOT)/boot/limine/
+	@cp $(LIMINE_DIR)/BOOTX64.EFI $(LIMINE_ISO_ROOT)/EFI/BOOT/
 	@rm -f $(iso)
-	@xorriso -as mkisofs \
-		-b limine-cd.bin -no-emul-boot -boot-load-size 4 \
-		-boot-info-table --efi-boot limine-cd-efi.bin \
-		-efi-boot-part --efi-boot-image --protective-msdos-label \
-		$(ISOFILES)/ -o $(iso)
-	@$(MAKE) -C $(LIMINE_DIR)
-	@$(LIMINE_DIR)/limine-deploy $(iso)
+	@xorriso -as mkisofs -R -r -J -V MAIOS \
+		-b boot/limine/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \
+		--efi-boot boot/limine/limine-uefi-cd.bin -efi-boot-part --efi-boot-image \
+		--protective-msdos-label \
+		$(LIMINE_ISO_ROOT) -o $(iso) 2> /dev/null
+	@$(LIMINE_DIR)/limine bios-install $(iso) > /dev/null
+	@echo -e "\033[1;32mImage MaiOS (Limine $$(cat $(LIMINE_DIR)/VERSION), BIOS + UEFI) : $(iso)\033[0m"
+
+## Récupère et compile Limine s'il manque.
+$(LIMINE_DIR)/limine:
+	@bash $(ROOT_DIR)/scripts/fetch_limine.sh
 
 
 ## This downloads the OVMF EFI firmware, needed by QEMU to boot an EFI app.
@@ -439,50 +482,32 @@ extra_files:
 ### It builds a new .iso that includes tlibc, which can be run using `make orun`.
 ### Currently we can manually load tlibc within Theseus for testing purposes by running `ns --load path/to/tlibc_file`.
 .PHONY: tlibc
-TLIBC_OBJ_FILE := tlibc/target/$(TARGET)/$(BUILD_MODE)/tlibc.o
+TLIBC_OBJ_FILE := userland/libc/target/$(TARGET)/$(BUILD_MODE)/tlibc.o
 tlibc:
 # $(MAKE) -C tlibc
-	( cd ./tlibc; sh build.sh )
+	( cd ./userland/libc; sh build.sh )
 
 	@for f in $(TLIBC_OBJ_FILE); do \
 		$(CROSS)strip  --strip-debug  $${f} ; \
 		cp -vf  $${f}  $(OBJECT_FILES_BUILD_DIR)/`basename $${f} | sed -n -e 's/\(.*\)/$(APP_PREFIX)\1/p'`   2> /dev/null ; \
 	done
 	$(MAKE) bootloader=$(bootloader) $(bootloader)
-	@echo -e "\n\033[1;32m The build of tlibc finished successfully and was packaged into the Theseus ISO.\033[0m"
+	@echo -e "\n\033[1;32m The build of tlibc finished successfully and was packaged into the MaiOS ISO.\033[0m"
 	@echo -e "    --> Use 'make orun' to run it now (don't use 'make run', that will overwrite tlibc)"
-	@echo -e "    --> In Theseus, run 'ns --load /namespaces/_applications/tlibc.o' to load tlibc."
-
-
-
-### Target for building a test C language executable.
-### This should be run after `make iso` and then `make tlibc` have both completed.
-.PHONY: c_test
-# C_TEST_TARGET := dummy_works
-C_TEST_TARGET := print_test
-c_test:
-	$(MAKE) -C c_test $(C_TEST_TARGET)
-	@for f in c_test/$(C_TEST_TARGET); do \
-		$(CROSS)strip  --strip-debug  $${f} ; \
-		cp -vf  $${f}  $(OBJECT_FILES_BUILD_DIR)/`basename $${f} | sed -n -e 's/\(.*\)/$(EXECUTABLE_PREFIX)\1/p'`   2> /dev/null ; \
-	done
-	$(MAKE) bootloader=$(bootloader) $(bootloader)
-	@echo -e "\n\033[1;32m The build of $(C_TEST_TARGET) finished successfully and was packaged into the Theseus ISO.\033[0m"
-	@echo -e "    --> Use 'make orun' to run it now (don't use 'make run')"
-	@echo -e "    --> In Theseus, run 'loadc /namespaces/_executables/$(C_TEST_TARGET)' to load and run the C program."
+	@echo -e "    --> In MaiOS, run 'ns --load /namespaces/_applications/tlibc.o' to load tlibc."
 
 
 
 ### Demo/test target for building libtheseus
-libtheseus: theseus_cargo $(ROOT_DIR)/libtheseus/Cargo.* $(ROOT_DIR)/libtheseus/src/*
+libtheseus: theseus_cargo $(ROOT_DIR)/userland/libmaios/Cargo.* $(ROOT_DIR)/userland/libmaios/src/*
 	@( \
-		cd $(ROOT_DIR)/libtheseus && \
+		cd $(ROOT_DIR)/userland/libmaios && \
 		$(THESEUS_CARGO_BIN) --input $(DEPS_BUILD_DIR) build; \
 	)
 
 
 ### This target builds the `theseus_cargo` tool as a dedicated binary.
-theseus_cargo: $(wildcard $(THESEUS_CARGO)/Cargo.*)  $(wildcard$(THESEUS_CARGO)/src/*)
+theseus_cargo: $(wildcard $(THESEUS_CARGO)/Cargo.*) $(wildcard $(THESEUS_CARGO)/src/*)
 	@echo -e "\n=================== Building the theseus_cargo tool ==================="
 	cargo install --locked --force --path=$(THESEUS_CARGO) --root=$(THESEUS_CARGO)
 
@@ -499,9 +524,9 @@ clean:
 ### and would thus cause incremental re-builds to not work correctly.
 ### All other build files are left intact.
 clean-old-build:
-	@rm -rf $(OBJECT_FILES_BUILD_DIR)
-	@rm -rf $(DEPS_BUILD_DIR)
-	@rm -rf $(DEBUG_SYMBOLS_DIR)
+	@rm -rf $(OBJECT_FILES_BUILD_DIR) 2> /dev/null || true
+	@rm -rf $(DEPS_BUILD_DIR) 2> /dev/null || true
+	@rm -rf $(DEBUG_SYMBOLS_DIR) 2> /dev/null || true
 
 
 # ## (This is currently not used in Theseus, since we don't run anything in userspace)
@@ -534,41 +559,7 @@ clean-old-build:
 
 
 
-## This is a special target that enables SIMD personalities.
-## It builds everything with the SIMD-enabled x86_64-unknown-theseus-sse target,
-## and then builds everything again with the regular x86_64-unknown-theseus target. 
-## The "normal" target must come last ('build_sse', THEN the regular 'build') to ensure that the final nano_core_binary is non-SIMD.
-simd_personality_sse : export TARGET := x86_64-unknown-theseus
-simd_personality_sse : export BUILD_MODE = release
-simd_personality_sse : export override THESEUS_CONFIG += simd_personality simd_personality_sse
-simd_personality_sse: clean-old-build build_sse build
-## after building all the modules, copy the kernel boot image files
-	@echo -e "********* AT THE END OF SIMD_BUILD: TARGET = $(TARGET), KERNEL_PREFIX = $(KERNEL_PREFIX), APP_PREFIX = $(APP_PREFIX)"
-	$(MAKE) bootloader=$(bootloader) copy_kernel $(bootloader)
-## run it in QEMU
-	$(QEMU_BIN) $(QEMU_FLAGS)
-
-
-
-## This target is like "simd_personality_sse", but uses AVX instead of SSE.
-## It builds everything with the SIMD-enabled x86_64-unknown-theseus-avx target,
-## and then builds everything again with the regular x86_64-unknown-theseus target. 
-## The "normal" target must come last ('build_avx', THEN the regular 'build') to ensure that the final nano_core_binary is non-SIMD.
-simd_personality_avx : export TARGET := x86_64-unknown-theseus
-simd_personality_avx : export BUILD_MODE = release
-simd_personality_avx : export override THESEUS_CONFIG += simd_personality simd_personality_avx
-simd_personality_avx : export override CFLAGS += -DENABLE_AVX
-simd_personality_avx: clean-old-build build_avx build
-## after building all the modules, copy the kernel boot image files
-	@echo -e "********* AT THE END OF SIMD_BUILD: TARGET = $(TARGET), KERNEL_PREFIX = $(KERNEL_PREFIX), APP_PREFIX = $(APP_PREFIX)"
-	$(MAKE) bootloader=$(bootloader) copy_kernel $(bootloader)
-## run it in QEMU
-	$(QEMU_BIN) $(QEMU_FLAGS)
-
-
-
 ### build_sse builds the kernel and applications with the x86_64-unknown-theseus-sse target.
-### It can serve as part of the simd_personality_sse target.
 build_sse : export override TARGET := x86_64-unknown-theseus-sse
 build_sse : export override RUSTFLAGS += -C no-vectorize-loops
 build_sse : export override RUSTFLAGS += -C no-vectorize-slp
@@ -579,7 +570,6 @@ build_sse:
 
 
 ### build_avx builds the kernel and applications with the x86_64-unknown-theseus-avx target.
-### It can serve as part of the simd_personality_avx target.
 build_avx : export override TARGET := x86_64-unknown-theseus-avx
 build_avx : export override RUSTFLAGS += -C no-vectorize-loops
 build_avx : export override RUSTFLAGS += -C no-vectorize-slp
@@ -613,7 +603,7 @@ preserve_old_modules:
 ## We allow building with THESEUS_CONFIG options, but not with any other RUSTFLAGS,
 ## because the default RUSTFLAGS used to build Theseus aren't compatible with clippy.
 ifeq ($(ARCH),x86_64)
-clippy : export override FEATURES += --features theseus_features/everything
+clippy : export override FEATURES += --features maios_features/everything
 else ifeq ($(ARCH),aarch64)
 clippy : export override FEATURES := $(subst --workspace,,$(FEATURES))
 endif
@@ -662,7 +652,7 @@ doc:
 	@rm -rf $(RUSTDOC_OUT)
 	@mkdir -p $(RUSTDOC_OUT)
 	@cp -rf target/doc/. $(RUSTDOC_OUT)
-	@echo -e "\nTheseus source docs are now available at: \"$(RUSTDOC_OUT_FILE)\"."
+	@echo -e "\nMaiOS source docs are now available at: \"$(RUSTDOC_OUT_FILE)\"."
 
 
 ## Opens the documentation root in the system's default browser. 
@@ -678,7 +668,7 @@ endif
 
 
 ### The locations of Theseus's book-style documentation.
-BOOK_SRC      := $(ROOT_DIR)/book
+BOOK_SRC      := $(ROOT_DIR)/docs/book
 BOOK_OUT      := $(BUILD_DIR)/book
 BOOK_OUT_FILE := $(BOOK_OUT)/html/index.html
 
@@ -692,7 +682,7 @@ ifneq ($(shell mdbook --version > /dev/null 2>&1 && echo $$?), 0)
 	@exit 1
 endif
 	@mdbook build $(MDBOOK_ARGS) $(BOOK_SRC) -d $(BOOK_OUT)
-	@echo -e "\nThe Theseus Book is now available at \"$(BOOK_OUT_FILE)\"."
+	@echo -e "\nThe MaiOS Book is now available at \"$(BOOK_OUT_FILE)\"."
 
 
 ### Opens the Theseus book.
@@ -715,7 +705,7 @@ help:
 
 	@echo -e "   all:"
 	@echo -e "   full:"
-	@echo -e "\t Same as 'iso', but builds all MaiOS crates by enabling the 'theseus_features/everything' feature."
+	@echo -e "\t Same as 'iso', but builds all MaiOS crates by enabling the 'maios_features/everything' feature."
 
 	@echo -e "   run:"
 	@echo -e "\t Builds MaiOS (via the 'iso' target) and runs it using QEMU."
@@ -734,48 +724,41 @@ help:
 	@echo -e "   loadable:"
 	@echo -e "\t Same as 'run', but enables the 'loadable' configuration so that all crates are dynamically loaded."
 
-	@echo -e "   wasmtime:"
-	@echo -e "\t Same as 'run', but includes the 'wasmtime' crates in the build."
-
 	@echo -e "   gdb:"
 	@echo -e "\t Runs a new instance of GDB that connects to an already-running x86_64 QEMU instance."
-	@echo -e "\t You must run an instance of Theseus on x86_64 in QEMU beforehand in a separate terminal."
+	@echo -e "\t You must run an instance of MaiOS on x86_64 in QEMU beforehand in a separate terminal."
 
 	@echo -e "   gdb_aarch64:"
 	@echo -e "\t Runs a new instance of GDB multiarch that connects to an already-running aarch64 QEMU instance."
-	@echo -e "\t You must run an instance of Theseus on aarch64 in QEMU beforehand in a separate terminal."
+	@echo -e "\t You must run an instance of MaiOS on aarch64 in QEMU beforehand in a separate terminal."
 
 	@echo -e "   bochs:"
-	@echo -e "\t Same as 'make run', but runs Theseus in the Bochs emulator instead of QEMU."
+	@echo -e "\t Same as 'make run', but runs MaiOS in the Bochs emulator instead of QEMU."
 
 	@echo -e "   usb:"
-	@echo -e "\t Builds Theseus as a bootable .iso and writes it to the specified USB drive."
+	@echo -e "\t Builds MaiOS as a bootable .iso and writes it to the specified USB drive."
 	@echo -e "\t The USB drive is specified as drive=<dev-name>, e.g., 'make usb drive=sdc',"
 	@echo -e "\t in which the USB drive is connected as /dev/sdc. This target requires sudo."
 
 	@echo -e "   pxe:"
-	@echo -e "\t Builds Theseus as a bootable .iso and copies it to the tftpboot folder for network booting over PXE."
+	@echo -e "\t Builds MaiOS as a bootable .iso and copies it to the tftpboot folder for network booting over PXE."
 	@echo -e "\t You can specify a new network device with netdev=<interface-name>, e.g., 'make pxe netdev=eth0'."
 	@echo -e "\t You can also specify the IP address with 'ip=<addr>'. This target requires sudo."
 
-	@echo -e "   simd_personality_[sse|avx]:"
-	@echo -e "\t Builds Theseus with a regular personality and a SIMD-enabled personality (either SSE or AVX),"
-	@echo -e "\t then runs it just like the 'make run' target."
-
 	@echo -e "   build_server:"
-	@echo -e "\t Builds Theseus (as with the 'iso' target) and then runs a build server hosted on this machine"
+	@echo -e "\t Builds MaiOS (as with the 'iso' target) and then runs a build server hosted on this machine"
 	@echo -e "\t that can be used for over-the-air live evolution."
 	@echo -e "\t You can specify the name of the directory of newly-built modules by setting the 'UPDATE_DIR' environment variable."
 	@echo -e "\t This target should be invoked as an incremental build after a prior build has already completed."
 	@echo -e "\t For example, first checkout version 1 (e.g., a specific git commit), build it as normal,"
 	@echo -e "\t then checkout version 2 (or otherwise make some changes) and run 'make build_server'."
-	@echo -e "\t Then, a running instance of Theseus version 1 can contact this machine's build_server to update itself to version 2."
+	@echo -e "\t Then, a running instance of MaiOS version 1 can contact this machine's build_server to update itself to version 2."
 	
 	@echo -e "\nThe following key-value options are available to select a bootloader:"
-	@echo -e "   bootloader=grub|limine"
+	@echo -e "   bootloader=limine|grub"
 	@echo -e "\t Configure which bootloader to pack into the final \".iso\" file."
-	@echo -e "\t    'grub':    Use the GRUB bootloader. Default value."
-	@echo -e "\t    'limine':  Use the Limine bootloader. See setup instructions in the README."
+	@echo -e "\t    'limine':  Use the Limine bootloader (native protocol, BIOS + UEFI). Default value."
+	@echo -e "\t    'grub':    Use the legacy GRUB bootloader (Multiboot2, BIOS only)."
 
 	@echo -e "\nThe following key-value options are available to customize the build process:"
 	@echo -e "   merge_sections=yes|no"
@@ -829,18 +812,18 @@ help:
 	@echo -e "\t The specific syntax of TERMINAL_COMMAND depends on your host system and chosen terminal emulator."
 	@echo -e "   graphic=no"
 	@echo -e "\t Disable the graphical QEMU window, which reroutes the VGA text mode output to stdio."
-	@echo -e "\t -- Note: the VGA device will still exist and be used by Theseus, it just will not be displayed."
+	@echo -e "\t -- Note: the VGA device will still exist and be used by MaiOS, it just will not be displayed."
 
 
 	@echo -e "\nThe following make targets exist for building documentation:"
 	@echo -e "   doc:"
-	@echo -e "\t Builds Theseus documentation from its Rust source code (rustdoc)."
+	@echo -e "\t Builds MaiOS documentation from its Rust source code (rustdoc)."
 	@echo -e "   view-doc:"
-	@echo -e "\t Builds Theseus documentation and then opens it in your default browser."
+	@echo -e "\t Builds MaiOS documentation and then opens it in your default browser."
 	@echo -e "   book:"
-	@echo -e "\t Builds the Theseus book using the mdbook Markdown tool."
+	@echo -e "\t Builds the MaiOS book using the mdbook Markdown tool."
 	@echo -e "   view-book:"
-	@echo -e "\t Builds the Theseus book and then opens it in your default browser."
+	@echo -e "\t Builds the MaiOS book and then opens it in your default browser."
 	@echo -e "\t If the book doesn't open in your browser, install the latest version of mdbook."
 	@echo -e "   clean-doc:"
 	@echo -e "\t Remove all generated documentation files."
@@ -908,17 +891,21 @@ QEMU_FLAGS += -m $(QEMU_MEMORY)
 QEMU_CPUS ?= 4
 QEMU_FLAGS += -smp $(QEMU_CPUS)
 
-## Add a disk drive, a PATA drive over an IDE controller interface.
-## Currently this is only supported on x86_64.
+## Add a persistent SATA disk via the q35's built-in ICH9 AHCI controller.
+##
+## On the q35 machine, the ICH9 SATA/AHCI is at PCI b0:1f.2.
+## We attach the drive to it so the MaiOS AHCI driver (kernel/ahci) can detect it.
+##
+## To create a FAT32 disk image (run once from the repo root):
+##   dd if=/dev/zero of=fat32.img bs=1M count=64
+##   mkfs.fat -F 32 fat32.img
 DISK_IMAGE ?= fat32.img
 ifeq ($(ARCH),x86_64)
-ifneq ($(wildcard $(DISK_IMAGE)),) 
-	QEMU_FLAGS += -drive format=raw,file=fat32.img,if=ide
+ifneq ($(wildcard $(DISK_IMAGE)),)
+	QEMU_FLAGS += -drive id=maios_disk,file=$(DISK_IMAGE),format=raw,if=none
+	QEMU_FLAGS += -device ide-hd,drive=maios_disk,bus=ide.2
 endif
 endif
-
-## We don't yet support SATA in Theseus, but this is how to add a SATA drive over the AHCI interface.
-# QEMU_FLAGS += -drive id=my_disk,file=$(DISK_IMAGE),if=none  -device ahci,id=ahci  -device ide-drive,drive=my_disk,bus=ahci.0
 
 ## QEMU's OUI dictates that the MAC addr start with "52:54:00:"
 MAC_ADDR ?= 52:54:00:d1:55:01
@@ -939,6 +926,9 @@ else ifeq ($(net),none)
 else ifneq (,$(net)) 
 $(error Error: unsupported option "net=$(net)")
 endif
+
+## Intel HDA audio controller + output codec
+QEMU_FLAGS += -device intel-hda,id=hda0 -device hda-output,bus=hda0.0
 
 ## Dump interrupts to the serial port log
 ifeq ($(int),yes)
@@ -1008,11 +998,6 @@ loadable : export override THESEUS_CONFIG += loadable
 loadable: run
 
 
-### builds and runs Theseus with wasmtime enabled.
-wasmtime : export override FEATURES += --features wasmtime
-wasmtime: run
-
-
 ### builds and runs Theseus in QEMU
 run: $(iso) orun
 
@@ -1038,7 +1023,7 @@ gdb_aarch64:
 ### builds and runs Theseus in Bochs
 bochs : export override THESEUS_CONFIG += apic_timer_fixed
 bochs: $(iso) 
-	bochs -f bochsrc.txt -q
+	bochs -f cfg/bochsrc.txt -q
 
 
 

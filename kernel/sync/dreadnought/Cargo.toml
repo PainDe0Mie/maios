@@ -1,0 +1,18 @@
+[package]
+name = "dreadnought"
+version = "0.1.0"
+authors = ["Klim Tsoutsman <klim@tsoutsman.com>"]
+description = "An asynchronous executor"
+edition = "2021"
+
+[dependencies]
+sleep = { path = "../../sched/sleep" }
+spawn = { path = "../../sched/spawn" }
+task = { path = "../../sched/task" }
+time = { path = "../../sched/time" }
+waker = { path = "../waker" }
+
+[dependencies.futures]
+version = "0.3"
+default-features = false
+features = ["alloc", "async-await"]

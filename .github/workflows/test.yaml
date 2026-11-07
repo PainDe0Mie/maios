@@ -3,16 +3,12 @@ on:
   pull_request:
     types: [synchronize, opened, reopened]
     paths-ignore:
-      - 'book/**'
-      - 'c_test/**'
-      - 'docker/**'
-      - 'github_pages/**'
-      - 'old_crates/**'
+      - 'docs/**'
       - 'scripts/**'
       - '.gitignore'
       - 'LICENSE-MIT'
       - 'README.md'
-      - 'bochsrc.txt'
+      - 'cfg/bochsrc.txt'
       - 'rustfmt.toml'
       - 'slirp.conf'
 jobs:

@@ -1,0 +1,55 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "captain"
+description = "The main driver of Theseus. Controls the loading and initialization of all subsystems and other crates."
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+
+irq_safety = { git = "https://github.com/theseus-os/irq_safety" }
+dfqueue = { path = "../../../libs/dfqueue", version = "0.1.0" }
+interrupt_controller = { path = "../../arch/common/interrupt_controller" }
+multicore_bringup = { path = "../multicore_bringup" }
+device_manager = { path = "../../drivers/bus/device_manager" }
+early_printer = { path = "../early_printer" }
+tlb_shootdown = { path = "../../mm/tlb_shootdown" }
+cls_allocator = { path = "../../mm/cls_allocator" }
+kernel_config = { path = "../kernel_config" }
+interrupts = { path = "../../arch/common/interrupts" }
+scheduler = { path = "../../sched/scheduler" }
+maisched = { path = "../../sched/maisched" }
+mod_mgmt = { path = "../../loader/mod_mgmt" }
+no_drop = { path = "../../mm/no_drop" }
+console = { path = "../../console/console" }
+task_fs = { path = "../../fs/task_fs" }
+memory = { path = "../../mm/memory" }
+logger = { path = "../../console/logger" }
+spawn = { path = "../../sched/spawn" }
+stack = { path = "../../mm/stack" }
+task = { path = "../../sched/task" }
+cpu = { path = "../../arch/common/cpu" }
+storage_manager = { path = "../../fs/storage_manager" }
+memory_swap = { path = "../../mm/memory_swap" }
+disk_mount = { path = "../../fs/disk_mount" }
+environment = { path = "../../sched/environment" }
+first_application = { path = "../first_application" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+window_manager = { path = "../../gfx/window_manager" }
+exceptions_full = { path = "../exceptions_full" }
+heap = { path = "../../mm/heap" }
+time = { path = "../../sched/time" }
+tsc = { path = "../../arch/x86_64/tsc" }
+acpi = { path = "../../drivers/bus/acpi" }
+madt = { path = "../../drivers/bus/acpi/madt" }
+page_attribute_table = { path = "../../arch/x86_64/page_attribute_table" }
+e1000 = { path = "../../drivers/net/e1000" }
+app_io = { path = "../../console/app_io" }
+ota_update_client = { path = "../../net/ota_update_client" }
+syscall = { path = "../../abi/syscall" }
+
+
+[lib]
+crate-type = ["rlib"]

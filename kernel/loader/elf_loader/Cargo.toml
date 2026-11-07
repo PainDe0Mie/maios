@@ -1,0 +1,16 @@
+[package]
+name = "elf_loader"
+version = "0.1.0"
+authors = ["MaiOS Contributors"]
+description = "ELF64 binary loader for MaiOS - parses ELF headers and loads segments into memory"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+memory = { path = "../../mm/memory" }
+memory_structs = { path = "../../mm/memory_structs" }
+pte_flags = { path = "../../mm/pte_flags" }
+kernel_config = { path = "../../boot/kernel_config" }
+
+[lib]
+crate-type = ["rlib"]

@@ -1,0 +1,29 @@
+[package]
+name = "fault_log"
+version = "0.1.0"
+description = "Logs all exceptions occuring in Theseus"
+authors = ["Namitha Liyanage <namithaliyanage@gmail.com>"]
+edition = "2021"
+
+[dependencies.sync_irq]
+path = "../../../libs/sync_irq"
+
+[dependencies.memory]
+path = "../../mm/memory"
+
+[dependencies.early_printer]
+path = "../../boot/early_printer"
+
+[dependencies.app_io]
+path = "../../console/app_io"
+
+[dependencies.task]
+path = "../../sched/task"
+
+[dependencies.cpu]
+path = "../../arch/common/cpu"
+
+[dependencies.log]
+default-features = false
+version = "0.4.8"
+

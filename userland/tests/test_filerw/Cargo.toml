@@ -1,0 +1,25 @@
+[package]
+name = "test_filerw"
+version = "0.1.0"
+authors = ["Andrew Pham <apham727@gmail.com>"]
+
+[dependencies]
+
+
+[dependencies.log]
+version = "0.4.8"
+
+
+[dependencies.app_io]
+path = "../../../kernel/console/app_io"
+
+[dependencies.memfs]
+path = "../../../kernel/fs/memfs"
+
+[dependencies.root]
+path = "../../../kernel/fs/root"
+
+[dependencies.memory]
+path = "../../../kernel/mm/memory"
+# [dependencies.application_main_fn]
+# path = "../../../compiler_plugins"

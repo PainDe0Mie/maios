@@ -1,0 +1,33 @@
+{
+  "sched.yield.p50_ns": 4835,
+  "sched.yield.p99_ns": 7093,
+  "sched.yield.max_ns": 6779113,
+  "sched.yield.mean_ns": 6079,
+  "sched.switch.ns_per_switch": 3341,
+  "sched.wake.p50_ns": 7059,
+  "sched.wake.p99_ns": 14799,
+  "sched.wake.max_ns": 74884,
+  "sched.wake.mean_ns": 7252,
+  "sched.preempt.p50_ns": 14747369,
+  "sched.preempt.p99_ns": 276338819,
+  "sched.preempt.max_ns": 276338819,
+  "sched.preempt.mean_ns": 19961020,
+  "sched.fair.share0_bp": 0,
+  "sched.fair.share1_bp": 9999,
+  "sched.fair.share2_bp": 0,
+  "sched.fair.err_bp": 5701,
+  "sched.balance.tasks": 8,
+  "sched.balance.jain_x1000": 125,
+  "sched.balance.min_pct": 0,
+  "sched.spawn.p50_ns": 65185,
+  "sched.spawn.p99_ns": 924606,
+  "sched.spawn.max_ns": 924606,
+  "sched.spawn.mean_ns": 77222,
+  "_meta": {
+    "smp": 4,
+    "memory": "512M",
+    "accel": "tcg",
+    "runs": 1,
+    "date": "2026-11-07 14:48:48"
+  }
+}

@@ -1,0 +1,49 @@
+[package]
+name = "explorer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "explorer"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+mai_ui = { path = "../../../kernel/gfx/mai_ui" }
+color = { path = "../../../kernel/gfx/color" }
+shapes = { path = "../../../kernel/gfx/shapes" }
+spawn = { path = "../../../kernel/sched/spawn" }
+task = { path = "../../../kernel/sched/task" }
+mod_mgmt = { path = "../../../kernel/loader/mod_mgmt" }
+path = { path = "../../../kernel/fs/path" }
+fs_node = { path = "../../../kernel/fs/fs_node" }
+window_inner = { path = "../../../kernel/gfx/window_inner" }
+root = { path = "../../../kernel/fs/root" }
+io = { path = "../../../kernel/console/io" }
+memfs = { path = "../../../kernel/fs/memfs" }
+vfs_node = { path = "../../../kernel/fs/vfs_node" }
+
+core2 = { version = "0.4.0", default-features = false, features = ["alloc", "nightly"] }
+spin = "0.9.4"
+log = "0.4"
+
+[dependencies.event_types]
+path = "../../../kernel/gfx/event_types"
+
+[dependencies.window_manager]
+path = "../../../kernel/gfx/window_manager"
+
+[dependencies.scheduler]
+path = "../../../kernel/sched/scheduler"
+
+[dependencies.sleep]
+path = "../../../kernel/sched/sleep"
+
+[dependencies.framebuffer]
+path = "../../../kernel/gfx/framebuffer"
+
+[dependencies.font]
+path = "../../../kernel/gfx/font"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies.rtc]
+path = "../../../kernel/sched/rtc"

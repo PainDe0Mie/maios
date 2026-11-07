@@ -1,0 +1,14 @@
+[package]
+name = "scheduler_eval"
+version = "0.1.0"
+authors = ["Klim Tsoutsman <klim@tsoutsman.com>"]
+description = "Scheduler benchmark"
+edition = "2021"
+
+[dependencies]
+app_io = { path = "../../../kernel/console/app_io" }
+getopts = "0.2"
+scheduler = { path = "../../../kernel/sched/scheduler" }
+spawn = { path = "../../../kernel/sched/spawn" }
+time = { path = "../../../kernel/sched/time" }
+cpu = { path = "../../../kernel/arch/common/cpu" }

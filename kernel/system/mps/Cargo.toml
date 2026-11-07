@@ -1,0 +1,25 @@
+[package]
+name = "mps"
+version = "0.1.0"
+authors = ["MaiOS Contributors"]
+description = "MPS — Mai Power Subsystem: energy-aware CPU power management with DVFS, C-states, and thermal control"
+edition = "2021"
+
+[lib]
+name = "mps"
+path = "src/lib.rs"
+
+[dependencies]
+log  = { version = "0.4", default-features = false }
+spin = { version = "0.9", features = ["once"] }
+
+[features]
+default = []
+## Enable Intel RAPL (Running Average Power Limit) energy metering
+rapl = []
+## Enable ACPI CPPC (Collaborative Processor Performance Control)
+cppc = []
+## Enable MKS integration for energy-aware task placement
+mks_integration = []
+## Enable thermal throttling with hysteresis
+thermal = []

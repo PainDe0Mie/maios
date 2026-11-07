@@ -1,0 +1,163 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "maios_features"
+description = "Set of global features used for configuration and conditional compilation in Theseus builds"
+version = "0.1.0"
+edition = "2021"
+
+## Note: see this crate's top-level documentation (or its `lib.rs` file)
+##       for more information on how this crate works and how Theseus handles features.
+
+[dependencies]
+theseus_std = { path = "../userland/std", optional = true }
+first_application = { path = "../kernel/boot/first_application", optional = true }
+
+## Regular applications.
+cat = { path = "../userland/apps/cat", optional = true }
+cd = { path = "../userland/apps/cd", optional = true }
+date = { path = "../userland/apps/date", optional = true }
+deps = { path = "../userland/apps/deps", optional = true }
+hull = { path = "../userland/apps/hull", optional = true }
+kill = { path = "../userland/apps/kill", optional = true }
+loadc = { path = "../userland/apps/loadc", optional = true }
+ls = { path = "../userland/apps/ls", optional = true }
+mkdir = { path = "../userland/apps/mkdir", optional = true }
+ns = { path = "../userland/apps/ns", optional = true }
+ping = { path = "../userland/apps/ping", optional = true }
+pmu_sample_start = { path = "../userland/apps/pmu_sample_start", optional = true }
+pmu_sample_stop = { path = "../userland/apps/pmu_sample_stop", optional = true }
+ps = { path = "../userland/apps/ps", optional = true }
+pwd = { path = "../userland/apps/pwd", optional = true }
+rm = { path = "../userland/apps/rm", optional = true }
+rq = { path = "../userland/apps/rq", optional = true }
+serial_echo = { path = "../userland/apps/serial_echo", optional = true }
+shell = { path = "../userland/apps/shell", optional = true }
+swap = { path = "../userland/apps/swap", optional = true }
+upd = { path = "../userland/apps/upd", optional = true }
+wasm = { path = "../userland/apps/wasm", optional = true }
+
+
+## Kernel crates used for only testing purposes.
+libtest = { path = "../kernel/tests/libtest", optional = true } 
+test_thread_local = { path = "../kernel/tests/test_thread_local", optional = true }
+unified_channel = { path = "../kernel/tests/unified_channel", optional = true }
+
+
+## Test applications.
+example = { path = "../userland/tests/example", optional = true }
+hello = { path = "../userland/tests/hello", optional = true }
+raw_mode = { path = "../userland/apps/raw_mode", optional = true }
+print_fault_log = { path = "../userland/apps/print_fault_log", optional = true }
+seconds_counter = { path = "../userland/apps/seconds_counter", optional = true }
+qemu_test = { path = "../userland/tests/qemu_test", optional = true }
+test_aligned_page_allocation = { path = "../userland/tests/test_aligned_page_allocation", optional = true }
+test_async = { path = "../userland/tests/test_async", optional = true }
+test_backtrace = { path = "../userland/tests/test_backtrace", optional = true }
+test_block_io = { path = "../userland/tests/test_block_io", optional = true }
+test_channel = { path = "../userland/tests/test_channel", optional = true }
+test_filerw = { path = "../userland/tests/test_filerw", optional = true }
+test_identity_mapping = { path = "../userland/tests/test_identity_mapping", optional = true }
+test_ixgbe = { path = "../userland/tests/test_ixgbe", optional = true }
+test_libc = { path = "../userland/tests/test_libc", optional = true }
+test_panic = { path = "../userland/tests/test_panic", optional = true }
+test_preemption_counter = { path = "../userland/tests/test_preemption_counter", optional = true }
+test_restartable = { path = "../userland/tests/test_restartable", optional = true }
+test_scheduler = { path = "../userland/tests/test_scheduler", optional = true }
+test_std_fs = { path = "../userland/tests/test_std_fs", optional = true }
+test_sync_block = { path = "../userland/tests/test_sync_block", optional = true }
+test_task_cancel = { path = "../userland/tests/test_task_cancel", optional = true }
+test_tls = { path = "../userland/tests/test_tls", optional = true }
+test_wait_queue = { path = "../userland/tests/test_wait_queue", optional = true }
+
+
+## Benchmark crates.
+bm = { path = "../userland/tests/bm", optional = true }
+channel_eval = { path = "../userland/tests/channel_eval", optional = true }
+heap_eval = { path = "../userland/tests/heap_eval", optional = true }
+rq_eval = { path = "../userland/tests/rq_eval",  optional = true }
+scheduler_eval = { path = "../userland/tests/scheduler_eval",  optional = true }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+unwind_test = { path = "../userland/tests/unwind_test", optional = true }
+
+
+
+
+###############################################################################
+### Dependencies go above, Features go below ##################################
+###############################################################################
+
+[features]
+default = [
+    "unwind_test",  ## used for regular testing
+]
+
+## Includes all optional components.
+everything = [
+    "theseus_apps",
+    "theseus_benchmarks",
+    "theseus_std",
+    "theseus_tests",
+]
+
+## Includes all regular applications (non-test, non-bench) in the build.
+theseus_apps = [
+    "cat",
+    "cd",
+    "date",
+    "deps",
+    "hull",
+    "kill",
+    "loadc",
+    "ls",
+    "mkdir",
+    "ns",
+    "ping",
+    "pmu_sample_start",
+    "pmu_sample_stop",
+    "ps",
+    "pwd",
+    "rm",
+    "rq",
+    "serial_echo",
+    "shell",
+    "swap",
+    "upd",
+    "wasm",
+]
+
+## Includes all benchmark application crates in the build.
+theseus_benchmarks = [
+    "bm",
+    "channel_eval",
+    "heap_eval",
+    "rq_eval",
+    "scheduler_eval",
+]
+
+## Includes all test application crates in the build.
+theseus_tests = [
+    "example",
+    "hello",
+    "raw_mode",
+    "seconds_counter",
+    "test_aligned_page_allocation",
+    "test_async",
+    "test_backtrace",
+    "test_block_io",
+    "test_channel",
+    "test_filerw",
+    "test_identity_mapping",
+    "test_ixgbe",
+    "test_libc",
+    "test_panic",
+    "test_preemption_counter",
+    "test_restartable",
+    "test_scheduler",
+    "test_std_fs",
+    "test_sync_block",
+    "test_task_cancel",
+    "test_tls",
+    "test_wait_queue",
+    "unwind_test",
+]

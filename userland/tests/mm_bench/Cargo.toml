@@ -1,0 +1,23 @@
+[package]
+name = "mm_bench"
+version = "0.1.0"
+edition = "2021"
+description = "MaiMM M0 : banc de mesure de l'allocateur de frames (latences p50/p99, montée en charge multi-cœurs)."
+
+[dependencies]
+log = "0.4.8"
+
+[dependencies.app_io]
+path = "../../../kernel/console/app_io"
+
+[dependencies.frame_allocator]
+path = "../../../kernel/mm/frame_allocator"
+
+[dependencies.spawn]
+path = "../../../kernel/sched/spawn"
+
+[dependencies.cpu]
+path = "../../../kernel/arch/common/cpu"
+
+[dependencies.time]
+path = "../../../kernel/sched/time"

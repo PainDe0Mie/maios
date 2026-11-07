@@ -1,0 +1,58 @@
+[package]
+name = "libterm"
+version = "0.1.0"
+authors = ["Andrew Pham <apham727@gmail.com>", "Zhiyao Ma <zm16@pku.edu.cn>"]
+
+[dependencies]
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.dfqueue]
+path = "../../../libs/dfqueue"
+version = "0.1.0"
+
+[dependencies.environment]
+path = "../../sched/environment"
+
+[dependencies.root]
+path = "../../fs/root"
+
+[dependencies.color]
+path = "../../gfx/color"
+
+[dependencies.event_types]
+path = "../../gfx/event_types"
+
+[dependencies.text_display]
+path = "../../gfx/displayable/text_display"
+
+[dependencies.displayable]
+path = "../../gfx/displayable"
+
+[dependencies.framebuffer]
+path = "../../gfx/framebuffer"
+
+[dependencies.shapes]
+path = "../../gfx/shapes"
+
+[dependencies.framebuffer_drawer]
+path = "../../gfx/framebuffer_drawer"
+
+[dependencies.framebuffer_printer]
+path = "../../gfx/framebuffer_printer"
+
+[dependencies.window_manager]
+path = "../../gfx/window_manager"
+
+[dependencies.window]
+path = "../../gfx/window"
+
+[dependencies.time]
+path = "../../sched/time"
+
+[dependencies.font]
+path = "../../gfx/font"
+
+[lib]
+crate-type = ["rlib"]

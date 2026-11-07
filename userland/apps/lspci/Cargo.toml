@@ -1,0 +1,12 @@
+[package]
+name = "lspci"
+version = "0.1.0"
+description = "An application which lists currently connected PCI devices."
+authors = ["Nathan Royer <nathan.royer.pro@gmail.com>"]
+edition = "2021"
+
+[dependencies]
+getopts = "0.2.21"
+pci = { path = "../../../kernel/drivers/bus/pci" }
+memory = { path = "../../../kernel/mm/memory" }
+app_io = { path = "../../../kernel/console/app_io" }

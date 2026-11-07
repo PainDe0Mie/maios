@@ -1,0 +1,23 @@
+[package]
+name = "heap_bench"
+version = "0.1.0"
+edition = "2021"
+description = "MaiMM M2 : banc de mesure du tas noyau (latences par taille, churn, libérations distantes, montée en charge, mémoire rendue)."
+
+[dependencies]
+log = "0.4.8"
+
+[dependencies.app_io]
+path = "../../../kernel/console/app_io"
+
+[dependencies.frame_allocator]
+path = "../../../kernel/mm/frame_allocator"
+
+[dependencies.spawn]
+path = "../../../kernel/sched/spawn"
+
+[dependencies.cpu]
+path = "../../../kernel/arch/common/cpu"
+
+[dependencies.time]
+path = "../../../kernel/sched/time"

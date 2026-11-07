@@ -1,0 +1,28 @@
+[package]
+authors = ["Ramla Ijaz <ijazramla@gmail.com>"]
+name = "heap"
+description = "Tas global du noyau : tas d'amorcage, puis kalloc (MaiMM M2)"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+irq_safety = { git = "https://github.com/theseus-os/irq_safety" }
+
+[dependencies.sync_irq]
+path = "../../../libs/sync_irq"
+
+[dependencies.memory]
+path = "../memory"
+
+[dependencies.kernel_config]
+path = "../../boot/kernel_config"
+
+[dependencies.block_allocator]
+path = "../block_allocator"
+
+[dependencies.kalloc]
+path = "../kalloc"
+
+[dependencies.cpu]
+path = "../../arch/common/cpu"

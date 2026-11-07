@@ -1,0 +1,8 @@
+#ifndef _ASSERT_H
+#define _ASSERT_H
+
+#include <stdlib.h>
+
+#define assert(expression) ((expression) ? (void)0 : abort())
+
+#endif

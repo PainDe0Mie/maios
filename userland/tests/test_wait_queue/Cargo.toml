@@ -1,0 +1,29 @@
+[package]
+name = "test_wait_queue"
+version = "0.1.0"
+description = "Tests the wait queue functionality of Theseus with multiple tasks"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+
+[dependencies]
+spin = "0.9.4"
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.task]
+path = "../../../kernel/sched/task"
+
+[dependencies.cpu]
+path = "../../../kernel/arch/common/cpu"
+
+[dependencies.scheduler]
+path = "../../../kernel/sched/scheduler"
+
+[dependencies.spawn]
+path = "../../../kernel/sched/spawn"
+
+[dependencies.wait_condition]
+path = "../../../kernel/sync/wait_condition"
+
+[dependencies.app_io]
+path = "../../../kernel/console/app_io"

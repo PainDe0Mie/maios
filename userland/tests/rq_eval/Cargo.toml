@@ -1,0 +1,30 @@
+[package]
+name = "rq_eval"
+version = "0.1.0"
+description = "A application that microbenchmarks runqueue performance"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+
+[dependencies]
+getopts = "0.2.21"
+
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.spawn]
+path = "../../../kernel/sched/spawn"
+
+[dependencies.hpet]
+path = "../../../kernel/drivers/bus/acpi/hpet"
+
+[dependencies.task]
+path = "../../../kernel/sched/task"
+
+[dependencies.cpu]
+path = "../../../kernel/arch/common/cpu"
+
+[dependencies.app_io]
+path = "../../../kernel/console/app_io"
+
+[dependencies.libtest]
+path = "../../../kernel/tests/libtest"

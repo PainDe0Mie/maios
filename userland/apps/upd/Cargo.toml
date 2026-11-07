@@ -1,0 +1,46 @@
+[package]
+name = "upd"
+version = "0.1.0"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+description = "Front-end application to communicate with Theseus update server"
+
+[dependencies]
+getopts = "0.2.21"
+spin = "0.9.4"
+
+[dependencies.itertools]
+version = "0.7.9"
+default-features = false
+
+[dependencies.app_io]
+path = "../../../kernel/console/app_io"
+
+[dependencies.mod_mgmt]
+path = "../../../kernel/loader/mod_mgmt"
+
+[dependencies.crate_swap]
+path = "../../../kernel/system/crate_swap"
+
+[dependencies.memory]
+path = "../../../kernel/mm/memory"
+
+[dependencies.task]
+path = "../../../kernel/sched/task"
+
+[dependencies.path]
+path = "../../../kernel/fs/path"
+
+[dependencies.memfs]
+path = "../../../kernel/fs/memfs"
+
+[dependencies.fs_node]
+path = "../../../kernel/fs/fs_node"
+
+[dependencies.vfs_node]
+path = "../../../kernel/fs/vfs_node"
+
+[dependencies.ota_update_client]
+path = "../../../kernel/net/ota_update_client"
+
+[dependencies.net]
+path = "../../../kernel/net/net"

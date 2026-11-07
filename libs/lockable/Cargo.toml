@@ -9,4 +9,4 @@ license = "MIT"
 
 [dependencies]
 spin = "0.9.4"
-sync_irq = { path = "../../libs/sync_irq" }
+sync_irq = { path = "../sync_irq" }

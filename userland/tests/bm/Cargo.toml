@@ -1,0 +1,69 @@
+[package]
+name = "bm"
+version = "0.1.0"
+authors = ["Minhong Yun <mhyun@rice.edu>"]
+
+[features]
+bm_in_us = []
+
+[dependencies]
+getopts = "0.2.21"
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.app_io]
+path = "../../../kernel/console/app_io"
+
+[dependencies.task]
+path = "../../../kernel/sched/task"
+
+[dependencies.hpet]
+path = "../../../kernel/drivers/bus/acpi/hpet"
+
+[dependencies.apic]
+path = "../../../kernel/arch/x86_64/apic"
+
+[dependencies.cpu]
+path = "../../../kernel/arch/common/cpu"
+
+[dependencies.spawn]
+path = "../../../kernel/sched/spawn"
+
+[dependencies.path]
+path = "../../../kernel/fs/path"
+
+[dependencies.heapfile]
+path = "../../../kernel/fs/heapfile"
+# [dependencies.application_main_fn]
+# path = "../../../compiler_plugins"
+
+[dependencies.fs_node]
+path = "../../../kernel/fs/fs_node"
+
+[dependencies.scheduler]
+path = "../../../kernel/sched/scheduler"
+
+[dependencies.sleep]
+path = "../../../kernel/sched/sleep"
+
+[dependencies.libtest]
+path = "../../../kernel/tests/libtest"
+
+[dependencies.memory]
+path = "../../../kernel/mm/memory"
+
+[dependencies.rendezvous]
+path = "../../../kernel/sync/rendezvous"
+
+[dependencies.sync_channel]
+path = "../../../kernel/sync/sync_channel"
+
+[dependencies.simple_ipc]
+path = "../../../kernel/sync/simple_ipc"
+
+[dependencies.pmu_x86]
+path = "../../../kernel/arch/x86_64/pmu_x86"
+
+[dependencies.mod_mgmt]
+path = "../../../kernel/loader/mod_mgmt"

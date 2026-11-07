@@ -1,0 +1,20 @@
+[package]
+name = "test_scheduler"
+version = "0.1.0"
+authors = ["Klim Tsoutsman <klim@tsoutsman.com>"]
+description = "An application to test the scheduler"
+edition = "2021"
+
+[dependencies]
+app_io = { path = "../../../kernel/console/app_io" }
+cpu = { path = "../../../kernel/arch/common/cpu" }
+log = "0.4.8"
+random = { path = "../../../kernel/system/random" }
+spawn = { path = "../../../kernel/sched/spawn" }
+sync_block = { path = "../../../kernel/sync/sync_block" }
+task = { path = "../../../kernel/sched/task" }
+
+[dependencies.rand]
+version = "0.8.5"
+default-features = false
+features = ["small_rng"]

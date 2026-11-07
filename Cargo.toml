@@ -10,9 +10,37 @@ resolver = "2"
 ##
 ## Note that a full workspace build will *not* include crates that are explicitly excluded below.
 members = [
-	"theseus_features",  ## Must be included to realize global Cargo features across Theseus.
-	"kernel/[!.]*/",
-	"applications/[!.]*/",
+	"maios_features",  ## Must be included to realize global Cargo features across MaiOS.
+	"kernel/boot/[!.]*/",
+	"kernel/arch/common/[!.]*/",
+	"kernel/arch/x86_64/[!.]*/",
+	"kernel/arch/aarch64/[!.]*/",
+	"kernel/mm/[!.]*/",
+	"kernel/sched/[!.]*/",
+	"kernel/sync/[!.]*/",
+	"kernel/loader/[!.]*/",
+	"kernel/fs/[!.]*/",
+	"kernel/drivers/bus/[!.]*/",
+	"kernel/drivers/storage/[!.]*/",
+	"kernel/drivers/net/[!.]*/",
+	"kernel/drivers/input/[!.]*/",
+	"kernel/drivers/audio/[!.]*/",
+	"kernel/drivers/serial/[!.]*/",
+	"kernel/net/[!.]*/",
+	"kernel/gfx/[!.]*/",
+	"kernel/console/[!.]*/",
+	"kernel/abi/[!.]*/",
+	"kernel/system/[!.]*/",
+	"userland/apps/[!.]*/",
+	## Test applications that are part of the default build.
+	"userland/tests/audio_test",
+	"userland/tests/example",
+	"userland/tests/hello",
+	"userland/tests/mm_bench",
+	"userland/tests/sched_bench",
+	"userland/tests/heap_bench",
+	"userland/tests/qemu_test",
+	"userland/tests/test_win_compat",
 ]
 
 
@@ -24,79 +52,39 @@ members = [
 ##
 ## So far, this includes only the minimum crates required to allow Theseus to boot.
 default-members = [
-	"theseus_features",  ## Must be included to realize global Cargo features across Theseus.
-	"kernel/nano_core",
+	"maios_features",  ## Must be included to realize global Cargo features across MaiOS.
+	"kernel/boot/nano_core",
 ]
 
 
 exclude = [
-	## Exclude the build directories
+	## Build directories.
 	"build",
 	"target",
 
-	## Exclude configuration, tools, scripts, etc
+	## Configuration, tools, scripts, documentation and assets.
+	"assets",
 	"cfg",
 	"compiler_plugins",
+	"docs",
 	"scripts",
 	"tools",
 
-	## Exclude old components
-	"old_crates",
-
-	## Exclude third-party libs and ports for now.
-	## This allows Theseus crates that *are* included in a build to pull these
-	## third-party crates in only when needed to fulfill their dependencies.
+	## Third-party libs are pulled in only by the crates that depend on them.
 	"libs",
-	"ports",
 
-	## Exclude tlibc and libtheseus, which are currently built separately.
-	"tlibc",
-	"libtheseus",
+	## Userland components built separately (libc, libmaios, C ports).
+	"userland/libc",
+	"userland/libmaios",
+	"userland/std",
+	"userland/ports",
 
-	########################################################################################
-	## Below, we exclude things that should NEVER be considered part of Theseus's workspace.
-	########################################################################################
-	##
-	## Note that if you simply need to exclude something from a custom build of Theseus,
-	## it's best to add that crate as an optional dependency and then create a feature
-	## to enable it in a non-workspace build (i.e., when not calling `cargo build --all`).
+	## Kernel crates that exist purely for testing.
+	"kernel/tests",
 
-	## Exclude kernel crates that exist purely for testing or benchmarking purposes.
-	"kernel/libtest",
-	"kernel/test_thread_local",
-	"kernel/unified_channel",
-
-	## Exclude benchmark-related crates in all builds; they must be explicitly included via features.
-	## TODO: move these to a specific "benches" folder so we can exclude that entire folder.
-	"applications/bm",
-	"applications/channel_eval",
-	"applications/heap_eval",
-	"applications/rq_eval",
-	"applications/scheduler_eval",
-
-	## Exclude application crates used for testing specific Theseus functionality.
-	## TODO: move these to a specific "tests" folder so we can exclude that entire folder.
-	"applications/test_aligned_page_allocation",
-	"applications/test_async",
-	"applications/test_backtrace",
-	"applications/test_block_io",
-	"applications/test_channel",
-	"applications/test_filerw",
-	"applications/test_identity_mapping",
-	"applications/test_ixgbe",
-	"applications/test_libc",
-	"applications/test_mlx5",
-	"applications/test_panic",
-	"applications/test_preemption_counter",
-	"applications/test_restartable",
-	"applications/test_scheduler",
-	"applications/test_std_fs",
-	"applications/test_sync_block",
-	"applications/test_task_cancel",
-	"applications/test_tls",
-	"applications/test_wait_queue",
-	"applications/test_wasmtime",
-	"applications/unwind_test",
+	## Test and benchmark applications: included only through `maios_features`.
+	## (Those explicitly listed in `members` above are still built by default.)
+	"userland/tests",
 ]
 
 
@@ -117,8 +105,8 @@ bincode = { git = "https://github.com/bincode-org/bincode" }
 #################### Below are patches for wasmtime-related crates. ##########################
 ##############################################################################################
 wasmparser = { git = "https://github.com/theseus-os/wasm-tools", branch = "no-std-wasmparser" }
-backtrace = { path = "ports/backtrace" }
-region = { path = "ports/region" }
+backtrace = { path = "libs/backtrace" }
+region = { path = "libs/region" }
 noline = { git = "https://github.com/theseus-os/noline", branch = "history-dedup" }
 target-lexicon = { git = "https://github.com/theseus-os/target-lexicon", branch = "theseus" }
 

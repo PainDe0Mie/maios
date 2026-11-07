@@ -1,0 +1,22 @@
+[package]
+name = "kill"
+version = "0.1.0"
+authors = ["Christine Wang <chrissywang54@gmail.com>"]
+
+[dependencies]
+getopts = "0.2.21"
+
+[dependencies.debugit]
+path = "../../../libs/debugit"
+
+[dependencies.app_io]
+path = "../../../kernel/console/app_io"
+
+[dependencies.task]
+path = "../../../kernel/sched/task"
+
+[dependencies.scheduler]
+path = "../../../kernel/sched/scheduler"
+
+# [dependencies.application_main_fn]
+# path = "../../../compiler_plugins"

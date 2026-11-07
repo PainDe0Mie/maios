@@ -1,0 +1,33 @@
+[package]
+name = "test_channel"
+version = "0.1.0"
+description = "Tests Theseus's channel implementations with multiple tasks"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+
+[dependencies]
+getopts = "0.2.21"
+spin = "0.9.4"
+
+[dependencies.app_io]
+path = "../../../kernel/console/app_io"
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.scheduler]
+path = "../../../kernel/sched/scheduler"
+
+[dependencies.task]
+path = "../../../kernel/sched/task"
+
+[dependencies.cpu]
+path = "../../../kernel/arch/common/cpu"
+
+[dependencies.spawn]
+path = "../../../kernel/sched/spawn"
+
+[dependencies.rendezvous]
+path = "../../../kernel/sync/rendezvous"
+
+[dependencies.sync_channel]
+path = "../../../kernel/sync/sync_channel"

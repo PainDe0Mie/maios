@@ -65,7 +65,7 @@ jobs:
       uses: streetsidesoftware/cspell-action@v2
       with:
         config: 'book/cspell.json'
-        files: 'book/**'
+        files: 'docs/**'
         incremental_files_only: false
         # Enforce strict spell check except on push to main branch.
         strict: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/theseus_main') }}

@@ -65,7 +65,7 @@ fn create_grub_cfg_string(input_directory: String) -> Result<String, String> {
     content.push_str(&format!("### Input directory: \"{}\"\n\n", &input_directory));
     content.push_str("set timeout=0\n");
     content.push_str("set default=0\n\n");
-    content.push_str("menuentry \"Theseus OS\" {\n");
+    content.push_str("menuentry \"MaiOS\" {\n");
     content.push_str("\tmultiboot2 /boot/kernel.bin \n");
     // Below is a priority-ordered list of resolutions.
     // Based on our testing, 4x3 aspect ratios are the most widely supported.

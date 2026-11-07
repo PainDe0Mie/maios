@@ -1,0 +1,16 @@
+[package]
+name = "pe_loader"
+version = "0.1.0"
+authors = ["MaiOS Contributors"]
+description = "PE/COFF binary loader for MaiOS - parses PE headers and loads sections into memory for Windows NT compatibility"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+memory = { path = "../../mm/memory" }
+memory_structs = { path = "../../mm/memory_structs" }
+pte_flags = { path = "../../mm/pte_flags" }
+kernel_config = { path = "../../boot/kernel_config" }
+
+[lib]
+crate-type = ["rlib"]

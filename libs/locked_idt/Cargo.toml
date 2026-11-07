@@ -6,5 +6,5 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
-sync_irq = { path = "../../libs/sync_irq" }
+sync_irq = { path = "../sync_irq" }
 x86_64 = "0.14.8"

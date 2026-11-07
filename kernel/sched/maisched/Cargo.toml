@@ -1,0 +1,7 @@
+[package]
+name = "maisched"
+version = "0.1.0"
+edition = "2021"
+description = "MaiSched : cœur algorithmique de l'ordonnanceur MaiOS (EEVDF à arbre augmenté intrusif, tranches adaptatives, classe temps réel, topologie). Sans dépendance, testé sur l'hôte."
+
+[dependencies]

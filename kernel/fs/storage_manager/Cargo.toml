@@ -1,0 +1,24 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "storage_manager"
+description = "A crate for managing storage devices/drives"
+version = "0.1.0"
+
+[dependencies]
+spin = "0.9.4"
+log = "0.4.8"
+
+[dependencies.storage_device]
+path = "../../drivers/storage/storage_device"
+
+[dependencies.pci]
+path = "../../drivers/bus/pci"
+
+[dependencies.ata]
+path = "../../drivers/storage/ata"
+
+[dependencies.ahci]
+path = "../../drivers/storage/ahci"
+
+[lib]
+crate-type = ["rlib"]

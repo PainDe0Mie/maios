@@ -1,0 +1,17 @@
+[package]
+name    = "ahci"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name       = "ahci"
+crate-type = ["rlib"]
+
+[dependencies]
+log            = { version = "0.4", default-features = false }
+spin           = { version = "0.9", default-features = false, features = ["mutex", "once"] }
+memory         = { path = "../../../mm/memory" }
+kernel_config  = { path = "../../../boot/kernel_config" }
+pci            = { path = "../../bus/pci" }
+storage_device = { path = "../storage_device" }
+io             = { path = "../../../console/io" }

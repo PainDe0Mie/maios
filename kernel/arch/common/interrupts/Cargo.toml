@@ -1,0 +1,34 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>", "Nathan Royer <nathan.royer.pro@gmail.com>"]
+name = "interrupts"
+description = "Interrupt configuration and handlers for Theseus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+
+interrupt_controller = { path = "../interrupt_controller" }
+memory = { path = "../../../mm/memory" }
+cpu = { path = "../cpu" }
+spin = "0.9.4"
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+sync_irq = { path = "../../../../libs/sync_irq" }
+arm_boards = { path = "../../aarch64/arm_boards" }
+kernel_config = { path = "../../../boot/kernel_config" }
+generic_timer_aarch64 = { path = "../../aarch64/generic_timer_aarch64" }
+gic = { path = "../../aarch64/gic" }
+tock-registers = "0.7.0"
+cortex-a = "7.5.0"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+exceptions_early = { path = "../../../boot/exceptions_early" }
+early_printer = { path = "../../../boot/early_printer" }
+apic = { path = "../../x86_64/apic" }
+gdt = { path = "../../x86_64/gdt" }
+pic = { path = "../../x86_64/pic" }
+tss = { path = "../../x86_64/tss" }
+x86_64 = "0.14.8"
+locked_idt = { path = "../../../../libs/locked_idt" }
+uentry = { path = "../../x86_64/uentry" }

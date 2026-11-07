@@ -1,0 +1,24 @@
+[package]
+name = "test_sync_block"
+version = "0.1.0"
+description = "Tests the blocking sleeping mutex with multiple tasks"
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+edition = "2021"
+
+[dependencies.log]
+version = "0.4.8"
+
+[dependencies.scheduler]
+path = "../../../kernel/sched/scheduler"
+
+[dependencies.task]
+path = "../../../kernel/sched/task"
+
+[dependencies.cpu]
+path = "../../../kernel/arch/common/cpu"
+
+[dependencies.spawn]
+path = "../../../kernel/sched/spawn"
+
+[dependencies.sync_block]
+path = "../../../kernel/sync/sync_block"

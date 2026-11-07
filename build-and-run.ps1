@@ -42,19 +42,26 @@ Write-Host "========================================" -ForegroundColor Cyan
 # ── Pre-flight checks ────────────────────────────────────────────────────────
 Write-Step "Checking dependencies..."
 
-if (-not (Test-Path $NasmPath)) {
-    Write-Err "NASM not found at: $NasmPath"
-    Write-Info "Download from: https://www.nasm.us/"
+$nasmInWsl = (wsl bash -c "which nasm" 2>&1) -match "nasm"
+if (-not (Test-Path $NasmPath) -and -not $nasmInWsl) {
+    Write-Err "NASM not found at $NasmPath or in WSL"
+    Write-Info "Download from: https://www.nasm.us/ or install in WSL (apt install nasm)"
     exit 1
 }
-Write-OK "NASM: $NasmPath"
+if ($nasmInWsl) {
+    Write-OK "NASM: Available in WSL"
+} else {
+    Write-OK "NASM: $NasmPath"
+}
 
-if (-not (Test-Path $QemuBin)) {
-    Write-Err "QEMU not found at: $QemuBin"
-    Write-Info "Download from: https://www.qemu.org/"
-    exit 1
+if (-not $BuildOnly) {
+    if (-not (Test-Path $QemuBin)) {
+        Write-Err "QEMU not found at: $QemuBin"
+        Write-Info "Download from: https://www.qemu.org/"
+        exit 1
+    }
+    Write-OK "QEMU: $QemuBin"
 }
-Write-OK "QEMU: $QemuBin"
 
 # Check WSL
 $wslCheck = wsl --list --verbose 2>&1
@@ -71,26 +78,15 @@ if (-not $RunOnly) {
 
     $wslProjectPath = wsl wslpath -u ($WorkDir -replace '\\', '/')
 
-    # Build with explicit NASM path for WSL
-    # Use single-line command to avoid line-ending issues
-    $buildCmd = "cd '$wslProjectPath' && export PATH=""`$HOME/.cargo/bin:/c/Program Files/NASM:`$PATH"" && make iso 2>&1"
-
     Write-Info "Running: make iso"
     Write-Info ""
 
-    $output = wsl bash -c $buildCmd
+    wsl bash -lc "cd '$wslProjectPath' && make iso"
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -ne 0) {
         Write-Host ""
         Write-Err "Build failed (exit code $exitCode)"
-        Write-Host ""
-        Write-Host "Last 50 lines of output:" -ForegroundColor DarkGray
-        Write-Host "─" * 40 -ForegroundColor DarkGray
-        ($output -split "`n") | Select-Object -Last 50 | ForEach-Object {
-            Write-Host $_
-        }
-        Write-Host "─" * 40 -ForegroundColor DarkGray
         exit 1
     }
 
@@ -136,10 +132,14 @@ if (-not $BuildOnly) {
         "-no-reboot"
         "-no-shutdown"
         "-serial", "stdio"
+        "-serial", "null"
         "-monitor", "telnet:localhost:55555,server,nowait"
         "-net", "none"
+        "-vga", "std"
         "-display", "sdl,gl=on"
         "-s"
+        "-device", "intel-hda,id=hda0,msi=off"
+        "-device", "hda-output,bus=hda0.0"
     )
 
     if (Test-Path $DiskImage) {

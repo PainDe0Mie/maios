@@ -1,0 +1,12 @@
+[package]
+name = "uentry"
+description = "MaiProc : entrées et sorties du noyau depuis le mode utilisateur (syscall, IDT, NMI), état vectoriel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+x86_64 = "0.14.8"
+
+[lib]
+crate-type = ["rlib"]

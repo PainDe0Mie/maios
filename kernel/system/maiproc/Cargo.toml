@@ -1,0 +1,32 @@
+[package]
+name = "maiproc"
+description = "MaiProc : processus en mode utilisateur (anneau 3), chargeur ELF et personnalite Linux"
+version = "0.1.0"
+edition = "2021"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+log = "0.4.8"
+spin = "0.9.4"
+uvm = { path = "../../mm/uvm" }
+memory = { path = "../../mm/memory" }
+frame_allocator = { path = "../../mm/frame_allocator" }
+kernel_config = { path = "../../boot/kernel_config" }
+uentry = { path = "../../arch/x86_64/uentry" }
+task = { path = "../../sched/task" }
+task_struct = { path = "../../sched/task_struct" }
+spawn = { path = "../../sched/spawn" }
+sleep = { path = "../../sched/sleep" }
+time = { path = "../../sched/time" }
+rtc = { path = "../../sched/rtc" }
+cpu = { path = "../../arch/common/cpu" }
+app_io = { path = "../../console/app_io" }
+tty = { path = "../../console/tty" }
+fs_node = { path = "../../fs/fs_node" }
+path = { path = "../../fs/path" }
+root = { path = "../../fs/root" }
+memfs = { path = "../../fs/memfs" }
+vfs_node = { path = "../../fs/vfs_node" }
+sync_irq = { path = "../../../libs/sync_irq" }
+
+[lib]
+crate-type = ["rlib"]

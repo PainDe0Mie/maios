@@ -1,0 +1,28 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "scheduler"
+description = "MaiSched : interruption du timer, IPI de replanification, initialisation de l'ordonnanceur."
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+log = "0.4.8"
+
+audio_mixer = { path = "../../drivers/audio/audio_mixer" }
+cls = { path = "../cls" }
+cpu = { path = "../../arch/common/cpu" }
+interrupts = { path = "../../arch/common/interrupts" }
+maisched = { path = "../maisched" }
+preemption = { path = "../preemption" }
+sleep = { path = "../sleep" }
+task = { path = "../task" }
+task_struct = { path = "../task_struct" }
+time = { path = "../time" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+apic = { path = "../../arch/x86_64/apic" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+generic_timer_aarch64 = { path = "../../arch/aarch64/generic_timer_aarch64" }
+kernel_config = { path = "../../boot/kernel_config" }
+spin = "0.9.4"

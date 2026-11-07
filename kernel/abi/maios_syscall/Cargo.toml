@@ -1,0 +1,42 @@
+[package]
+name = "maios_syscall"
+version = "0.1.0"
+authors = ["MaiOS Contributors"]
+description = "Unified syscall service layer for MaiOS - single implementation for all ABIs (native, Linux, Windows)"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+pte_flags = { path = "../../mm/pte_flags" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+spin = "0.9.4"
+lazy_static = { version = "1.4", features = ["spin_no_std"] }
+memory = { path = "../../mm/memory" }
+memory_structs = { path = "../../mm/memory_structs" }
+pte_flags = { path = "../../mm/pte_flags" }
+task = { path = "../../sched/task" }
+app_io = { path = "../../console/app_io" }
+fs_node = { path = "../../fs/fs_node" }
+root = { path = "../../fs/root" }
+path = { path = "../../fs/path" }
+io = { path = "../../console/io" }
+vfs_node = { path = "../../fs/vfs_node" }
+elf_loader = { path = "../../loader/elf_loader" }
+spawn = { path = "../../sched/spawn" }
+kernel_config = { path = "../../boot/kernel_config" }
+time = { path = "../../sched/time" }
+rtc = { path = "../../sched/rtc" }
+scheduler = { path = "../../sched/scheduler" }
+sleep = { path = "../../sched/sleep" }
+mgi = { path = "../../gfx/mgi" }
+mhc = { path = "../../system/mhc" }
+audio_mixer = { path = "../../drivers/audio/audio_mixer" }
+net = { path = "../../net/net" }
+smoltcp = { version = "0.10", default-features = false }
+window_manager = { path = "../../gfx/window_manager" }
+window_inner = { path = "../../gfx/window_inner" }
+framebuffer = { path = "../../gfx/framebuffer" }
+
+[lib]
+crate-type = ["rlib"]

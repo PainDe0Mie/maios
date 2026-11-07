@@ -1,0 +1,29 @@
+[package]
+name = "run"
+version = "0.1.0"
+description = "Exécuter un binaire ELF Linux depuis le système de fichiers MaiOS"
+edition = "2021"
+
+[dependencies]
+app_io      = { path = "../../../kernel/console/app_io" }
+task        = { path = "../../../kernel/sched/task" }
+fs_node     = { path = "../../../kernel/fs/fs_node" }
+path        = { path = "../../../kernel/fs/path" }
+spawn       = { path = "../../../kernel/sched/spawn" }
+mod_mgmt    = { path = "../../../kernel/loader/mod_mgmt" }
+elf_loader  = { path = "../../../kernel/loader/elf_loader" }
+getopts     = "0.2.21"
+memory      = { path = "../../../kernel/mm/memory" }
+scheduler   = { path = "../../../kernel/sched/scheduler" }
+window      = { path = "../../../kernel/gfx/window" }
+window_inner = { path = "../../../kernel/gfx/window_inner" }
+shapes      = { path = "../../../kernel/gfx/shapes" }
+color       = { path = "../../../kernel/gfx/color" }
+time        = { path = "../../../kernel/sched/time" }
+sleep       = { path = "../../../kernel/sched/sleep" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+maiproc     = { path = "../../../kernel/system/maiproc" }
+
+[lib]
+crate-type = ["rlib"]

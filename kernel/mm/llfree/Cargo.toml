@@ -1,0 +1,7 @@
+[package]
+name = "llfree"
+version = "0.1.0"
+edition = "2021"
+description = "MaiMM M1 : allocateur de frames physiques sans verrou, inspiré de LLFree (USENIX ATC '23)."
+
+[dependencies]

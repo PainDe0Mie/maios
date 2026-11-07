@@ -1,0 +1,19 @@
+[package]
+authors = ["Kevin Boos <kevinaboos@gmail.com>"]
+name = "deferred_interrupt_tasks"
+description = "Abstractions for deferred interrupt handler tasks"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.8"
+
+task = { path = "../../sched/task" }
+scheduler = { path = "../../sched/scheduler" }
+sleep = { path = "../../sched/sleep" }
+spawn = { path = "../../sched/spawn" }
+interrupts = { path = "../../arch/common/interrupts" }
+debugit = { path = "../../../libs/debugit" }
+
+[lib]
+crate-type = ["rlib"]
