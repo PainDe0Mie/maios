@@ -17,3 +17,12 @@ path = "../../../kernel/fs/path"
 
 [dependencies.fs_node]
 path = "../../../kernel/fs/fs_node"
+
+[dependencies.memfs]
+path = "../../../kernel/fs/memfs"
+
+[dependencies.vfs_node]
+path = "../../../kernel/fs/vfs_node"
+
+[dependencies.root]
+path = "../../../kernel/fs/root"

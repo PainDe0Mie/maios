@@ -14,17 +14,35 @@ use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use sync_irq::{Mutex, MutexGuard};
+use spin::{Mutex, MutexGuard};
 use core2::io::{Read, Write};
 use keycodes_ascii::KeyEvent;
 use core::ops::Deref;
+use core::task::Waker;
 
 /// A ring buffer with an EOF mark.
 pub struct RingBufferEof<T> {
     /// The ring buffer.
     queue: VecDeque<T>,
     /// The EOF mark. We meet EOF when it equals `true`.
-    end: bool
+    end: bool,
+    /// Wakers of readers that wait without spinning (`poll`, `select`, blocking reads of
+    /// user-mode processes). Woken — after the lock is released — by every write and by EOF.
+    wakers: Vec<Waker>,
+}
+
+impl<T> RingBufferEof<T> {
+    fn register(&mut self, waker: &Waker) {
+        if !self.wakers.iter().any(|w| w.will_wake(waker)) {
+            self.wakers.push(waker.clone());
+        }
+    }
+}
+
+fn wake_all(wakers: Vec<Waker>) {
+    for w in wakers {
+        w.wake();
+    }
 }
 
 /// A reference to a ring buffer with an EOF mark with mutex protection.
@@ -42,7 +60,10 @@ pub type RingBufferEofRef<T> = Arc<sync_irq::Mutex<RingBufferEof<T>>>;
 /// the reader is holding its lock, and vice versa.
 ///
 /// The outer locks (read_access, write_access) use plain spin::Mutex because
-/// they can be held for extended periods (reader busy-waits for data).
+/// they can be held for extended periods (a native reader busy-waits for data):
+/// they must never disable interrupts, or a reader waiting for input would
+/// freeze its CPU (no timer, no TLB-shootdown IPI) and, through the first
+/// shootdown that waits for it, the whole machine.
 /// The inner lock (RingBufferEof) uses sync_irq::Mutex (interrupt-disabling)
 /// because it's held briefly and prevents same-CPU preemption deadlocks.
 pub struct Stdio {
@@ -60,7 +81,10 @@ pub struct StdioReader {
     /// The length of actual buffered bytes.
     inner_content_len: usize,
     /// Points to the ring buffer.
-    read_access: Arc<Mutex<RingBufferEofRef<u8>>>
+    read_access: Arc<Mutex<RingBufferEofRef<u8>>>,
+    /// The ring buffer itself, for non-blocking reads and readiness: they never wait behind
+    /// `read_access`, which a blocking native reader may hold for a long time.
+    ring: RingBufferEofRef<u8>,
 }
 
 /// A writer to stdio buffers.
@@ -96,7 +120,8 @@ impl<T> RingBufferEof<T> {
     fn new() -> RingBufferEof<T> {
         RingBufferEof {
             queue: VecDeque::with_capacity(4096),
-            end: false
+            end: false,
+            wakers: Vec::new(),
         }
     }
 }
@@ -118,7 +143,8 @@ impl Stdio {
         StdioReader {
             inner_buf: Box::new([0u8; 256]),
             inner_content_len: 0,
-            read_access: Arc::clone(&self.read_access)
+            read_access: Arc::clone(&self.read_access),
+            ring: Arc::clone(&self.read_access.lock()),
         }
     }
 
@@ -130,7 +156,8 @@ impl Stdio {
         StdioReader {
             inner_buf: inner_buf.into_boxed_slice(),
             inner_content_len: 0,
-            read_access: Arc::clone(&self.read_access)
+            read_access: Arc::clone(&self.read_access),
+            ring: Arc::clone(&self.read_access.lock()),
         }
     }
 
@@ -143,6 +170,46 @@ impl Stdio {
 }
 
 impl StdioReader {
+    /// Non-blocking read for waiters that sleep elsewhere: `Some(n)` with `n > 0` bytes,
+    /// `Some(0)` at EOF, `None` if nothing is available yet.
+    pub fn try_read_now(&self, buf: &mut [u8]) -> Option<usize> {
+        if buf.is_empty() {
+            return Some(0);
+        }
+        let mut rb = self.ring.lock();
+        let mut n = 0;
+        while n < buf.len() {
+            match rb.queue.pop_front() {
+                Some(b) => {
+                    buf[n] = b;
+                    n += 1;
+                }
+                None => break,
+            }
+        }
+        if n > 0 || rb.end {
+            Some(n)
+        } else {
+            None
+        }
+    }
+
+    /// Readiness: `true` if a read would not wait (bytes or EOF). With `waker`, it is also
+    /// registered, so the next write or EOF wakes it (registered even when ready, so that an
+    /// edge-triggered watcher still sees new data).
+    pub fn poll_readable(&self, waker: Option<&Waker>) -> bool {
+        let mut rb = self.ring.lock();
+        if let Some(w) = waker {
+            rb.register(w);
+        }
+        !rb.queue.is_empty() || rb.end
+    }
+
+    /// Bytes waiting (`FIONREAD`).
+    pub fn available(&self) -> usize {
+        self.ring.lock().queue.len()
+    }
+
     /// Lock the reader and return a guard that can perform reading operation to that buffer.
     /// Note that this lock does not lock the underlying ring buffer. It only excludes other
     /// readr from performing simultaneous read, but does *not* prevent a writer to perform
@@ -316,6 +383,9 @@ impl<'a> Write for StdioWriteGuard<'a> {
         for byte in buf {
             locked_ring_buf.queue.push_back(*byte)
         }
+        let wakers = core::mem::take(&mut locked_ring_buf.wakers);
+        drop(locked_ring_buf);
+        wake_all(wakers);
         Ok(buf.len())
     }
     /// The function required by `Write` trait. Currently it performs nothing,
@@ -335,7 +405,12 @@ impl<'a> StdioReadGuard<'a> {
 impl<'a> StdioWriteGuard<'a> {
     /// Set the EOF flag of the queue to true.
     pub fn set_eof(&mut self) {
-        self.guard.lock().end = true;
+        let wakers = {
+            let mut rb = self.guard.lock();
+            rb.end = true;
+            core::mem::take(&mut rb.wakers)
+        };
+        wake_all(wakers);
     }
 }
 

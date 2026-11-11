@@ -1,4 +1,5 @@
 use alloc::vec;
+use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 use log::error;
 use nic_buffers::{ReceivedFrame, TransmitBuffer};
@@ -39,6 +40,18 @@ pub trait NetworkDevice: Send + Sync {
     }
 }
 
+/// Compteurs d'une interface (`/proc/net/dev`), comptés au passage des trames entre la carte et
+/// smoltcp.
+#[derive(Default)]
+pub struct Stats {
+    pub rx_packets: AtomicU64,
+    pub rx_bytes: AtomicU64,
+    pub tx_packets: AtomicU64,
+    pub tx_bytes: AtomicU64,
+    /// Trames trop grandes pour la carte, jetées à l'émission.
+    pub tx_dropped: AtomicU64,
+}
+
 /// Wrapper around a network device.
 ///
 /// We use this because we can't directly implement [`phy::Device`] for `T` due
@@ -48,6 +61,7 @@ pub trait NetworkDevice: Send + Sync {
 /// ```
 pub(crate) struct DeviceWrapper<'a> {
     pub(crate) inner: &'a mut dyn NetworkDevice,
+    pub(crate) stats: &'a Stats,
 }
 
 impl<'a> phy::Device for DeviceWrapper<'a> {
@@ -60,11 +74,14 @@ impl<'a> phy::Device for DeviceWrapper<'a> {
         _: smoltcp::time::Instant,
     ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let frame = self.inner.receive()?;
-        Some((RxToken { inner: frame }, TxToken { device: self.inner }))
+        let len: usize = frame.0.iter().map(|b| b.length() as usize).sum();
+        self.stats.rx_packets.fetch_add(1, Relaxed);
+        self.stats.rx_bytes.fetch_add(len as u64, Relaxed);
+        Some((RxToken { inner: frame }, TxToken { device: self.inner, stats: self.stats }))
     }
 
     fn transmit(&mut self, _: smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
-        Some(TxToken { device: self.inner })
+        Some(TxToken { device: self.inner, stats: self.stats })
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -100,6 +117,7 @@ impl phy::RxToken for RxToken {
 /// The transmit token.
 pub(crate) struct TxToken<'a> {
     device: &'a mut dyn NetworkDevice,
+    stats: &'a Stats,
 }
 
 impl<'a> phy::TxToken for TxToken<'a> {
@@ -113,12 +131,15 @@ impl<'a> phy::TxToken for TxToken<'a> {
                 let mut buf = TransmitBuffer::new(len).expect("failed to allocate transmit buffer");
                 let ret = f(&mut buf);
                 self.device.send(buf);
+                self.stats.tx_packets.fetch_add(1, Relaxed);
+                self.stats.tx_bytes.fetch_add(len as u64, Relaxed);
                 ret
             }
             Err(_) => {
                 // For appropriate behavior on an error, see this smoltcp changelog entry:
                 // <https://github.com/smoltcp-rs/smoltcp/blob/fa7fd3c321b8a3bbe1a8a4ee2ee5dc1b63231d6b/CHANGELOG.md?plain=1#L57>
                 error!("packet too large: dropping packet");
+                self.stats.tx_dropped.fetch_add(1, Relaxed);
                 let mut buf = vec![0; len];
                 f(&mut buf)
             }

@@ -39,6 +39,14 @@ use storage_manager;
 ///
 /// Retourne le nombre de volumes montes avec succes.
 pub fn init() -> usize {
+    // MaiSS : volumes ext4 (disques entiers et partitions) sous `/mnt`, et la première racine
+    // Linux trouvée prêtée à `/`. Ils ne comptent pas parmi les volumes FAT32 « persistants »
+    // de MaiOS (`/disk`) : le reste de cette fonction ne les touche pas.
+    let ext4 = ext4_vfs::mount_all();
+    if ext4 > 0 {
+        info!("disk_mount: {} volume(s) ext4 monte(s)", ext4);
+    }
+
     let mut mounted = 0;
 
     for (idx, device) in storage_manager::storage_devices().enumerate() {

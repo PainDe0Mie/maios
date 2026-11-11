@@ -5,8 +5,11 @@ extern crate alloc;
 extern crate log;
 
 #[cfg(target_arch = "x86_64")] extern crate mhc;
+#[cfg(target_arch = "x86_64")] extern crate virtio_gpu;
+#[cfg(target_arch = "x86_64")] extern crate virtio_input;
 #[cfg(target_arch = "x86_64")] extern crate mgi;
 #[cfg(target_arch = "x86_64")] extern crate nvme;
+#[cfg(target_arch = "x86_64")] extern crate blk;
 #[cfg(target_arch = "x86_64")] extern crate ahci;
 #[cfg(target_arch = "x86_64")] extern crate fat32;
 #[cfg(target_arch = "x86_64")] extern crate block_cache;
@@ -74,6 +77,9 @@ pub fn init(
     // 3. PS/2
     #[cfg(target_arch = "x86_64")]
     let usb_key_producer = key_producer.clone();
+    // Pointeurs virtio (tablette) : même file que la souris PS/2.
+    #[cfg(target_arch = "x86_64")]
+    let virtio_mouse_producer = mouse_producer.clone();
     #[cfg(target_arch = "x86_64")] {
         let ps2 = ps2::init()?;
         if let Some(kb) = ps2.keyboard_ref() { keyboard::init(kb, key_producer)?; }
@@ -92,14 +98,15 @@ pub fn init(
         // NVMe
         #[cfg(target_arch = "x86_64")]
         if dev.class == nvme::NVME_PCI_CLASS && dev.subclass == nvme::NVME_PCI_SUBCLASS {
+            // MaiSS : une unité par espace de noms actif, déjà enregistrée dans `blk`.
             match nvme::init_from_pci(dev) {
-                Ok(Some(nvme_drive_ref)) => {
-                    warn!("NVMe à {:?}", dev.location);
-                    let nvme_as_storage: StorageDeviceRef = nvme_drive_ref;
-                    mount_storage_device(nvme_as_storage, "nvme", &mut disk_idx);
+                Ok(units) => {
+                    for unit in units {
+                        let storage: StorageDeviceRef = blk::BlkStorage::new(unit);
+                        mount_storage_device(storage, "nvme", &mut disk_idx);
+                    }
                 }
-                Ok(None) => debug!("NVMe {:?}: contrôleur présent, aucun drive", dev.location),
-                Err(e)   => error!("NVMe {:?}: {}", dev.location, e),
+                Err(e) => error!("NVMe {:?}: {}", dev.location, e),
             }
             continue; // ← always: NVMe class/subclass identifié = géré
         }
@@ -140,7 +147,7 @@ pub fn init(
             if dev.vendor_id == e1000::INTEL_VEND && dev.device_id == e1000::E1000_DEV {
                 let nic = e1000::E1000Nic::init(dev)?;
                 let iface = net::register_device(nic);
-                nic.lock().init_interrupts(iface)?;
+                nic.lock().init_interrupts(dev, iface)?;
                 continue;
             }
             if dev.vendor_id == ixgbe::INTEL_VEND && dev.device_id == ixgbe::INTEL_82599 {
@@ -153,15 +160,27 @@ pub fn init(
             }
         }
 
-        // GPU — VirtIO-GPU (vendor 0x1AF4 device 0x1050) or VGA-class (0x03)
+        // GPU virtio (MaiGPU, plan 08) : `virtio-vga` ou `virtio-gpu-pci`. Le scanout est
+        // branché sur MaiCompositor par `captain` une fois l'énumération finie.
         #[cfg(target_arch = "x86_64")]
-        if dev.vendor_id == 0x1AF4 && (dev.device_id == 0x1050 || dev.device_id == 0x1040 + 16) {
-            // VirtIO-GPU is initialized via mhc::init() below; skip the warning.
+        if virtio_gpu::matches(dev) {
+            if let Err(e) = virtio_gpu::probe(dev) {
+                error!("virtio-gpu {:?}: {}", dev.location, e);
+            }
+            continue;
+        }
+        // Pointeur virtio (`virtio-tablet-pci`, `virtio-mouse-pci`) : position absolue, sans
+        // capture de la souris ni recalage du pointeur de l'hôte par QEMU.
+        #[cfg(target_arch = "x86_64")]
+        if virtio_input::matches(dev) {
+            if let Err(e) = virtio_input::probe(dev, virtio_mouse_producer.clone()) {
+                warn!("virtio-input {:?}: {}", dev.location, e);
+            }
             continue;
         }
         #[cfg(target_arch = "x86_64")]
         if dev.class == 0x03 {
-            // Standard VGA/display controller — MHC handles it when probing.
+            // Contrôleur d'affichage sans pilote : le framebuffer du chargeur reste la sortie.
             continue;
         }
 
@@ -203,23 +222,10 @@ pub fn init(
         if net::get_default_interface().is_none() { warn!("Aucun réseau."); }
     }
 
-    // Initialize MHC (Mai Heterogeneous Compute) — GPU subsystem.
-    // This probes for a VirtIO-GPU device (QEMU) and registers it in the MHC
-    // device registry. Falls back to a CPU software GPU if no hardware is found.
+    // MHC (Mai Heterogeneous Compute) : moteur de calcul logiciel.
     #[cfg(target_arch = "x86_64")]
-    match mhc::init() {
-        Ok(()) => {
-            warn!("MHC: GPU subsystem initialized");
-            // NOTE: VirtIO-GPU scanout setup is intentionally skipped.
-            // With `virtio-vga`, the VGA compatibility mode displays the
-            // MGI framebuffer directly (zero-copy).  Enabling the VirtIO
-            // scanout would require copying 8 MB per frame via
-            // TRANSFER_TO_HOST_2D, which is too expensive under QEMU TCG.
-            // The VirtIO-GPU 2D/3D command path remains available for
-            // future use (off-screen rendering, compute, etc.).
-            warn!("MHC: VirtIO-GPU scanout skipped (using VGA compat mode)");
-        }
-        Err(e) => warn!("MHC: init failed: {}", e),
+    if let Err(e) = mhc::init() {
+        warn!("MHC: init failed: {}", e);
     }
 
     #[cfg(target_arch = "x86_64")]

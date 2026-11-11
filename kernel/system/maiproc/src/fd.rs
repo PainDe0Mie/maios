@@ -3,7 +3,7 @@
 //! Comme sous Linux, un descripteur désigne une *description de fichier ouverte* ([`OpenFile`],
 //! partagée par `dup` : position et drapeaux communs) ; `FD_CLOEXEC` appartient au descripteur.
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, sync::{Arc, Weak}, vec::Vec};
 use app_io::{ImmutableRead, ImmutableWrite, IoStreams};
 use core::sync::atomic::{AtomicU32, Ordering};
 use fs_node::{DirRef, FileRef};
@@ -37,6 +37,12 @@ pub enum Node {
     Random,
     /// Contenu produit à l'ouverture (`/proc/...`), en lecture seule.
     Generated { data: Arc<[u8]>, path: String },
+    /// Dossier produit à l'ouverture (`/proc`, `/proc/<pid>/fd`…) : entrées (nom, type `DT_*`).
+    VirtDir { path: String, entries: Arc<Vec<(String, u8)>> },
+    /// Extrémité de tube.
+    Pipe(Arc<crate::pipe::PipeEnd>),
+    /// Objet noyau (`eventfd`, `epoll`, socket…).
+    Object(Arc<dyn crate::object::FileObject>),
 }
 
 /// Description de fichier ouverte.
@@ -46,12 +52,41 @@ pub struct OpenFile {
     pub pos: Mutex<usize>,
     /// Mode d'accès et drapeaux d'état (`O_APPEND`, `O_NONBLOCK`…).
     pub flags: AtomicU32,
+    /// Entrées d'`epoll` qui surveillent cette description : retirées à sa dernière fermeture
+    /// (comme `eventpoll_release` de Linux).
+    pub(crate) epitems: Mutex<Vec<Weak<crate::epoll::EpItem>>>,
+    /// La description a tenu un verrou `flock` (relâché à sa dernière fermeture).
+    pub(crate) flocked: core::sync::atomic::AtomicBool,
+    /// La description a tenu un verrou `F_OFD_SETLK` (relâché à sa dernière fermeture).
+    pub(crate) reclocked: core::sync::atomic::AtomicBool,
 }
 
 impl OpenFile {
     pub fn new(node: Node, flags: u32) -> Arc<OpenFile> {
-        Arc::new(OpenFile { node, pos: Mutex::new(0), flags: AtomicU32::new(flags) })
+        Arc::new(OpenFile {
+            node,
+            pos: Mutex::new(0),
+            flags: AtomicU32::new(flags),
+            epitems: Mutex::new(Vec::new()),
+            flocked: core::sync::atomic::AtomicBool::new(false),
+            reclocked: core::sync::atomic::AtomicBool::new(false),
+        })
     }
+
+    /// Objet noyau, s'il en est un.
+    pub fn object(&self) -> Option<&Arc<dyn crate::object::FileObject>> {
+        match &self.node {
+            Node::Object(o) => Some(o),
+            _ => None,
+        }
+    }
+
+    /// Objet du type concret `T`.
+    pub fn object_as<T: 'static>(&self) -> Option<&T> {
+        self.object().and_then(|o| crate::object::downcast::<T>(&**o))
+    }
+
+    pub fn nonblock(&self) -> bool { self.flags() & O_NONBLOCK != 0 }
 
     pub fn flags(&self) -> u32 { self.flags.load(Ordering::Relaxed) }
 
@@ -72,6 +107,19 @@ impl OpenFile {
     }
 }
 
+impl Drop for OpenFile {
+    fn drop(&mut self) {
+        crate::inotify::on_close(self);
+        crate::flock::on_close(self);
+        crate::reclock::on_description_close(self);
+        let items = core::mem::take(&mut *self.epitems.lock());
+        for it in items.iter().filter_map(|w| w.upgrade()) {
+            it.detach(self);
+        }
+    }
+}
+
+#[derive(Clone)]
 struct Slot {
     file: Arc<OpenFile>,
     cloexec: bool,
@@ -118,12 +166,13 @@ impl FdTable {
         Some(fd)
     }
 
-    /// Pose `file` en `fd` (fermant l'ancien), comme `dup2`.
-    pub fn install(&mut self, fd: usize, file: Arc<OpenFile>, cloexec: bool) {
+    /// Pose `file` en `fd`, comme `dup2` ; rend la description remplacée (que l'appelant
+    /// relâche hors du verrou de la table).
+    pub fn install(&mut self, fd: usize, file: Arc<OpenFile>, cloexec: bool) -> Option<Arc<OpenFile>> {
         if self.slots.len() <= fd {
             self.slots.resize_with(fd + 1, || None);
         }
-        self.slots[fd] = Some(Slot { file, cloexec });
+        self.slots[fd].replace(Slot { file, cloexec }).map(|s| s.file)
     }
 
     pub fn close(&mut self, fd: usize) -> bool {
@@ -132,6 +181,32 @@ impl FdTable {
             self.slots.pop();
         }
         closed
+    }
+
+    /// Retire les descripteurs de `first..=last` et rend leurs descriptions, que l'appelant
+    /// relâche **hors** du verrou de la table (`close_range`) : la dernière référence d'une
+    /// socket ou d'un tube réveille des attentes et reprend d'autres verrous.
+    pub fn take_range(&mut self, first: usize, last: usize) -> Vec<Arc<OpenFile>> {
+        let end = last.saturating_add(1).min(self.slots.len());
+        let taken = if first < end {
+            self.slots[first..end].iter_mut().filter_map(|s| s.take().map(|s| s.file)).collect()
+        } else {
+            Vec::new()
+        };
+        while matches!(self.slots.last(), Some(None)) {
+            self.slots.pop();
+        }
+        taken
+    }
+
+    /// Pose `FD_CLOEXEC` sur les descripteurs ouverts de `first..=last`.
+    pub fn set_cloexec_range(&mut self, first: usize, last: usize) {
+        let end = last.saturating_add(1).min(self.slots.len());
+        if first < end {
+            for s in self.slots[first..end].iter_mut().flatten() {
+                s.cloexec = true;
+            }
+        }
     }
 
     pub fn cloexec(&self, fd: usize) -> Option<bool> {
@@ -150,6 +225,41 @@ impl FdTable {
 
     pub fn close_all(&mut self) {
         self.slots.clear();
+    }
+
+    /// Copie de la table (`fork` sans `CLONE_FILES`) : mêmes descriptions de fichier ouvertes.
+    pub fn clone_table(&self) -> FdTable {
+        FdTable { slots: self.slots.clone() }
+    }
+
+    /// Ferme les descripteurs `FD_CLOEXEC` (`execve`) ; rend les descriptions retirées.
+    pub fn close_cloexec(&mut self) -> Vec<Arc<OpenFile>> {
+        let mut closed = Vec::new();
+        for s in self.slots.iter_mut() {
+            if s.as_ref().map_or(false, |s| s.cloexec) {
+                if let Some(slot) = s.take() {
+                    closed.push(slot.file);
+                }
+            }
+        }
+        while matches!(self.slots.last(), Some(None)) {
+            self.slots.pop();
+        }
+        closed
+    }
+
+    /// Retire `fd` et rend sa description.
+    pub fn take(&mut self, fd: usize) -> Option<Arc<OpenFile>> {
+        let f = self.slots.get_mut(fd).and_then(|s| s.take()).map(|s| s.file);
+        while matches!(self.slots.last(), Some(None)) {
+            self.slots.pop();
+        }
+        f
+    }
+
+    /// Descripteurs ouverts (rang, description).
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &Arc<OpenFile>)> {
+        self.slots.iter().enumerate().filter_map(|(i, s)| s.as_ref().map(|s| (i, &s.file)))
     }
 }
 

@@ -11,9 +11,12 @@ nic_buffers = { path = "../../drivers/net/nic_buffers" }
 rand = { version = "0.8.5", default-features = false }
 random = { path = "../../system/random" }
 rand_chacha = { version = "0.3.1", default-features = false }
+sleep = { path = "../../sched/sleep" }
+spawn = { path = "../../sched/spawn" }
 spin = "0.9"
 sync_block = { path = "../../sync/sync_block" }
 sync_irq = { path = "../../../libs/sync_irq" }
+time = { path = "../../sched/time" }
 
 [dependencies.smoltcp]
 version = "0.10"
@@ -28,4 +31,5 @@ features = [
     "proto-ipv4",
     "proto-ipv6",
     "medium-ethernet",
+    "async",
 ]

@@ -1,6 +1,7 @@
 [package]
 name = "file_manager"
-version = "0.1.0"
+version = "0.2.0"
+description = "Fichiers : gestionnaire de fichiers de MaiOS"
 edition = "2021"
 
 [lib]
@@ -9,22 +10,19 @@ crate-type = ["rlib"]
 
 [dependencies]
 log             = "0.4.8"
+color           = { path = "../../../kernel/gfx/color" }
+shapes          = { path = "../../../kernel/gfx/shapes" }
 mai_ui          = { path = "../../../kernel/gfx/mai_ui" }
-color           = { path = "../../../kernel/gfx/color"              }
-shapes          = { path = "../../../kernel/gfx/shapes"             }
-framebuffer     = { path = "../../../kernel/gfx/framebuffer"        }
-fs_node         = { path = "../../../kernel/fs/fs_node"            }
-root            = { path = "../../../kernel/fs/root"               }
-path            = { path = "../../../kernel/fs/path"               }
-task            = { path = "../../../kernel/sched/task"               }
-window          = { path = "../../../kernel/gfx/window"             }
-window_manager  = { path = "../../../kernel/gfx/window_manager"     }
-scheduler       = { path = "../../../kernel/sched/scheduler"          }
-sleep           = { path = "../../../kernel/sched/sleep"              }
-event_types     = { path = "../../../kernel/gfx/event_types"        }
-keycodes_ascii  = { path = "../../../libs/keycodes_ascii"       }
-spawn           = { path = "../../../kernel/sched/spawn"              }
-mod_mgmt        = { path = "../../../kernel/loader/mod_mgmt"           }
-heapfile        = { path = "../../../kernel/fs/heapfile"           }
-vfs_node        = { path = "../../../kernel/fs/vfs_node"           }
-app_io          = { path = "../../../kernel/console/app_io"             }
+window          = { path = "../../../kernel/gfx/window" }
+event_types     = { path = "../../../kernel/gfx/event_types" }
+keycodes_ascii  = { path = "../../../libs/keycodes_ascii" }
+fs_node         = { path = "../../../kernel/fs/fs_node" }
+root            = { path = "../../../kernel/fs/root" }
+path            = { path = "../../../kernel/fs/path" }
+memfs           = { path = "../../../kernel/fs/memfs" }
+vfs_node        = { path = "../../../kernel/fs/vfs_node" }
+task            = { path = "../../../kernel/sched/task" }
+sleep           = { path = "../../../kernel/sched/sleep" }
+spawn           = { path = "../../../kernel/sched/spawn" }
+mod_mgmt        = { path = "../../../kernel/loader/mod_mgmt" }
+frame_allocator = { path = "../../../kernel/mm/frame_allocator" }

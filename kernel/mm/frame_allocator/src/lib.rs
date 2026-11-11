@@ -1635,6 +1635,11 @@ fn aligned_2m_blocks(start: usize, len: usize) -> usize {
     if end <= first { 0 } else { (end - first) / BLOCK }
 }
 
+/// Frames générales libres (hors pool pré-zéroé), sans verrou ; `None` avant LLFree.
+pub fn free_general_frames() -> Option<usize> {
+    LLFREE.get().map(|ll| ll.free_frames())
+}
+
 /// Renvoie un instantané de l'état de l'allocateur. Ne prend aucun verrou sur le chemin LLFree.
 pub fn stats() -> FrameAllocatorStats {
     let total_frames = GENERAL_REGIONS.lock().iter().map(|r| r.size_in_frames()).sum();

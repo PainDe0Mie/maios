@@ -171,7 +171,7 @@ impl DirEntry83 {
 /// Convert a filename to 8.3 format (11 bytes, uppercase, space-padded).
 fn name_to_8_3(name: &str) -> [u8; 11] {
     let mut out = [b' '; 11];
-    let upper: Vec<u8> = name.bytes().map(|b| if b >= b'a' && b <= b'z' { b - 32 } else { b }).collect();
+    let upper: Vec<u8> = name.bytes().map(|b| b.to_ascii_uppercase()).collect();
     // Find last dot for extension split
     let dot_pos = upper.iter().rposition(|&b| b == b'.');
     let (base, ext) = match dot_pos {
@@ -226,6 +226,9 @@ impl LfnCollector {
 pub struct Fat32Volume {
     device: StorageDeviceRef,
     params: Fat32Params,
+    /// Dernier secteur de la FAT lu : parcourir une chaîne de clusters relit le même secteur
+    /// pour 128 maillons consécutifs (une lecture PIO par maillon sans ce cache).
+    fat_cache: Mutex<Option<(u32, [u8; SECTOR_SIZE])>>,
 }
 
 impl Fat32Volume {
@@ -234,7 +237,7 @@ impl Fat32Volume {
         device.lock().read_blocks(&mut boot, 0).map_err(|_| "FAT32: cannot read boot sector")?;
         let params = Fat32Params::parse(&boot).ok_or("FAT32: not a valid FAT32 volume")?;
         info!("FAT32: root_cluster={}, data_start={}", params.root_cluster, params.data_start_sector);
-        Ok(Arc::new(Mutex::new(Fat32Volume { device, params })))
+        Ok(Arc::new(Mutex::new(Fat32Volume { device, params, fat_cache: Mutex::new(None) })))
     }
 
     fn read_sector(&self, sector: u32, buf: &mut [u8]) -> Result<(), &'static str> {
@@ -256,24 +259,56 @@ impl Fat32Volume {
     }
 
     fn fat_entry(&self, cluster: u32) -> Result<u32, &'static str> {
-        let off = (cluster * 4) as usize;
-        let sec = self.params.fat_start_sector as usize + off / SECTOR_SIZE;
+        let off = (cluster as usize) * 4;
+        let sec = (self.params.fat_start_sector as usize + off / SECTOR_SIZE) as u32;
         let pos = off % SECTOR_SIZE;
+        let mut cache = self.fat_cache.lock();
+        if let Some((s, buf)) = cache.as_ref() {
+            if *s == sec {
+                return Ok(ru32(buf, pos) & 0x0FFF_FFFF);
+            }
+        }
         let mut buf = [0u8; SECTOR_SIZE];
-        self.read_sector(sec as u32, &mut buf)?;
-        Ok(ru32(&buf, pos) & 0x0FFF_FFFF)
+        self.read_sector(sec, &mut buf)?;
+        let v = ru32(&buf, pos) & 0x0FFF_FFFF;
+        *cache = Some((sec, buf));
+        Ok(v)
     }
 
+    /// Nombre de clusters de données du volume (numérotés à partir de 2).
+    fn total_clusters(&self) -> u32 {
+        (self.params.total_sectors - self.params.data_start_sector) / self.params.sectors_per_cluster as u32
+    }
+
+    /// Chaîne de clusters à partir de `first`.
+    ///
+    /// Un volume abîmé peut contenir une chaîne qui boucle ou qui sort du volume : on la refuse
+    /// au lieu de la suivre indéfiniment. Les boucles sont détectées par l'algorithme de Brent
+    /// (1980, mémoire constante, O(μ + λ) maillons), et la longueur est de toute façon bornée par
+    /// le nombre de clusters du volume, comme le fait le pilote FAT de Linux.
     fn cluster_chain(&self, first: u32) -> Result<Vec<u32>, &'static str> {
+        let max = self.total_clusters() as usize;
         let mut chain = Vec::new();
         let mut cur = first;
+        // Brent : `tortoise` saute à la position du lièvre à chaque puissance de deux.
+        let mut tortoise = first;
+        let mut power = 1usize;
+        let mut lam = 0usize;
         loop {
-            if cur < 2 || cur >= FAT32_BAD { break; }
+            if !(2..FAT32_BAD).contains(&cur) { break; }
+            if cur as usize >= max + 2 { return Err("FAT32: cluster hors du volume"); }
             chain.push(cur);
-            if chain.len() > 1_000_000 { return Err("FAT32: chain loop"); }
+            if chain.len() > max { return Err("FAT32: chaine de clusters trop longue"); }
             let next = self.fat_entry(cur)?;
             if next >= FAT32_EOC { break; }
             cur = next;
+            lam += 1;
+            if cur == tortoise { return Err("FAT32: chaine de clusters en boucle"); }
+            if lam == power {
+                tortoise = cur;
+                power *= 2;
+                lam = 0;
+            }
         }
         Ok(chain)
     }
@@ -297,6 +332,30 @@ impl Fat32Volume {
             }
         }
         Ok(())
+    }
+
+    /// Lit `[offset, offset + len)` d'un fichier de taille `size` : seuls les clusters qui
+    /// recouvrent la plage sont lus (lire l'en-tête d'un gros fichier ne relit plus tout le
+    /// fichier).
+    pub fn read_file_range(&self, first_cluster: u32, size: usize, offset: usize, len: usize) -> Result<Vec<u8>, &'static str> {
+        let end = offset.saturating_add(len).min(size);
+        if offset >= end {
+            return Ok(Vec::new());
+        }
+        let bpc = self.params.bytes_per_cluster;
+        let first_idx = offset / bpc;
+        let last_idx = (end - 1) / bpc;
+        let chain = self.cluster_chain(first_cluster)?;
+        let mut out = Vec::with_capacity(end - offset);
+        let mut buf = Vec::new();
+        for (i, &cluster) in chain.iter().enumerate().skip(first_idx).take(last_idx - first_idx + 1) {
+            self.read_cluster(cluster, &mut buf)?;
+            let start = i * bpc;
+            let a = offset.max(start) - start;
+            let b = end.min(start + bpc) - start;
+            out.extend_from_slice(&buf[a..b]);
+        }
+        Ok(out)
     }
 
     pub fn read_file(&self, first_cluster: u32, size: usize) -> Result<Vec<u8>, &'static str> {
@@ -400,6 +459,8 @@ impl Fat32Volume {
             wu32(&mut buf, pos, new_val);
             self.write_sector(sec, &buf)?;
         }
+        // Le cache de la FAT ne doit jamais servir une valeur périmée.
+        *self.fat_cache.lock() = None;
         Ok(())
     }
 
@@ -632,6 +693,7 @@ pub struct Fat32File {
 }
 
 impl Fat32File {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(name: String, volume: Arc<Mutex<Fat32Volume>>,
                first_cluster: u32, size: usize, dir_cluster: u32,
                parent: WeakDirRef) -> fs_node::FileRef {
@@ -642,12 +704,10 @@ impl Fat32File {
 impl ByteReader for Fat32File {
     fn read_at(&mut self, buffer: &mut [u8], offset: usize) -> Result<usize, IoError> {
         if offset >= self.size { return Ok(0); }
-        let data = self.volume.lock().read_file(self.first_cluster, self.size)
+        let data = self.volume.lock().read_file_range(self.first_cluster, self.size, offset, buffer.len())
             .map_err(|_| IoError::InvalidInput)?;
-        let end = (offset + buffer.len()).min(data.len());
-        let n   = end - offset;
-        buffer[..n].copy_from_slice(&data[offset..end]);
-        Ok(n)
+        buffer[..data.len()].copy_from_slice(&data);
+        Ok(data.len())
     }
 }
 impl ByteWriter for Fat32File {
@@ -701,6 +761,7 @@ pub struct Fat32Directory {
 }
 
 impl Fat32Directory {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(name: String, volume: Arc<Mutex<Fat32Volume>>,
                cluster: u32, parent: WeakDirRef) -> DirRef {
         Arc::new(Mutex::new(Fat32Directory { name, volume, cluster, parent }))

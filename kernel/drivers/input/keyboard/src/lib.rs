@@ -79,6 +79,13 @@ extern "x86-interrupt" fn ps2_keyboard_handler(_stack_frame: InterruptStackFrame
     static EXTENDED_SCANCODE: AtomicBool = AtomicBool::new(false);
 
     if let Some(KeyboardInterruptParams { keyboard, queue }) = KEYBOARD.get() {
+        // Rien pour le clavier (interruption en retard, ou octet de la souris en tête) : lire
+        // le port rendrait une ancienne touche (touche fantôme) ou volerait un octet d'un
+        // paquet de la souris (souris décalée).
+        if !keyboard.has_scancode() {
+            interrupts::eoi(PS2_KEYBOARD_IRQ);
+            return;
+        }
         let scan_code = keyboard.read_scancode();
         let extended = EXTENDED_SCANCODE.load(Ordering::SeqCst);
 
@@ -101,7 +108,7 @@ extern "x86-interrupt" fn ps2_keyboard_handler(_stack_frame: InterruptStackFrame
             // a scan code of zero is a PS2_PORT error that we can ignore,
             // a scan code of 0xFA is a command ACK response, already handled in polling (when sending a command, see ps2 crate)
             if scan_code != 0 && scan_code != 0xFA {
-                if let Err(e) = handle_keyboard_input(keyboard, queue, scan_code, extended) {
+                if let Err(e) = handle_keyboard_input(queue, scan_code, extended) {
                     error!("ps2_keyboard_handler: error handling PS2_PORT input: {e:?}");
                 }
             }
@@ -123,7 +130,12 @@ extern "x86-interrupt" fn ps2_keyboard_handler(_stack_frame: InterruptStackFrame
 /// 
 /// Returns Ok(()) if everything was handled properly.
 /// Otherwise, returns an error string.
-fn handle_keyboard_input(keyboard: &PS2Keyboard, queue: &Queue<Event>, scan_code: u8, extended: bool) -> Result<(), &'static str> {
+fn handle_keyboard_input(queue: &Queue<Event>, scan_code: u8, extended: bool) -> Result<(), &'static str> {
+    // Fausses Maj (E0 2A, E0 36 et leurs relâchements) que le clavier émet autour des touches
+    // étendues (flèches, Inser…) quand Verr. Num ou Maj est actif : ce ne sont pas des touches.
+    if extended && matches!(scan_code & !KEY_RELEASED_OFFSET, 0x2A | 0x36) {
+        return Ok(());
+    }
     // SAFE: no real race conditions with keyboard presses
     let mut modifiers = KBD_MODIFIERS.lock();
     //let modifiers = unsafe { &mut KBD_MODIFIERS };
@@ -139,7 +151,8 @@ fn handle_keyboard_input(keyboard: &PS2Keyboard, queue: &Queue<Event>, scan_code
             });
         }
         Ok(Keycode::Alt) => {
-            modifiers.insert(KeyboardModifiers::ALT);
+            // E0 38 : Alt droite (AltGr).
+            modifiers.insert(if extended { KeyboardModifiers::ALT_GR } else { KeyboardModifiers::ALT });
         }
         Ok(Keycode::LeftShift) => {
             modifiers.insert(KeyboardModifiers::SHIFT_LEFT);
@@ -162,7 +175,7 @@ fn handle_keyboard_input(keyboard: &PS2Keyboard, queue: &Queue<Event>, scan_code
             });
         }
         Ok(Keycode::AltReleased) => {
-            modifiers.remove(KeyboardModifiers::ALT);
+            modifiers.remove(if extended { KeyboardModifiers::ALT_GR } else { KeyboardModifiers::ALT });
         }
         Ok(Keycode::LeftShiftReleased) => {
             modifiers.remove(KeyboardModifiers::SHIFT_LEFT);
@@ -207,8 +220,11 @@ fn handle_keyboard_input(keyboard: &PS2Keyboard, queue: &Queue<Event>, scan_code
     };
 
     if let Ok(keycode) = Keycode::try_from(adjusted_scan_code) {
-        let event = Event::new_keyboard_event(KeyEvent::new(keycode, action, *modifiers));
-        queue.push(event).map_err(|_| "keyboard input queue is full")
+        let code = keycodes_ascii::ps2_set1_to_evdev(adjusted_scan_code, extended);
+        let event = Event::new_keyboard_event(KeyEvent::with_code(keycode, action, *modifiers, code));
+        let r = queue.push(event).map_err(|_| "keyboard input queue is full");
+        event_types::notify_input();
+        r
     } else {
         error!("handle_keyboard_input(): Unknown scancode: {scan_code:?}");
         Err("unknown keyboard scancode")
@@ -224,7 +240,7 @@ pub fn process_deferred_led_update() {
         if let Some(KeyboardInterruptParams { keyboard, .. }) = KEYBOARD.get() {
             let modifiers = KBD_MODIFIERS.lock();
             x86_64::instructions::interrupts::without_interrupts(|| {
-                set_keyboard_led(keyboard, &*modifiers);
+                set_keyboard_led(keyboard, &modifiers);
             });
         }
     }

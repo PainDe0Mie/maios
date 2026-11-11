@@ -49,14 +49,52 @@ impl From<color::Color> for Rgb {
     }
 }
 
+/// Pose `c` d'opacité `a` (0..=255) sur `p` (opérateur « over »).
+///
+/// Convention de MaiOS : `alpha` 0 = opaque, 255 = invisible, couleurs non prémultipliées. Sur
+/// une destination opaque (le bureau), le résultat reste opaque ; sur une destination
+/// transparente (barre des tâches, menu : fenêtres `translucent`), l'opacité s'accumule et le
+/// compositeur mélange ensuite avec ce qui est dessous.
 #[inline]
 fn blend_into(p: &mut AlphaPixel, c: Rgb, a: u32) {
     let a = a.min(255);
-    let ia = 255 - a;
-    p.red = ((c.r as u32 * a + p.red as u32 * ia + 127) / 255) as u8;
-    p.green = ((c.g as u32 * a + p.green as u32 * ia + 127) / 255) as u8;
-    p.blue = ((c.b as u32 * a + p.blue as u32 * ia + 127) / 255) as u8;
-    p.alpha = 0;
+    if a == 0 {
+        return;
+    }
+    let da = 255 - p.alpha as u32; // opacité de la destination
+    if da == 255 || a == 255 {
+        let ia = 255 - a;
+        p.red = ((c.r as u32 * a + p.red as u32 * ia + 127) / 255) as u8;
+        p.green = ((c.g as u32 * a + p.green as u32 * ia + 127) / 255) as u8;
+        p.blue = ((c.b as u32 * a + p.blue as u32 * ia + 127) / 255) as u8;
+        p.alpha = if a == 255 { 0 } else { p.alpha };
+        return;
+    }
+    // Poids (×255) de la source et de la destination ; opacité finale ×255.
+    let sw = a * 255;
+    let dw = da * (255 - a);
+    let ow = sw + dw;
+    p.red = ((c.r as u32 * sw + p.red as u32 * dw + ow / 2) / ow) as u8;
+    p.green = ((c.g as u32 * sw + p.green as u32 * dw + ow / 2) / ow) as u8;
+    p.blue = ((c.b as u32 * sw + p.blue as u32 * dw + ow / 2) / ow) as u8;
+    p.alpha = (255 - (ow + 127) / 255) as u8;
+}
+
+/// Pixel entièrement transparent.
+pub const CLEAR: AlphaPixel = AlphaPixel { alpha: 255, red: 0, green: 0, blue: 0 };
+
+/// Copie un tampon de MaiOS en image RGBA prémultipliée (`mai_icons`), pour la remettre à
+/// l'échelle ou la poser ailleurs.
+pub fn to_image(buf: &[AlphaPixel], w: usize, h: usize) -> mai_icons::Image {
+    let pixels = buf[..w * h]
+        .iter()
+        .map(|p| {
+            let a = 255 - p.alpha as u32;
+            let m = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+            [m(p.red), m(p.green), m(p.blue), a as u8]
+        })
+        .collect();
+    mai_icons::Image { width: w, height: h, pixels }
 }
 
 // ================================================================
@@ -113,12 +151,70 @@ fn glyph_index(ch: char) -> usize {
         'à' => 0x85, 'ç' => 0x87, 'ê' => 0x88, 'ë' => 0x89, 'è' => 0x8A,
         'ï' => 0x8B, 'î' => 0x8C, 'É' => 0x90, 'ô' => 0x93, 'ö' => 0x94,
         'û' => 0x96, 'ù' => 0x97,
+        'å' => 0x86, 'ì' => 0x8D, 'Ä' => 0x8E, 'Å' => 0x8F, 'æ' => 0x91, 'Æ' => 0x92,
+        'ò' => 0x95, 'ÿ' => 0x98, 'Ö' => 0x99, 'Ü' => 0x9A, 'á' => 0xA0, 'í' => 0xA1,
+        'ó' => 0xA2, 'ú' => 0xA3, 'ñ' => 0xA4, 'Ñ' => 0xA5, '«' => 0xAE, '»' => 0xAF,
+        '°' => 0xF8, '·' | '•' => 0xFA,
+        // Titres venus des applications : ponctuation typographique ramenée à l'ASCII.
+        '—' | '–' | '‐' | '−' => b'-' as usize,
+        '‘' | '’' | '′' => b'\'' as usize,
+        '“' | '”' | '„' => b'"' as usize,
+        '…' => 0xFA,
+        '\u{a0}' | '\u{202f}' | '\u{2009}' => b' ' as usize,
+        'À' | 'Â' => b'A' as usize, 'È' | 'Ê' | 'Ë' => b'E' as usize, 'Î' | 'Ï' => b'I' as usize,
+        'Ô' => b'O' as usize, 'Ù' | 'Û' => b'U' as usize, 'œ' => b'o' as usize, 'Œ' => b'O' as usize,
         c if (c as u32) < 128 => c as usize,
         _ => b'?' as usize,
     }
 }
 
+/// Coupe `s` pour qu'il tienne en `max_w` pixels (échelle 1), avec « .. » s'il a été coupé.
+pub fn ellipsize(s: &str, max_w: isize) -> alloc::string::String {
+    let max = (max_w / CHAR_W).max(0) as usize;
+    let n = s.chars().count();
+    if n <= max {
+        return s.into();
+    }
+    if max <= 2 {
+        return s.chars().take(max).collect();
+    }
+    let mut out: alloc::string::String = s.chars().take(max - 2).collect();
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    out.push_str("..");
+    out
+}
+
 /// Largeur en pixels d'un texte (échelle et espacement inter-lettres).
+/// Coupe `s` en deux lignes au plus de `max_w` pixels, aux espaces (ou après `.`, `-`, `_`)
+/// si possible, la seconde ligne raccourcie au besoin (`ellipsize`).
+pub fn wrap2(s: &str, max_w: isize) -> Vec<alloc::string::String> {
+    use alloc::string::String;
+    let max = (max_w / CHAR_W).max(1) as usize;
+    if s.chars().count() <= max {
+        return alloc::vec![s.into()];
+    }
+    // Dernière coupure possible qui tient sur la première ligne.
+    let mut cut: Option<(usize, usize)> = None; // (fin de la 1re ligne, début de la 2de)
+    for (n, (i, ch)) in s.char_indices().enumerate() {
+        if n > max {
+            break;
+        }
+        if ch == ' ' {
+            cut = Some((i, i + 1));
+        } else if matches!(ch, '.' | '-' | '_') && n > 0 && n < max {
+            cut = Some((i + ch.len_utf8(), i + ch.len_utf8()));
+        }
+    }
+    let (end, start) = cut.unwrap_or_else(|| {
+        let i = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
+        (i, i)
+    });
+    let first: String = s[..end].into();
+    alloc::vec![first, ellipsize(s[start..].trim_start(), max_w)]
+}
+
 pub fn text_width(s: &str, scale: isize, spacing: isize) -> isize {
     let n = s.chars().count() as isize;
     if n == 0 { 0 } else { n * CHAR_W * scale + (n - 1) * spacing }
@@ -141,8 +237,98 @@ impl<'a> Canvas<'a> {
     }
 
     pub fn width(&self) -> isize { self.w as isize }
-    pub fn height(&self) -> isize { self.h as isize }
 
+    /// Tampon et taille, pour y dessiner avec un autre canevas (`mai_ui`) : destination opaque
+    /// seulement (le bureau).
+    pub fn raw(&mut self) -> (&mut [AlphaPixel], usize, usize) { (&mut *self.buf, self.w, self.h) }
+
+    /// Rend tout le tampon transparent (surimpressions).
+    pub fn clear(&mut self) {
+        let n = self.w * self.h;
+        self.buf[..n].fill(CLEAR);
+    }
+
+    /// Pose une image RGBA prémultipliée, coin en `(x, y)`, opacité globale `opacity`.
+    pub fn image(&mut self, x: isize, y: isize, img: &mai_icons::Image, opacity: u32) {
+        let opacity = opacity.min(255);
+        for iy in 0..img.height as isize {
+            let py = y + iy;
+            if py < 0 || py >= self.h as isize {
+                continue;
+            }
+            for ix in 0..img.width as isize {
+                let px = x + ix;
+                if px < 0 || px >= self.w as isize {
+                    continue;
+                }
+                let [r, g, b, a] = img.pixels[iy as usize * img.width + ix as usize];
+                if a == 0 {
+                    continue;
+                }
+                let a32 = a as u32;
+                let un = |c: u8| ((c as u32 * 255 + a32 / 2) / a32).min(255) as u8;
+                let c = Rgb { r: un(r), g: un(g), b: un(b) };
+                blend_into(&mut self.buf[py as usize * self.w + px as usize], c, a32 * opacity / 255);
+            }
+        }
+    }
+
+    /// Trait anticrénelé à bouts et jointures ronds le long de `pts` (coordonnées et rayon en
+    /// seizièmes de pixel). La couverture d'un pixel est celle du segment le plus proche :
+    /// les jointures ne sont pas peintes deux fois.
+    pub fn stroke(&mut self, pts: &[(i64, i64)], r16: i64, c: Rgb, a: u32) {
+        if pts.is_empty() || a == 0 {
+            return;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+        for &(x, y) in pts {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+        let pad = r16 + 16;
+        let (px0, py0) = (((x0 - pad) >> 4).max(0), ((y0 - pad) >> 4).max(0));
+        let (px1, py1) = (((x1 + pad) >> 4).min(self.w as i64 - 1), ((y1 + pad) >> 4).min(self.h as i64 - 1));
+        for py in py0..=py1 {
+            for px in px0..=px1 {
+                let (sx, sy) = (px * 16 + 8, py * 16 + 8);
+                let mut d2 = i64::MAX;
+                if pts.len() == 1 {
+                    let (dx, dy) = (sx - pts[0].0, sy - pts[0].1);
+                    d2 = dx * dx + dy * dy;
+                }
+                for s in pts.windows(2) {
+                    d2 = d2.min(seg_dist2((sx, sy), s[0], s[1]));
+                }
+                let cov = (r16 + 8 - isqrt(d2)).clamp(0, 16) as u32;
+                if cov > 0 {
+                    blend_into(&mut self.buf[py as usize * self.w + px as usize], c, a * cov / 16);
+                }
+            }
+        }
+    }
+
+    /// Anneau anticrénelé (centre, rayon et demi-épaisseur en seizièmes de pixel) ; `skip`
+    /// reçoit `(dx, dy)` depuis le centre et coupe l'anneau là où il rend `true`.
+    pub fn ring(&mut self, cx: i64, cy: i64, r16: i64, hw16: i64, c: Rgb, a: u32, skip: impl Fn(i64, i64) -> bool) {
+        let pad = r16 + hw16 + 16;
+        let (px0, py0) = (((cx - pad) >> 4).max(0), ((cy - pad) >> 4).max(0));
+        let (px1, py1) = (((cx + pad) >> 4).min(self.w as i64 - 1), ((cy + pad) >> 4).min(self.h as i64 - 1));
+        for py in py0..=py1 {
+            for px in px0..=px1 {
+                let (dx, dy) = (px * 16 + 8 - cx, py * 16 + 8 - cy);
+                if skip(dx, dy) {
+                    continue;
+                }
+                let d = isqrt(dx * dx + dy * dy);
+                let cov = (hw16 + 8 - (d - r16).abs()).clamp(0, 16) as u32;
+                if cov > 0 {
+                    blend_into(&mut self.buf[py as usize * self.w + px as usize], c, a * cov / 16);
+                }
+            }
+        }
+    }
     /// Mélange un pixel avec l'opacité `a` (0 = invisible, 255 = opaque).
     #[inline]
     pub fn put(&mut self, x: isize, y: isize, c: Rgb, a: u32) {
@@ -363,6 +549,18 @@ impl<'a> Canvas<'a> {
                 self.rrect(x + 10, y + 21, size - 20, size - 33, 4, tint.lighten(150), 255);
                 self.fill(x + 12, y + 21, size - 24, 1, WHITE, 200);
             }
+            Glyph::Globe => {
+                // Disque cerclé, équateur, parallèles et méridiens
+                let d = size - 20;
+                let (gx, gy) = (x + 10, y + 10);
+                self.rrect(gx, gy, d, d, d / 2, WHITE, 240);
+                self.rrect(gx + 2, gy + 2, d - 4, d - 4, (d - 4) / 2, tint, 255);
+                self.rrect_outline(gx + d / 4, gy + 2, d / 2, d - 4, d / 4, WHITE, 230);
+                self.fill(gx + d / 2 - 1, gy + 2, 2, d - 4, WHITE, 230);
+                self.fill(gx + 2, gy + d / 2 - 1, d - 4, 2, WHITE, 230);
+                self.fill(gx + 5, gy + d / 4, d - 10, 1, WHITE, 200);
+                self.fill(gx + 5, gy + 3 * d / 4, d - 10, 1, WHITE, 200);
+            }
             Glyph::Letter(ch) => {
                 // Les majuscules occupent les lignes 2..12 de la police :
                 // on centre la partie visible (30 px à l'échelle 3).
@@ -375,6 +573,87 @@ impl<'a> Canvas<'a> {
             }
         }
     }
+}
+
+/// Carré de la distance de `p` au segment `[a, b]`.
+fn seg_dist2(p: (i64, i64), a: (i64, i64), b: (i64, i64)) -> i64 {
+    let (vx, vy) = (b.0 - a.0, b.1 - a.1);
+    let (wx, wy) = (p.0 - a.0, p.1 - a.1);
+    let l = vx * vx + vy * vy;
+    let (cx, cy) = if l == 0 {
+        a
+    } else {
+        let t = (wx * vx + wy * vy).clamp(0, l);
+        (a.0 + vx * t / l, a.1 + vy * t / l)
+    };
+    let (dx, dy) = (p.0 - cx, p.1 - cy);
+    dx * dx + dy * dy
+}
+
+// ================================================================
+// LOGO ET PICTOGRAMMES VECTORIELS
+// ================================================================
+
+/// Le « M » de MaiOS : quatre traits ronds d'une seule ligne brisée et une petite étincelle,
+/// dans une boîte de `size` pixels dont le coin est `(x, y)`. Dessiné en vectoriel (net à
+/// toute taille), avec une ombre douce.
+pub fn logo(c: &mut Canvas, x: isize, y: isize, size: isize, ink: Rgb) {
+    // Plan de 36 unités, coordonnées en seizièmes de pixel.
+    let k = |u: i64| u * size as i64 * 16 / 360;
+    let at = |ux: i64, uy: i64| (x as i64 * 16 + k(ux), y as i64 * 16 + k(uy));
+    let m = [at(105, 255), at(105, 115), at(180, 200), at(255, 115), at(255, 255)];
+    let r = k(23);
+    let shadow: [(i64, i64); 5] = core::array::from_fn(|i| (m[i].0 + k(6), m[i].1 + k(10)));
+    c.stroke(&shadow, r + 4, BLACK, 70);
+    c.stroke(&m, r, ink, 255);
+    // Étincelle à quatre branches en haut à droite.
+    let (sx, sy) = at(296, 70);
+    let l = k(30);
+    c.stroke(&[(sx, sy - l), (sx, sy + l)], k(8), ink, 235);
+    c.stroke(&[(sx - l, sy), (sx + l, sy)], k(8), ink, 235);
+}
+
+/// Symbole d'alimentation (cercle ouvert en haut et barre) dans une boîte de `size` pixels.
+pub fn power_icon(c: &mut Canvas, x: isize, y: isize, size: isize, ink: Rgb, a: u32) {
+    let s = size as i64 * 16;
+    let (cx, cy) = (x as i64 * 16 + s / 2, y as i64 * 16 + s / 2 + s / 24);
+    let r = s * 30 / 100;
+    let hw = (s / 22).max(12);
+    c.ring(cx, cy, r, hw, ink, a, |dx, dy| dy < 0 && dx.abs() * 100 < -dy * 62);
+    c.stroke(&[(cx, cy - r - s / 12), (cx, cy - r / 6)], hw, ink, a);
+}
+
+/// Symbole de redémarrage (cercle ouvert en haut à droite, flèche) dans une boîte de `size`.
+pub fn restart_icon(c: &mut Canvas, x: isize, y: isize, size: isize, ink: Rgb, a: u32) {
+    let s = size as i64 * 16;
+    let (cx, cy) = (x as i64 * 16 + s / 2, y as i64 * 16 + s / 2);
+    let r = s * 30 / 100;
+    let hw = (s / 22).max(12);
+    c.ring(cx, cy, r, hw, ink, a, |dx, dy| dy < 0 && dx > 0 && dx * 10 < -dy * 17);
+    let (tx, ty) = (cx, cy - r);
+    let h = s * 11 / 100;
+    c.stroke(&[(tx - h, ty - h), (tx, ty), (tx - h, ty + h)], hw, ink, a);
+}
+
+/// Loupe (champ de recherche) dans une boîte de `size` pixels.
+pub fn search_icon(c: &mut Canvas, x: isize, y: isize, size: isize, ink: Rgb, a: u32) {
+    let s = size as i64 * 16;
+    let (cx, cy) = (x as i64 * 16 + s * 42 / 100, y as i64 * 16 + s * 42 / 100);
+    let r = s * 26 / 100;
+    let hw = (s / 20).max(12);
+    c.ring(cx, cy, r, hw, ink, a, |_, _| false);
+    let d = r * 72 / 100;
+    c.stroke(&[(cx + d + hw, cy + d + hw), (x as i64 * 16 + s * 88 / 100, y as i64 * 16 + s * 88 / 100)], hw + 4, ink, a);
+}
+
+/// Croix de fermeture dans une boîte de `size` pixels.
+pub fn close_icon(c: &mut Canvas, x: isize, y: isize, size: isize, ink: Rgb, a: u32) {
+    let s = size as i64 * 16;
+    let (x0, y0) = (x as i64 * 16 + s * 30 / 100, y as i64 * 16 + s * 30 / 100);
+    let (x1, y1) = (x as i64 * 16 + s * 70 / 100, y as i64 * 16 + s * 70 / 100);
+    let hw = (s / 18).max(10);
+    c.stroke(&[(x0, y0), (x1, y1)], hw, ink, a);
+    c.stroke(&[(x0, y1), (x1, y0)], hw, ink, a);
 }
 
 /// Couverture (0..=16) d'un pixel par un rectangle arrondi (anticrénelage).
@@ -427,6 +706,8 @@ pub enum Glyph {
     Terminal,
     Monitor,
     Folder,
+    /// Globe (navigateur).
+    Globe,
     Letter(char),
 }
 

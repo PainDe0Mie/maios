@@ -2,7 +2,8 @@
 name = "window_manager"
 version = "0.1.0"
 authors = ["PainDe0Mie"]
-description = "allocate new windows and manage a list of existing windows"
+description = "MaiCompositor : gestionnaire de fenêtres et compositeur piloté par les événements"
+edition = "2021"
 
 [dependencies]
 spin = "0.9.4"
@@ -11,11 +12,23 @@ mpmc = "0.1.6"
 [dependencies.log]
 version = "0.4.8"
 
-[dependencies.framebuffer_drawer]
-path = "../framebuffer_drawer"
-
 [dependencies.sleep]
 path = "../../sched/sleep"
+
+[dependencies.task]
+path = "../../sched/task"
+
+[dependencies.time]
+path = "../../sched/time"
+
+[dependencies.wait_queue]
+path = "../../sync/wait_queue"
+
+[dependencies.sync_irq]
+path = "../../../libs/sync_irq"
+
+[dependencies.region2d]
+path = "../region2d"
 
 [dependencies.window_inner]
 path = "../window_inner"
@@ -23,30 +36,14 @@ path = "../window_inner"
 [dependencies.mgi]
 path = "../mgi"
 
-[dependencies.compositor]
-path = "../compositor"
-
-[dependencies.framebuffer_compositor]
-path = "../framebuffer_compositor"
-
 [dependencies.shapes]
 path = "../shapes"
 
 [dependencies.framebuffer]
 path = "../framebuffer"
 
-[dependencies.color]
-path = "../color"
-
 [dependencies.event_types]
 path = "../event_types"
-
-[dependencies.font]
-path = "../font"
-
-[dependencies.lazy_static]
-features = ["spin_no_std"]
-version = "1.4.0"
 
 [dependencies.mod_mgmt]
 path = "../../loader/mod_mgmt"
@@ -57,26 +54,11 @@ path = "../../sched/spawn"
 [dependencies.mouse_data]
 path = "../../../libs/mouse_data"
 
-[dependencies.path]
-path = "../../fs/path"
-
-[lib]
-crate-type = ["rlib"]
-
 [dependencies.keycodes_ascii]
 path = "../../../libs/keycodes_ascii"
-
-[dependencies.scheduler]
-path = "../../sched/scheduler"
-
-[dependencies.cpu]
-path = "../../arch/common/cpu"
-
-[dependencies.time]
-path = "../../sched/time"
 
 [dependencies.keyboard]
 path = "../../drivers/input/keyboard"
 
-[dependencies.mhc]
-path = "../../system/mhc"
+[lib]
+crate-type = ["rlib"]

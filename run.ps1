@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Build MaiOS dans WSL (optionnel) puis lance l'ISO dans QEMU (PC moderne).
 
@@ -39,6 +39,56 @@
 .PARAMETER NoAccel
     Desactive l'acceleration materielle (TCG pur, plus lent mais plus compatible).
 
+.PARAMETER NoRootfs
+    N'attache pas la racine Linux build\rootfs.ext4 (disque NVMe : bash, foot, GTK 4,
+    SDL 3, Qt 6, Firefox...). Elle est attachee par defaut si elle existe, en lecture
+    seule pour l'image (snapshot=on : rien n'est jamais ecrit dans le fichier).
+    La creer : wsl bash scripts/fetch_debs.sh puis wsl bash scripts/mkrootfs.sh
+    Dans MaiOS (terminal), par exemple :
+        run -s /bin/bash /opt/maios/apprun.sh 86400 firefox-esr
+
+.PARAMETER Profile
+    Machine a emuler (defaut : moderne). -ListProfiles les decrit tous :
+        moderne   PC recent : q35, CPU de l'hote (KVM) ou "max", 8 Go, 4 coeurs
+        ancien    PC de 2012 : i440FX, Ivy Bridge (AVX, FSGSBASE, SMEP ; ni AVX2 ni SMAP), 4 Go, 2 coeurs
+        retro     PC de 2008 : i440FX, Core 2 Duo (ni FSGSBASE, ni rdtscp, ni AVX), 1 Go, 2 coeurs
+        minimal   CPU qemu64 de base (SSE2 seulement), 512 Mo, 1 coeur
+        mono      PC recent a un seul coeur, 2 Go (ordonnanceur sans parallelisme)
+        costaud   Station : q35, 16 Go, 8 coeurs
+    -Ram, -Cpus, -Cpu et -Machine remplacent la valeur du profil.
+
+.PARAMETER Gpu
+    Carte graphique (defaut : celle du profil, virtio sur les PC recents) :
+        virtio     GPU virtio (virtio-vga) : MaiGPU, le compositeur presente par le GPU
+                   (zones abimees seulement, curseur materiel). Limine demarre sur sa partie VGA.
+        virtio-gl  Idem avec le rendu OpenGL de l'hote (virtio-vga-gl, fenetre SDL gl=on) :
+                   prepare virgl/Venus (jalons G1/G3), MaiOS n'utilise encore que la 2D.
+        std        Carte VGA standard (framebuffer du chargeur, composition par le processeur).
+    Gestionnaire des taches de MaiOS, vue Performance, categorie GPU : utilisation, debit,
+    latence de presentation. Plan : .claude/plans/08-gpu.md
+
+.PARAMETER NoTablet
+    N'ajoute pas le pointeur absolu virtio-tablet (pilote virtio_input de MaiOS). Avec lui,
+    la souris entre et sort de la fenetre sans capture, et QEMU ne recale jamais le pointeur
+    de Windows (avec une souris PS/2 seule et le curseur materiel du GPU virtio, ce recalage
+    ignore la mise a l'echelle de la fenetre : le pointeur fuyait hors de la fenetre).
+
+.PARAMETER Cpu
+    Modele de CPU QEMU explicite (ex : Skylake-Client, Haswell, EPYC, host, max).
+
+.PARAMETER Machine
+    Type de machine QEMU explicite (ex : q35, pc).
+
+.PARAMETER ListProfiles
+    Affiche les profils et quitte.
+
+.EXAMPLE
+    .\run.ps1 -RunOnly -Profile ancien        # PC de 2012
+    .\run.ps1 -RunOnly -Profile retro -NoAccel
+    .\run.ps1 -RunOnly -Cpu Haswell -Cpus 2    # profil moderne, CPU Haswell
+    .\run.ps1 -RunOnly -Gpu std               # sans GPU (framebuffer VGA)
+    .\run.ps1 -RunOnly -Gpu virtio-gl         # GPU virtio avec rendu OpenGL de l'hote
+
 .EXAMPLE
     .\run.ps1             # Demande s'il faut builder, puis lance
     .\run.ps1 -RunOnly    # Lance directement l'ISO
@@ -55,15 +105,59 @@ param(
     [string]$Ram  = "8G",
     [int]$Cpus    = 4,
     [switch]$Uefi,
-    [switch]$NoAccel
+    [switch]$NoAccel,
+    [switch]$NoRootfs,
+    [ValidateSet("moderne", "ancien", "retro", "minimal", "mono", "costaud")]
+    [string]$Profile = "moderne",
+    [ValidateSet("auto", "virtio", "virtio-gl", "std")]
+    [string]$Gpu = "auto",
+    [switch]$NoTablet,
+    [string]$Cpu,
+    [string]$Machine,
+    [switch]$ListProfiles
 )
 
 $ErrorActionPreference = "Stop"
+
+# ── Profils de machine ───────────────────────────────────────────────────────
+# Cpu = $null : modele choisi selon l'acceleration ("host" sous KVM, "max" sinon).
+# Rootfs : la racine Linux (NVMe) a un sens sur ce profil (applis Linux = FSGSBASE requis).
+# Gpu : carte graphique par defaut (-Gpu la remplace).
+$Profiles = [ordered]@{
+    moderne = @{ Machine = "q35,hpet=on"; Cpu = $null;       Ram = "8G";   Cpus = 4; Rootfs = $true;  Gpu = "virtio"
+                 Desc = "PC recent : q35, CPU de l'hote (KVM) ou 'max', 8 Go, 4 coeurs, GPU virtio" }
+    ancien  = @{ Machine = "pc,hpet=on";  Cpu = "IvyBridge"; Ram = "4G";   Cpus = 2; Rootfs = $true;  Gpu = "std"
+                 Desc = "PC de 2012 : i440FX, Ivy Bridge (AVX, FSGSBASE, SMEP ; ni AVX2 ni SMAP), 4 Go, 2 coeurs, VGA" }
+    retro   = @{ Machine = "pc,hpet=on";  Cpu = "core2duo";  Ram = "1G";   Cpus = 2; Rootfs = $false; Gpu = "std"
+                 Desc = "PC de 2008 : i440FX, Core 2 Duo (ni FSGSBASE, ni rdtscp, ni AVX), 1 Go, VGA : noyau et applis natives seulement" }
+    minimal = @{ Machine = "pc";          Cpu = "qemu64";    Ram = "512M"; Cpus = 1; Rootfs = $false; Gpu = "std"
+                 Desc = "Machine minimale : CPU qemu64 (SSE2), 512 Mo, 1 coeur, VGA" }
+    mono    = @{ Machine = "q35,hpet=on"; Cpu = $null;       Ram = "2G";   Cpus = 1; Rootfs = $true;  Gpu = "virtio"
+                 Desc = "PC recent a un seul coeur, 2 Go, GPU virtio" }
+    costaud = @{ Machine = "q35,hpet=on"; Cpu = $null;       Ram = "16G";  Cpus = 8; Rootfs = $true;  Gpu = "virtio"
+                 Desc = "Station : q35, 16 Go, 8 coeurs, GPU virtio" }
+}
+
+if ($ListProfiles) {
+    Write-Host ""
+    foreach ($name in $Profiles.Keys) {
+        Write-Host ("   {0,-8} {1}" -f $name, $Profiles[$name].Desc)
+    }
+    Write-Host ""
+    Write-Host "   Exemple : .\run.ps1 -RunOnly -Profile ancien   (-Ram, -Cpus, -Cpu, -Machine, -Gpu pour ajuster)"
+    exit 0
+}
+
+$prof = $Profiles[$Profile]
+if (-not $PSBoundParameters.ContainsKey("Ram"))  { $Ram  = $prof.Ram }
+if (-not $PSBoundParameters.ContainsKey("Cpus")) { $Cpus = $prof.Cpus }
+if (-not $Machine) { $Machine = $prof.Machine }
 
 # ── Chemins ──────────────────────────────────────────────────────────────────
 $ProjectDir   = $PSScriptRoot
 $IsoPath      = Join-Path $ProjectDir "build\MaiOS.iso"
 $DiskImage    = Join-Path $ProjectDir "fat32.img"
+$RootfsImage  = Join-Path $ProjectDir "build\rootfs.ext4"
 
 # ── Affichage ────────────────────────────────────────────────────────────────
 function Write-Step($msg)  { Write-Host "`n>> $msg" -ForegroundColor Cyan }
@@ -248,6 +342,38 @@ switch ($accel) {
     "kvm"  { $accelArg = "kvm";                     $cpuModel = "host" }
     default { $accelArg = "tcg,thread=multi";       $cpuModel = "max"  }
 }
+# Modele du profil, puis -Cpu en dernier mot.
+if ($prof.Cpu) { $cpuModel = $prof.Cpu }
+if ($Cpu)      { $cpuModel = $Cpu }
+
+# Carte graphique : profil, puis -Gpu. virtio-gl demande un QEMU construit avec OpenGL
+# (virglrenderer) : celui de Windows l'est ; celui de Debian (WSL) seulement avec le paquet
+# qemu-system-modules-opengl.
+$gpuMode = if ($Gpu -ne "auto") { $Gpu } else { $prof.Gpu }
+if ($gpuMode -eq "virtio-gl") {
+    $devs = if ($useWsl) { wsl bash -lc "$($qemu.Path) -device help 2>/dev/null" } else { & $qemu.Path -device help 2>$null }
+    if (-not ($devs | Select-String -SimpleMatch "virtio-vga-gl")) {
+        Write-Warn "Ce QEMU n'a pas virtio-vga-gl (OpenGL) : GPU virtio 2D a la place."
+        if ($useWsl) { Write-Warn "WSL : sudo apt install qemu-system-modules-opengl (telechargement)." }
+        $gpuMode = "virtio"
+    }
+}
+# Taille annoncee par le GPU (GET_DISPLAY_INFO, EDID) = resolution de cfg/limine.conf.
+$gpuArgs = switch ($gpuMode) {
+    "virtio"    { @("-vga", "none", "-device", "virtio-vga,xres=1920,yres=1080") }
+    "virtio-gl" { @("-vga", "none", "-device", "virtio-vga-gl,xres=1920,yres=1080", "-display", "sdl,gl=on") }
+    # Carte VGA avec 64 Mo de VRAM (assez pour du 4K 32 bits).
+    default     { @("-vga", "std", "-global", "VGA.vgamem_mb=64") }
+}
+$gpuDesc = switch ($gpuMode) {
+    "virtio"    { "virtio-gpu 2D (MaiGPU : presentation par le GPU, curseur materiel)" }
+    "virtio-gl" { "virtio-gpu avec OpenGL de l'hote (SDL, gl=on ; MaiOS : 2D pour l'instant)" }
+    default     { "VGA standard (framebuffer du chargeur, sans acceleration)" }
+}
+# Pointeur absolu : la souris PS/2 reste branchee (secours), QEMU donne la main a la tablette
+# des que MaiOS l'active.
+if (-not $NoTablet) { $gpuArgs += @("-device", "virtio-tablet-pci") }
+
 if ($accel -eq "tcg" -and -not $NoAccel) {
     Write-Warn "Pas d'acceleration materielle (WHPX/KVM indisponible) : la VM sera lente."
     if (-not $useWsl) {
@@ -257,7 +383,7 @@ if ($accel -eq "tcg" -and -not $NoAccel) {
 
 $qemuArgs = @(
     "-name", "MaiOS"
-    "-machine", "q35,hpet=on"
+    "-machine", $Machine
     "-accel", $accelArg
     # CPU recent : rdtscp, AVX, AVX2, BMI, etc. (le qemu64 par defaut est un CPU de 2005).
     "-cpu", $cpuModel
@@ -271,16 +397,13 @@ $qemuArgs = @(
     "-no-shutdown"
     "-serial", "stdio"
     "-serial", "null"
-    # Carte graphique avec 64 Mo de VRAM (assez pour du 4K 32 bits).
-    "-vga", "std"
-    "-global", "VGA.vgamem_mb=64"
     "-s"
     # Audio Intel HDA
     "-device", "intel-hda,id=hda0,msi=off"
     "-device", "hda-output,bus=hda0.0"
     # Reseau : carte Intel e1000 en NAT (acces internet depuis la VM)
     "-nic", "user,model=e1000"
-)
+) + $gpuArgs
 
 # UEFI (OVMF) en option
 if ($Uefi) {
@@ -301,11 +424,35 @@ if (Test-Path $DiskImage) {
     Write-OK "Disque : fat32.img attache"
 }
 
+# Racine Linux ext4 (MaiSS) en NVMe : montee par MaiOS sous /mnt/<etiquette> et pretee a /
+# (usr, etc). snapshot=on : les ecritures eventuelles restent dans un fichier temporaire de
+# QEMU, l'image n'est jamais modifiee.
+if (-not $NoRootfs) {
+    if (Test-Path $RootfsImage) {
+        $rootArg = if ($useWsl) { ConvertTo-WslPath $RootfsImage } else { $RootfsImage }
+        $qemuArgs += @(
+            "-drive", "format=raw,file=$rootArg,if=none,id=rootfs,snapshot=on"
+            "-device", "nvme,serial=maios-root,drive=rootfs"
+        )
+        $rootSize = [math]::Round((Get-Item $RootfsImage).Length / 1GB, 2)
+        Write-OK "Disque : rootfs.ext4 en NVMe ($rootSize Go, Firefox, GTK, Qt, SDL, foot)"
+        Write-OK "         Dans MaiOS : run -s /bin/bash /opt/maios/apprun.sh 86400 firefox-esr"
+    } else {
+        Write-Warn "Pas de build\rootfs.ext4 (racine Linux) : wsl bash scripts/mkrootfs.sh pour la creer."
+    }
+}
+
 $isoSize = [math]::Round((Get-Item $IsoPath).Length / 1MB, 1)
 Write-OK "QEMU : $($qemu.Path) ($($qemu.Kind))"
 Write-OK "ISO  : $IsoPath ($isoSize Mo)"
-Write-OK "Accel: $accel | CPU : $cpuModel"
+Write-OK "Profil : $Profile ($($prof.Desc))"
+Write-OK "Accel: $accel | CPU : $cpuModel | Machine : $Machine"
 Write-OK "RAM  : $Ram | CPUs : $Cpus | Audio : HDA | Reseau : e1000 | Clavier : PS/2"
+Write-OK "GPU  : $gpuDesc"
+Write-OK "Souris : $(if ($NoTablet) { 'PS/2 (relative, capturee par QEMU)' } else { 'tablette virtio (absolue, sans capture) + PS/2' })"
+if (-not $prof.Rootfs -and -not $Cpu) {
+    Write-Warn "Ce CPU n'a pas FSGSBASE : pas de programmes Linux (bash, Firefox...), noyau et applis natives seulement."
+}
 Write-Host ""
 
 if ($useWsl) {

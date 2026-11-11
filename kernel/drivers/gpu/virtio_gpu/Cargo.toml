@@ -1,0 +1,27 @@
+[package]
+name    = "virtio_gpu"
+version = "0.1.0"
+edition = "2021"
+description = "MaiGPU G0 : pilote virtio-gpu 2D (scanout par zones abîmées, fences, curseur matériel, MSI-X)."
+
+[lib]
+name       = "virtio_gpu"
+crate-type = ["rlib"]
+
+[dependencies]
+log           = { version = "0.4", default-features = false }
+spin          = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "once"] }
+irq_safety    = { git = "https://github.com/theseus-os/irq_safety" }
+memory        = { path = "../../../mm/memory" }
+kernel_config = { path = "../../../boot/kernel_config" }
+pci           = { path = "../../bus/pci" }
+virtio        = { path = "../../bus/virtio" }
+interrupts    = { path = "../../../arch/common/interrupts" }
+task          = { path = "../../../sched/task" }
+sleep         = { path = "../../../sched/sleep" }
+spawn         = { path = "../../../sched/spawn" }
+time          = { path = "../../../sched/time" }
+preemption    = { path = "../../../sched/preemption" }
+sync_irq      = { path = "../../../../libs/sync_irq" }
+framebuffer   = { path = "../../../gfx/framebuffer" }
+mgi           = { path = "../../../gfx/mgi" }

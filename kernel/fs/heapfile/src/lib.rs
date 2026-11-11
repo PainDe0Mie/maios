@@ -104,4 +104,11 @@ impl FsNode for HeapFile {
     fn set_parent_dir(&mut self, new_parent: WeakDirRef) {
         self.parent = new_parent;
     }
+
+    fn set_name(&mut self, name: String) -> Result<(), &'static str> {
+        self.name = name;
+        Ok(())
+    }
+
+    fn is_movable(&self) -> bool { true }
 }

@@ -14,11 +14,12 @@ mod interface;
 mod socket;
 
 pub use device::{DeviceCapabilities, NetworkDevice};
-pub use interface::{IpAddress, IpCidr, NetworkInterface, SocketSet};
+pub use interface::{IpAddress, IpCidr, NetworkInterface, SocketSet, ADDR_DHCP, ADDR_NONE, ADDR_STATIC};
 pub use smoltcp::{
+    iface::SocketHandle,
     phy,
-    socket::{icmp, tcp, udp},
-    time::Instant,
+    socket::{icmp, raw, tcp, udp},
+    time::{self as stime, Instant},
     wire::{self, IpEndpoint, IpListenEndpoint},
 };
 pub use socket::{LockedSocket, Socket};
@@ -34,56 +35,85 @@ static DNS_SERVERS: Mutex<Vec<Ipv4Address>> = Mutex::new(Vec::new());
 
 /// Enregistre un périphérique réseau et démarre DHCP.
 ///
-/// L'interface est créée sans IP. Un polling DHCP de 5 secondes max tente
-/// d'obtenir une adresse. En cas d'échec, un fallback statique est utilisé.
+/// L'interface est créée sans adresse et enregistrée tout de suite : le client DHCP avance à
+/// chaque passage de `poll` (paquets reçus par l'interruption de la carte) et sur ses minuteurs
+/// (tâche [`net_timer_task`]). Si aucun serveur ne répond en [`DHCP_FALLBACK_AFTER`], le repli
+/// statique est posé ; un bail obtenu plus tard le remplace.
+///
+/// (L'ancienne attente « de 5 s » faisait 5000 `spin_loop()`, quelques microsecondes : l'offre
+/// du serveur n'arrivait jamais à temps et le repli était toujours pris.)
 pub fn register_device<T>(device: &'static IrqSafeMutex<T>) -> Arc<NetworkInterface>
 where
     T: 'static + NetworkDevice + Send,
 {
-    // Créer l'interface sans IP — DHCP va la configurer
-    let interface = NetworkInterface::new_dhcp(device);
-    let interface_arc = Arc::new(interface);
-
-    // Tenter DHCP pendant 5 secondes max (5000 polls à ~1ms chacun)
-    let mut dhcp_success = false;
-    for _ in 0..5000 {
-        if let Some((_ip, _gw, dns)) = interface_arc.poll_dhcp() {
-            // Stocker les DNS servers
-            let mut dns_lock = DNS_SERVERS.lock();
-            dns_lock.clear();
-            for srv in dns.iter().flatten() {
-                dns_lock.push(*srv);
-            }
-            dhcp_success = true;
-            break;
-        }
-        // Petit yield — on est encore en early boot, pas de sleep disponible
-        core::hint::spin_loop();
-    }
-
-    if !dhcp_success {
-        info!("DHCP: timeout, using static fallback {}", FALLBACK_LOCAL_IP);
-        // Fallback : configurer statiquement
-        {
-            let mut inner = interface_arc.inner.lock();
-            inner.update_ip_addrs(|addrs| {
-                addrs.clear();
-                addrs.push(FALLBACK_LOCAL_IP.parse().unwrap()).unwrap();
-            });
-            match FALLBACK_GATEWAY_IP {
-                IpAddress::Ipv4(addr) => { inner.routes_mut().add_default_ipv4_route(addr).ok(); }
-                IpAddress::Ipv6(addr) => { inner.routes_mut().add_default_ipv6_route(addr).ok(); }
-            }
-        }
-        // Fallback DNS = gateway
-        let mut dns_lock = DNS_SERVERS.lock();
-        if dns_lock.is_empty() {
-            dns_lock.push(Ipv4Address::new(10, 0, 2, 2));
-        }
-    }
-
+    let interface_arc = Arc::new(NetworkInterface::new_dhcp(device));
+    // Premier passage : la découverte DHCP part tout de suite.
+    interface_arc.poll();
     NETWORK_INTERFACES.lock().push(interface_arc.clone());
+    start_timer_task();
     interface_arc
+}
+
+/// Délai avant le repli statique, faute de bail DHCP.
+pub const DHCP_FALLBACK_AFTER: core::time::Duration = core::time::Duration::from_secs(5);
+
+static TIMER_TASK: spin::Once<()> = spin::Once::new();
+
+fn start_timer_task() {
+    TIMER_TASK.call_once(|| {
+        if let Err(e) = spawn::new_task_builder(net_timer_task, ())
+            .name(alloc::string::String::from("net_timer"))
+            .spawn()
+        {
+            log::error!("net : tâche des minuteurs non créée : {}", e);
+        }
+    });
+}
+
+/// Minuteurs des interfaces, sans tick : la tâche dort jusqu'à la prochaine échéance annoncée par
+/// smoltcp (retransmission DHCP, renouvellement du bail, minuteurs TCP des sockets du noyau),
+/// au plus 100 ms tant qu'une interface attend son adresse, 5 s sinon. Les paquets reçus, eux,
+/// sont servis par l'interruption de la carte. (Les sockets des processus ont en plus la tâche
+/// `netpoll` de MaiProc.)
+fn net_timer_task(_: ()) {
+    let start = ::time::Instant::now();
+    loop {
+        let ifaces: Vec<Arc<NetworkInterface>> = NETWORK_INTERFACES.lock().clone();
+        let mut next = core::time::Duration::from_secs(5);
+        for i in &ifaces {
+            i.poll();
+            if i.addr_state() == interface::ADDR_NONE {
+                if ::time::Instant::now().duration_since(start) >= DHCP_FALLBACK_AFTER {
+                    info!("DHCP : aucun serveur, repli statique {}", FALLBACK_LOCAL_IP);
+                    i.set_static(FALLBACK_LOCAL_IP.parse().unwrap(), FALLBACK_GATEWAY_IP);
+                    set_dns_servers(&[Ipv4Address::new(10, 0, 2, 2)], false);
+                } else {
+                    next = next.min(core::time::Duration::from_millis(100));
+                }
+            }
+            if let Some(d) = i.poll_delay() {
+                next = next.min(d);
+            }
+        }
+        let _ = sleep::sleep(next.max(core::time::Duration::from_millis(1)));
+    }
+}
+
+/// Remplace la liste des serveurs DNS (`replace`), ou la pose si elle est vide (repli).
+pub(crate) fn set_dns_servers(servers: &[Ipv4Address], replace: bool) {
+    let mut dns = DNS_SERVERS.lock();
+    if replace || dns.is_empty() {
+        dns.clear();
+        dns.extend_from_slice(servers);
+    }
+}
+
+/// Horloge des sockets de smoltcp : le temps monotone du noyau. (Le temps figé à zéro de
+/// l'héritage de Theseus désactivait tous les minuteurs TCP : retransmission, ACK différé,
+/// `TIME_WAIT`, sondes de fenêtre nulle.)
+pub fn now() -> Instant {
+    let d = ::time::Instant::now().duration_since(::time::Instant::ZERO);
+    Instant::from_micros(d.as_micros() as i64)
 }
 
 /// Returns a list of available interfaces behind a mutex.

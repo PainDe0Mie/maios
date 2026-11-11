@@ -1,0 +1,16 @@
+[package]
+name = "log_flusher"
+version = "0.1.0"
+description = "Tâche du noyau qui vide l'anneau du journal asynchrone vers le port série"
+edition = "2021"
+
+[dependencies]
+spin = "0.9.4"
+
+logger = { path = "../logger" }
+spawn = { path = "../../sched/spawn" }
+task = { path = "../../sched/task" }
+sleep = { path = "../../sched/sleep" }
+
+[lib]
+crate-type = ["rlib"]

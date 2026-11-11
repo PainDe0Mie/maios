@@ -66,6 +66,9 @@ pub struct SerialPort {
     line_status:                Port<u8>,
     _modem_status:              Port<u8>,
     _scratch:                   Port<u8>,
+    /// Profondeur du FIFO d'émission : 16 sur un 16550A (FIFO confirmé par IIR), 1 sinon.
+    /// Quand LSR.THRE est levé, le FIFO est vide : on peut y déposer `tx_fifo` octets d'un coup.
+    tx_fifo:                    u8,
 }
 
 impl Drop for SerialPort {
@@ -82,6 +85,7 @@ impl Drop for SerialPort {
                     line_status:                Port::new(0),
                     _modem_status:              Port::new(0),
                     _scratch:                   Port::new(0),
+                    tx_fifo:                    1,
                 };
                 let dropped = core::mem::replace(self, dummy);
                 *sp_locked = TriState::Inited(dropped);
@@ -95,7 +99,7 @@ impl SerialPort {
     /// and initializes that port using standard configuration parameters. 
     /// 
     /// The configuration parameters used in this function are:
-    /// * A baud rate of 38400.
+    /// * A baud rate of 115200 (divisor 1), the usual rate of kernel consoles.
     /// * "8N1" mode: data word length of 8 bits, with no parity and one stop bit.
     /// * FIFO buffer enabled with a threshold of 14 bytes.
     /// * Interrupts enabled for receiving bytes only (not transmitting).
@@ -108,7 +112,7 @@ impl SerialPort {
     /// Note: if you are experiencing problems with serial port behavior,
     /// try enabling the loopback test part of this function to see if that passes.
     pub fn new(base_port: u16) -> SerialPort {
-        let serial = SerialPort {
+        let mut serial = SerialPort {
             data:                       Port::new(base_port    ),
             interrupt_enable:           Port::new(base_port + 1),
             interrupt_id_fifo_control:  Port::new(base_port + 2),
@@ -117,6 +121,7 @@ impl SerialPort {
             line_status:                Port::new(base_port + 5),
             _modem_status:              Port::new(base_port + 6),
             _scratch:                   Port::new(base_port + 7),
+            tx_fifo:                    1,
         };
 
         // SAFE: we are just accessing this serial port's registers.
@@ -126,11 +131,12 @@ impl SerialPort {
 
             // Enter DLAB mode so we can set the baud rate divisor
             serial.line_control.write(0x80);
-            // Set baud rate to 38400, which requires a divisor value of `3`. 
+            // Set baud rate to 115200, which requires a divisor value of `1`
+            // (38400 needed `3`: three times slower for every log line). 
             // To do this, we enter DLAB mode (to se the baud rate divisor),
             // the write the low byte of the divisor to the data register (DLL)
             // and the high byte to the interrupt enable register (DLH).
-            serial.data.write(0x03);
+            serial.data.write(0x01);
             serial.interrupt_enable.write(0x00);
 
             // Exit DLAB mode. At the same time, set the data word length to 8 bits,
@@ -142,6 +148,11 @@ impl SerialPort {
             // Note that serial ports will fire an interrupt if there is a "small delay"
             // between bytes, so we don't always have to wait for 14 entire bytes to arrive.
             serial.interrupt_id_fifo_control.write(0xC7);
+            // IIR bits 7:6 = 11 : FIFO présent et actif (16550A). Un 8250/16450 n'en a pas, et
+            // un 16550 d'origine a un FIFO défectueux (bits = 10) : un octet à la fois.
+            if serial.interrupt_id_fifo_control.read() & 0xC0 == 0xC0 {
+                serial.tx_fifo = 16;
+            }
 
             // Mark the data terminal as ready, signal request to send
             // and enable auxilliary output #2 (used as interrupt line for CPU)
@@ -198,14 +209,25 @@ impl SerialPort {
     /// Because this function writes strings, it will transmit a carriage return `'\r'`
     /// after transmitting a line feed (new line) `'\n'` to ensure a proper new line.
     pub fn out_str(&mut self, s: &str) {
+        // Traduction dans un petit tampon, puis envoi par rafales du FIFO.
+        let mut buf = [0u8; 64];
+        let mut n = 0;
         for byte in s.bytes() {
-            self.out_byte(byte);
+            if n + 2 > buf.len() {
+                self.out_bytes(&buf[..n]);
+                n = 0;
+            }
+            buf[n] = byte;
+            n += 1;
             if byte == b'\n' {
-                self.out_byte(b'\r');
+                buf[n] = b'\r';
+                n += 1;
             } else if byte == b'\r' {
-                self.out_byte(b'\n');
+                buf[n] = b'\n';
+                n += 1;
             }
         }
+        self.out_bytes(&buf[..n]);
     }
 
     /// Write the given byte to the serial port, blocking until data can be transmitted.
@@ -225,9 +247,35 @@ impl SerialPort {
     ///
     /// This writes the bytes directly with no special cases, e.g., new lines.
     pub fn out_bytes(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.out_byte(*byte);
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            while !self.ready_to_transmit() { core::hint::spin_loop(); }
+            let n = self.push_fifo(rest);
+            rest = &rest[n..];
         }
+    }
+
+    /// Writes as many of the given bytes as the transmitter accepts **without waiting**:
+    /// up to the FIFO depth when the transmit FIFO is empty (LSR.THRE), nothing otherwise.
+    ///
+    /// Returns the number of bytes written. This is what the asynchronous logger uses, so that
+    /// it never spins on the line with interrupts disabled.
+    pub fn try_out_bytes(&mut self, bytes: &[u8]) -> usize {
+        if bytes.is_empty() || !self.ready_to_transmit() {
+            return 0;
+        }
+        self.push_fifo(bytes)
+    }
+
+    /// Dépose au plus `tx_fifo` octets ; l'appelant a vu LSR.THRE (FIFO vide).
+    #[inline]
+    fn push_fifo(&mut self, bytes: &[u8]) -> usize {
+        let n = bytes.len().min(self.tx_fifo as usize);
+        for &b in &bytes[..n] {
+            // SAFE: we're just writing to the serial port, which has already been initialized.
+            unsafe { self.data.write(b); }
+        }
+        n
     }
 
     /// Read one byte from the serial port, blocking until data is available.
@@ -279,5 +327,24 @@ impl fmt::Write for SerialPort {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.out_str(s); 
         Ok(())
+    }
+}
+
+/// Sortie d'urgence (NMI, exception, verrou du journal tenu par le code interrompu) : écrit
+/// directement sur les registres du port, sans verrou ni initialisation, avec une attente bornée
+/// par octet pour ne jamais bloquer sur un port absent.
+pub fn emergency_out_bytes(port: SerialPortAddress, bytes: &[u8]) {
+    let base = port as u16;
+    let data: Port<u8> = Port::new(base);
+    let lsr: Port<u8> = Port::new(base + 5);
+    for &b in bytes {
+        for _ in 0..100_000 {
+            if lsr.read() & 0x20 != 0 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        // SAFE: écriture d'un octet dans le registre de données d'un port COM standard.
+        unsafe { data.write(b); }
     }
 }

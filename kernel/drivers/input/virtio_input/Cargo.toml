@@ -1,0 +1,22 @@
+[package]
+name    = "virtio_input"
+version = "0.1.0"
+edition = "2021"
+description = "Pilote virtio-input : pointeurs absolus (virtio-tablet) et souris (virtio-mouse), MSI-X."
+
+[lib]
+name       = "virtio_input"
+crate-type = ["rlib"]
+
+[dependencies]
+log           = { version = "0.4", default-features = false }
+spin          = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "once"] }
+mpmc          = "0.1.6"
+pci           = { path = "../../bus/pci" }
+virtio        = { path = "../../bus/virtio" }
+interrupts    = { path = "../../../arch/common/interrupts" }
+sleep         = { path = "../../../sched/sleep" }
+spawn         = { path = "../../../sched/spawn" }
+sync_irq      = { path = "../../../../libs/sync_irq" }
+mouse_data    = { path = "../../../../libs/mouse_data" }
+event_types   = { path = "../../../gfx/event_types" }

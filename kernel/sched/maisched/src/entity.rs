@@ -178,6 +178,11 @@ impl Entity {
         self.to_virtual(self.slice)
     }
 
+    /// Dans l'arbre EEVDF (diagnostic).
+    pub fn in_tree(&self) -> bool {
+        self.in_tree
+    }
+
     pub fn is_fair(&self) -> bool {
         matches!(self.class, Class::Fair { .. })
     }

@@ -26,8 +26,12 @@ pub struct RGBPixel {
     _channel: u8,
 }
 
-#[derive(Hash, Debug, Clone, Copy, FromBytes, Default)]
+#[derive(Hash, Debug, Clone, Copy, FromBytes, Default, PartialEq, Eq)]
 /// An RGBA pixel with an alpha channel.
+///
+/// `repr(C)` : quatre octets BGRA, lus comme un `u32` little-endian `0xAARRGGBB` par le
+/// compositeur, VirtIO-GPU et les applications (XRGB8888).
+#[repr(C)]
 pub struct AlphaPixel {
     pub blue: u8,
     pub green: u8,

@@ -1,5 +1,6 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::marker::PhantomData;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use log::info;
 use smoltcp::{iface, phy::DeviceCapabilities, socket::AnySocket, wire};
@@ -11,7 +12,7 @@ use smoltcp::socket::dhcpv4;
 use sync_block::Mutex;
 use sync_irq::IrqSafeMutex;
 
-use crate::{device::DeviceWrapper, NetworkDevice, Socket};
+use crate::{device::{DeviceWrapper, Stats}, NetworkDevice, Socket};
 
 /// A network interface.
 ///
@@ -23,7 +24,18 @@ pub struct NetworkInterface {
     pub sockets: Mutex<SocketSet<'static>>,
     /// Handle du socket DHCP, si initialisé via `new_dhcp()`.
     dhcp_handle: Option<smoltcp::iface::SocketHandle>,
+    /// État de l'adressage : [`ADDR_NONE`], [`ADDR_DHCP`] ou [`ADDR_STATIC`].
+    addr_state: AtomicU8,
+    /// Trames et octets reçus et émis.
+    stats: Stats,
 }
+
+/// Pas encore d'adresse (DHCP en cours).
+pub const ADDR_NONE: u8 = 0;
+/// Adresse obtenue par DHCP (bail en cours).
+pub const ADDR_DHCP: u8 = 1;
+/// Adresse statique : fixée à la création, ou repli faute de serveur DHCP.
+pub const ADDR_STATIC: u8 = 2;
 
 impl NetworkInterface {
     /// Crée une interface avec une IP statique et un gateway.
@@ -33,8 +45,10 @@ impl NetworkInterface {
     {
         let hardware_addr = wire::EthernetAddress(device.lock().mac_address()).into();
 
+        let boot_stats = Stats::default();
         let mut wrapper = DeviceWrapper {
             inner: &mut *device.lock(),
+            stats: &boot_stats,
         };
 
         let mut config = iface::Config::new(hardware_addr);
@@ -56,6 +70,8 @@ impl NetworkInterface {
             device,
             sockets: Mutex::new(SocketSet::new(Vec::new())),
             dhcp_handle: None,
+            addr_state: AtomicU8::new(ADDR_STATIC),
+            stats: Stats::default(),
         }
     }
 
@@ -66,8 +82,10 @@ impl NetworkInterface {
     {
         let hardware_addr = wire::EthernetAddress(device.lock().mac_address()).into();
 
+        let boot_stats = Stats::default();
         let mut wrapper = DeviceWrapper {
             inner: &mut *device.lock(),
+            stats: &boot_stats,
         };
 
         let mut config = iface::Config::new(hardware_addr);
@@ -87,57 +105,67 @@ impl NetworkInterface {
             device,
             sockets: Mutex::new(sockets),
             dhcp_handle: Some(dhcp_handle),
+            addr_state: AtomicU8::new(ADDR_NONE),
+            stats: Stats::default(),
         }
     }
 
-    /// Poll le DHCP socket et applique la configuration si disponible.
-    /// Retourne `Some((ip, gateway, dns_servers))` si DHCP vient de se configurer.
-    pub fn poll_dhcp(&self) -> Option<(wire::Ipv4Address, wire::Ipv4Address, [Option<wire::Ipv4Address>; 3])> {
-        let dhcp_handle = self.dhcp_handle?;
+    /// État de l'adressage ([`ADDR_NONE`], [`ADDR_DHCP`], [`ADDR_STATIC`]).
+    pub fn addr_state(&self) -> u8 {
+        self.addr_state.load(Ordering::Acquire)
+    }
 
+    /// Fixe une adresse statique (repli quand aucun serveur DHCP ne répond). Le client DHCP
+    /// continue : un bail obtenu plus tard remplace cette adresse.
+    pub(crate) fn set_static(&self, ip: IpCidr, gateway: IpAddress) {
         let mut inner = self.inner.lock();
-        let mut wrapper = DeviceWrapper {
-            inner: &mut *self.device.lock(),
-        };
-        let mut sockets = self.sockets.lock();
+        inner.update_ip_addrs(|addrs| {
+            addrs.clear();
+            let _ = addrs.push(ip);
+        });
+        match gateway {
+            IpAddress::Ipv4(addr) => { let _ = inner.routes_mut().add_default_ipv4_route(addr); }
+            IpAddress::Ipv6(addr) => { let _ = inner.routes_mut().add_default_ipv6_route(addr); }
+        }
+        self.addr_state.store(ADDR_STATIC, Ordering::Release);
+    }
 
-        // Poll first
-        inner.poll(smoltcp::time::Instant::ZERO, &mut wrapper, &mut sockets);
-
-        // Accéder au socket DHCP par handle
-        let dhcp: &mut dhcpv4::Socket = sockets.get_mut(dhcp_handle);
+    /// Événements du client DHCP (smoltcp `dhcpv4`), traités à chaque passage de [`poll`] :
+    /// le bail est obtenu, renouvelé ou perdu au fil des paquets reçus, sans boucle d'attente au
+    /// démarrage. Retourne `true` si la configuration a changé.
+    ///
+    /// [`poll`]: Self::poll
+    fn dhcp_events(&self, inner: &mut iface::Interface, sockets: &mut SocketSet<'static>) -> bool {
+        let Some(h) = self.dhcp_handle else { return false };
+        let dhcp: &mut dhcpv4::Socket = sockets.get_mut(h);
         match dhcp.poll() {
             Some(dhcpv4::Event::Configured(config)) => {
-                let ip_cidr = config.address;
-                let gateway = config.router.unwrap_or(wire::Ipv4Address::UNSPECIFIED);
-
-                // Collecter les DNS servers
-                let mut dns = [None; 3];
-                for (i, srv) in config.dns_servers.iter().enumerate() {
-                    if i < 3 {
-                        dns[i] = Some(*srv);
-                    }
-                }
-
-                // Appliquer la configuration IP
                 inner.update_ip_addrs(|addrs| {
                     addrs.clear();
-                    addrs.push(IpCidr::Ipv4(ip_cidr)).unwrap();
+                    let _ = addrs.push(IpCidr::Ipv4(config.address));
                 });
-                inner.routes_mut().add_default_ipv4_route(gateway)
-                    .expect("route storage exhausted");
-
-                info!("DHCP: got IP {}, gateway {}, DNS {:?}",
-                    ip_cidr, gateway, dns);
-
-                Some((ip_cidr.address(), gateway, dns))
+                match config.router {
+                    Some(gw) => { let _ = inner.routes_mut().add_default_ipv4_route(gw); }
+                    None => { inner.routes_mut().remove_default_ipv4_route(); }
+                }
+                let dns: Vec<wire::Ipv4Address> = config.dns_servers.iter().copied().collect();
+                info!("DHCP : bail obtenu, adresse {}, passerelle {:?}, DNS {:?}", config.address, config.router, dns);
+                crate::set_dns_servers(&dns, true);
+                self.addr_state.store(ADDR_DHCP, Ordering::Release);
+                true
             }
             Some(dhcpv4::Event::Deconfigured) => {
-                info!("DHCP: lease expired, deconfigured");
-                inner.update_ip_addrs(|addrs| addrs.clear());
-                None
+                // Bail expiré ou perdu : le client repart en découverte, et la tâche du réseau
+                // reprendra le repli statique si aucun serveur ne répond.
+                if self.addr_state.load(Ordering::Acquire) == ADDR_DHCP {
+                    log::warn!("DHCP : bail perdu, adresse retiree");
+                    inner.update_ip_addrs(|addrs| addrs.clear());
+                    inner.routes_mut().remove_default_ipv4_route();
+                    self.addr_state.store(ADDR_NONE, Ordering::Release);
+                }
+                true
             }
-            None => None,
+            None => false,
         }
     }
 
@@ -159,13 +187,68 @@ impl NetworkInterface {
     /// Returns a boolean indicating whether the readiness of any socket may
     /// have changed.
     pub fn poll(&self) -> bool {
+        // Ordre : `inner`, `sockets`, puis la carte. Le verrou de la carte coupe les
+        // interruptions et son gestionnaire d'interruption le prend : il ne doit jamais être tenu
+        // pendant l'attente d'un verrou bloquant. Pris avant `sockets`, il bloquait tout : un fil
+        // tenant `sockets` (`recv`) interrompu par la carte attendait la carte, tenue par ce
+        // sondage qui attendait `sockets` (et les invalidations TLB visant ce cœur avec).
         let mut inner = self.inner.lock();
+        let mut sockets = self.sockets.lock();
         let mut wrapper = DeviceWrapper {
             inner: &mut *self.device.lock(),
+            stats: &self.stats,
         };
-        let mut sockets = self.sockets.lock();
 
-        inner.poll(smoltcp::time::Instant::ZERO, &mut wrapper, &mut sockets)
+        let ready = inner.poll(crate::now(), &mut wrapper, &mut sockets);
+        self.dhcp_events(&mut inner, &mut sockets) || ready
+    }
+
+    /// Délai avant la prochaine échéance d'un minuteur de socket (retransmission, ACK différé,
+    /// `TIME_WAIT`…) ; `None` : aucune. Sert à dormir jusqu'à l'échéance au lieu de sonder à
+    /// intervalle fixe.
+    pub fn poll_delay(&self) -> Option<core::time::Duration> {
+        let mut inner = self.inner.lock();
+        let sockets = self.sockets.lock();
+        inner.poll_delay(crate::now(), &sockets).map(|d| core::time::Duration::from_micros(d.total_micros()))
+    }
+
+    /// Adresses IP de l'interface.
+    pub fn ip_addrs(&self) -> Vec<IpCidr> {
+        self.inner.lock().ip_addrs().to_vec()
+    }
+
+    /// Passerelle IPv4 par défaut (route `0.0.0.0/0`), s'il y en a une.
+    pub fn default_gateway_v4(&self) -> Option<[u8; 4]> {
+        let mut gw = None;
+        self.inner.lock().routes_mut().update(|routes| {
+            for r in routes.iter() {
+                if let (IpCidr::Ipv4(c), IpAddress::Ipv4(a)) = (r.cidr, r.via_router) {
+                    if c.prefix_len() == 0 {
+                        gw = Some(a.0);
+                    }
+                }
+            }
+        });
+        gw
+    }
+
+    /// Compteurs `(octets reçus, trames reçues, octets émis, trames émises, trames jetées à
+    /// l'émission)`.
+    pub fn stats(&self) -> [u64; 5] {
+        use core::sync::atomic::Ordering::Relaxed;
+        let s = &self.stats;
+        [
+            s.rx_bytes.load(Relaxed),
+            s.rx_packets.load(Relaxed),
+            s.tx_bytes.load(Relaxed),
+            s.tx_packets.load(Relaxed),
+            s.tx_dropped.load(Relaxed),
+        ]
+    }
+
+    /// Adresse matérielle (MAC).
+    pub fn mac_address(&self) -> [u8; 6] {
+        self.device.lock().mac_address()
     }
 
     pub fn capabilities(&self) -> DeviceCapabilities {

@@ -3,14 +3,14 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
 
-use log::{error, warn};
-use spin::Once;
+use log::error;
+use spin::{Mutex, Once};
+use time::{Duration, Instant};
 use mpmc::Queue;
 use event_types::Event;
 use x86_64::structures::idt::InterruptStackFrame;
 use mouse_data::{MouseButtons, MouseEvent, MouseMovementRelative};
 use ps2::{PS2Mouse, MousePacket};
-extern crate port_io;
 
 /// The first PS/2 port for the mouse is connected directly to IRQ 0xC.
 /// Because we perform the typical PIC remapping, the remapped IRQ vector number is 0x2C.
@@ -48,48 +48,61 @@ pub fn init(mut mouse: PS2Mouse<'static>, mouse_queue_producer: Queue<Event>) ->
     Ok(())
 }
 
-/// The interrupt handler for a PS/2-connected mouse, registered at IRQ 0x2C.
+/// Paquet en cours d'assemblage, un octet à la fois (comme `psmouse` de Linux).
+struct Assembler {
+    bytes: [u8; 4],
+    count: usize,
+    /// Arrivée du dernier octet reçu.
+    last: Instant,
+}
+
+static ASSEMBLER: Mutex<Assembler> = Mutex::new(Assembler { bytes: [0; 4], count: 0, last: Instant::ZERO });
+
+/// Au-delà de ce silence entre deux octets d'un paquet, le paquet commencé est abandonné : le
+/// premier octet suivant ouvre un nouveau paquet (`psmouse` de Linux : une demi-seconde ; les
+/// octets d'un même paquet arrivent à moins d'une milliseconde d'intervalle).
+const PACKET_GAP: Duration = Duration::from_millis(50);
+
+/// Octets lus au plus par interruption (le reste attend la suivante).
+const MAX_BYTES_PER_IRQ: usize = 256;
+
+/// Gestionnaire de l'IRQ 12 (souris PS/2).
 ///
-/// When a mouse with id 4 is not scrolling, one interrupt without a mouse packet happens (mouse output buffer not full),
-/// then one interrupt with a mouse packet.
-/// When a mouse with id 4 is scrolling, one interrupt without a mouse packet happens (mouse output buffer not full),
-/// then two interrupts with mouse packets (the first one containing only the generic_part, the second one containing the complete packet).
-/// 
-/// In some cases (e.g. on device init), [the PS/2 controller can also send an interrupt](https://wiki.osdev.org/%228042%22_PS/2_Controller#Interrupts).
+/// Lit **un octet à la fois**, seulement quand le contrôleur signale un octet de la souris
+/// (`output_buffer_full` et `mouse_output_buffer_full`) : un octet du clavier n'est jamais pris,
+/// et le port de données n'est jamais lu à vide (un octet volé décalait tous les paquets
+/// suivants, qui échouaient tous au contrôle du bit 3 : souris figée). Resynchronisation : le
+/// premier octet d'un paquet doit avoir son bit 3 à un et aucun débordement ; sinon il est
+/// sauté. Un paquet commencé et resté incomplet plus de [`PACKET_GAP`] est abandonné.
 extern "x86-interrupt" fn ps2_mouse_handler(_stack_frame: InterruptStackFrame) {
     if let Some(MouseInterruptParams { mouse, queue }) = MOUSE.get() {
-        // Drain ALL available mouse packets in a single interrupt invocation.
-        // QEMU buffers host mouse events and immediately refills the PS/2 output
-        // buffer after each read. If we only read one packet per interrupt, the
-        // I/O APIC (level-triggered) sees the line still asserted after EOI and
-        // immediately re-fires, starving all other code on this CPU.
-        let mut drained = 0u8;
-        while mouse.is_output_buffer_full() && drained < 64 {
-            let mouse_packet = mouse.read_mouse_packet();
-            drained += 1;
-
-            if mouse_packet.always_one() != 1 {
-                // Desynchronized packet — drain remaining bytes and let the next
-                // interrupt start fresh.
-                while mouse.is_output_buffer_full() {
-                    let _ = mouse.read_mouse_packet();
+        // Un seul cœur assemble à la fois (l'IRQ 12 ne va qu'à un cœur ; prudence).
+        if let Some(mut asm) = ASSEMBLER.try_lock() {
+            let len = mouse.packet_len();
+            for _ in 0..MAX_BYTES_PER_IRQ {
+                let Some(byte) = mouse.try_read_byte() else { break };
+                let now = Instant::now();
+                if asm.count > 0 && now.duration_since(asm.last) > PACKET_GAP {
+                    asm.count = 0;
                 }
-                break;
-            } else {
-                let _ = handle_mouse_input(mouse_packet, queue);
+                asm.last = now;
+                // Premier octet : bit 3 toujours à un ; un débordement annoncé (bits 6 et 7)
+                // avec un gros mouvement est rare, mais un octet de mouvement pris pour un
+                // premier octet a souvent ces bits : on les refuse aussi.
+                if asm.count == 0 && (byte & 0x08 == 0 || byte & 0xC0 != 0) {
+                    continue;
+                }
+                let i = asm.count;
+                asm.bytes[i] = byte;
+                asm.count += 1;
+                if asm.count == len {
+                    asm.count = 0;
+                    let packet = mouse.packet_from_bytes(asm.bytes);
+                    let _ = handle_mouse_input(packet, queue);
+                }
             }
         }
-
-        // If no mouse data was available (status register bit 5 not set), drain
-        // port 0x60 anyway to clear whatever is there.
-        if drained == 0 {
-            unsafe { port_io::inb(0x60) };
-        }
-    } else {
-        // MOUSE not initialized — drain port 0x60 to prevent IRQ storm.
-        unsafe { port_io::inb(0x60) };
     }
-
     interrupts::eoi(PS2_MOUSE_IRQ);
 }
 
@@ -102,17 +115,21 @@ fn handle_mouse_input(mouse_packet: MousePacket, queue: &Queue<Event>) -> Result
     let mouse_event = MouseEvent::new(buttons, movement);
     let event = Event::MouseMovementEvent(mouse_event);
 
-    queue.push(event).map_err(|_| "failed to enqueue the mouse event")
+    let r = queue.push(event).map_err(|_| "failed to enqueue the mouse event");
+    event_types::notify_input();
+    r
 }
 
 // both MouseMovementRelative and MousePacketBits4 are in different crates, so we need a newtype wrapper:
 struct Movement(MouseMovementRelative);
 impl From<&MousePacket> for Movement {
     fn from(mouse_packet: &MousePacket) -> Self {
+        // PS/2 : `z` négatif vers le haut ; MaiOS (et `REL_WHEEL` de Linux) : positif vers le
+        // haut, d'où l'opposé (comme `psmouse`).
         Self(MouseMovementRelative::new(
             mouse_packet.x_movement(),
             mouse_packet.y_movement(),
-            mouse_packet.scroll_movement()
+            mouse_packet.scroll_movement().saturating_neg()
         ))
     }
 }

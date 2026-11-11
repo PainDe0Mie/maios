@@ -54,8 +54,23 @@ const E1000_RX_BUFFER_SIZE_IN_BYTES:     u16 = PAGE_SIZE as u16;
 
 /// Interrupt type: Link Status Change
 const INT_LSC:              u32 = 0x04;
+/// Cause : anneau de réception sous le seuil minimal de descripteurs libres.
+const INT_RXDMT0:           u32 = 0x10;
+/// Cause : débordement de la réception (anneau plein).
+const INT_RXO:              u32 = 0x40;
 /// Interrupt type: Receive Timer Interrupt
-const INT_RX:               u32 = 0x80;
+const INT_RXT0:             u32 = 0x80;
+/// Causes de réception, toutes servies par le même sondage de l'anneau.
+const INT_RX:               u32 = INT_RXT0 | INT_RXO | INT_RXDMT0;
+
+/// Modération : intervalle minimal entre deux interruptions, par 256 ns. 195 ≈ 50 µs, soit au
+/// plus 20 000 interruptions par seconde (valeur de départ du mode dynamique du pilote e1000 de
+/// Linux). Sous charge, NAPI masque de toute façon la réception tant que l'anneau n'est pas vidé.
+const E1000_ITR: u32 = 195;
+
+/// Une interruption de réception attend d'être servie par la tâche différée (voir
+/// [`poll_interface`]).
+static RX_PENDING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 
 /// The single instance of the E1000 NIC.
@@ -239,11 +254,14 @@ impl E1000Nic {
     /// The provided `interface` must be the network interface associated with this E1000 NIC.
     /// This interface will be polled in a deferred task upon an interrupt being triggered
     /// for a received packet.
+    ///
+    /// L'énumération PCI coupe INTx sur tous les périphériques (`PCI_COMMAND`, bit 10) : il est
+    /// rétabli ici, une fois le gestionnaire en place et les causes en attente effacées.
     pub fn init_interrupts(
         &mut self,
+        pci_dev: &PciDevice,
         interface: Arc<net::NetworkInterface>,
     ) -> Result<(), &'static str> {
-        self.enable_interrupts();
         let deferred_task = deferred_interrupt_tasks::register_interrupt_handler(
             self.interrupt_num,
             e1000_handler,
@@ -256,6 +274,13 @@ impl E1000Nic {
             "e1000 interrupt number was already in use! Sharing IRQs is currently unsupported."
         })?;
         self.deferred_task = Some(deferred_task);
+        self.enable_interrupts();
+        pci_dev.pci_enable_intx(true);
+        // Ce qui est arrivé avant (DHCP du démarrage) n'a levé aucune interruption : on le sert.
+        RX_PENDING.store(true, core::sync::atomic::Ordering::Release);
+        if let Some(ref t) = self.deferred_task {
+            let _ = t.unblock();
+        }
 
         Ok(())
     }
@@ -395,6 +420,7 @@ impl E1000Nic {
         //self.write_command(REG_IMASK ,0x1F6DC);
         //self.write_command(REG_IMASK ,0xff & !4);
 
+        self.regs.itr.write(E1000_ITR);
         // Trigger interrupts on a Link Status Change and on a Receive Transfer.
         self.regs.ims.write(INT_LSC | INT_RX);
         // Clear all pending interrupts.
@@ -409,35 +435,46 @@ impl E1000Nic {
 
     /// The main interrupt handling routine for the e1000 NIC.
     /// This should be invoked from the actual interrupt handler entry point.
+    ///
+    /// Réception à la NAPI (Mogul et Ramakrishnan, *Eliminating Receive Livelock in an
+    /// Interrupt-Driven Kernel*, 1997 ; Salim et al., *Beyond Softnet*, 2001) : l'interruption
+    /// ne fait que masquer les causes de réception et réveiller la tâche différée, qui vide
+    /// l'anneau puis les démasque. Sous charge, la carte ne lève donc plus qu'une interruption
+    /// par lot, et le noyau ne peut pas être submergé par les interruptions.
     fn handle_interrupt(&mut self) -> Result<(), &'static str> {
-        let status = self.clear_interrupt_status();        
-        let mut handled = false;
+        // Lire ICR efface les causes et abaisse la ligne (déclenchée sur niveau).
+        let status = self.clear_interrupt_status();
+        let mut wake = false;
 
         // a link status change
         if (status & INT_LSC) == INT_LSC {
             debug!("e1000::handle_interrupt(): link status changed");
             Self::start_link(&mut self.regs);
-            handled = true;
+            wake = true;
         }
 
-        // receiver timer interrupt
-        if (status & INT_RX) == INT_RX {
-            // debug!("e1000::handle_interrupt(): receive interrupt");
-            self.rx_queue.poll_queue_and_store_received_packets()?;
-            handled = true;
+        if (status & INT_RX) != 0 {
+            self.regs.imc.write(INT_RX);
+            RX_PENDING.store(true, core::sync::atomic::Ordering::Release);
+            wake = true;
         }
 
-        if !handled {
-            error!("e1000::handle_interrupt(): unhandled interrupt!  status: {:#X}", status);
-        } else if let Some(ref deferred_task) = self.deferred_task {
-            let _ = deferred_task
-                .unblock()
-                .expect("BUG: e1000::handle_interrupt(): couldn't unblock deferred task");
-        } else {
-            error!("e1000::handle_interrupt(): no deferred task");
+        // Rien pour nous : ligne partagée ou interruption parasite.
+        if wake {
+            if let Some(ref deferred_task) = self.deferred_task {
+                let _ = deferred_task.unblock();
+            } else {
+                error!("e1000::handle_interrupt(): no deferred task");
+            }
         }
-        //regs.icr.read(); //clear interrupt
         Ok(())
+    }
+
+    /// Fin d'un passage de NAPI : les causes de réception sont démasquées. Celles qui se sont
+    /// produites pendant le sondage sont restées dans ICR, la carte lève donc aussitôt une
+    /// nouvelle interruption s'il en reste : rien n'est perdu.
+    fn rx_interrupts_on(&mut self) {
+        self.regs.ims.write(INT_LSC | INT_RX);
     }
 }
 
@@ -447,6 +484,16 @@ impl net::NetworkDevice for E1000Nic {
     }
 
     fn receive(&mut self) -> Option<ReceivedFrame> {
+        // Sondage de l'anneau matériel quand la file logicielle est vide (mode sondage de NAPI) :
+        // l'interruption n'est qu'une accélération, la pile reçoit aussi sans elle (DHCP du
+        // démarrage avant `init_interrupts`, interruption perdue, minuteurs de `netpoll`).
+        // L'appelant tient le verrou de la carte, qui coupe les interruptions : pas de course
+        // avec `e1000_handler`.
+        if self.rx_queue.received_frames.is_empty() {
+            if let Err(e) = self.rx_queue.poll_queue_and_store_received_packets() {
+                error!("e1000 : reception : {}", e);
+            }
+        }
         self.rx_queue.received_frames.pop_front()
     }
 
@@ -456,7 +503,13 @@ impl net::NetworkDevice for E1000Nic {
     }
 }
 
+/// Interruptions reçues (diagnostic : la première est signalée dans le journal).
+static INTERRUPTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 extern "x86-interrupt" fn e1000_handler(_stack_frame: InterruptStackFrame) {
+    if INTERRUPTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) == 0 {
+        log::warn!("e1000 : premiere interruption recue");
+    }
     if let Some(e1000_nic_ref) = E1000_NIC.get() {
         let mut e1000_nic = e1000_nic_ref.lock();
         if let Err(e) = e1000_nic.handle_interrupt() {
@@ -470,12 +523,30 @@ extern "x86-interrupt" fn e1000_handler(_stack_frame: InterruptStackFrame) {
 
 /// This function is used as a deferred interrupt task.
 ///
-/// After processing the interrupt, the network interface associated with the `e1000` NIC will be
-/// polled to process the received data.
+/// Passage de NAPI : sonde l'interface (`receive()` vide l'anneau), démasque la réception, puis
+/// se bloque *avant* de revérifier [`RX_PENDING`]. Une interruption arrivée après ce `block()`
+/// rend la tâche exécutable et le `schedule()` de la boucle la garde ; une arrivée avant est vue
+/// par la vérification. Aucun réveil ne se perd, donc la réception ne reste jamais masquée.
 ///
 /// Returns a result to comply with `deferred_interrupt_task::register_interrupt_handler`'s
 /// signature.
 fn poll_interface(interface: &Arc<net::NetworkInterface>) -> Result<(), ()> {
-    interface.poll();
-    Ok(())
+    use core::sync::atomic::Ordering;
+    let me = task::get_my_current_task();
+    loop {
+        RX_PENDING.store(false, Ordering::Release);
+        interface.poll();
+        if let Some(nic) = E1000_NIC.get() {
+            nic.lock().rx_interrupts_on();
+        }
+        if let Some(ref t) = me {
+            let _ = t.block();
+        }
+        if !RX_PENDING.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(ref t) = me {
+            let _ = t.unblock();
+        }
+    }
 }

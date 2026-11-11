@@ -8,6 +8,10 @@
 .PARAMETER BuildOnly
     Only build, don't launch QEMU.
 
+.PARAMETER Gpu
+    Carte graphique : virtio-gl (defaut : GPU virtio avec OpenGL de l'hote, MaiGPU),
+    virtio (GPU virtio 2D) ou std (VGA, sans acceleration). Voir run.ps1 -Gpu.
+
 .EXAMPLE
     .\build-and-run.ps1          # Build + Run (default)
     .\build-and-run.ps1 -RunOnly # Just launch QEMU
@@ -15,7 +19,9 @@
 #>
 param(
     [switch]$RunOnly,
-    [switch]$BuildOnly
+    [switch]$BuildOnly,
+    [ValidateSet("virtio-gl", "virtio", "std")]
+    [string]$Gpu = "virtio-gl"
 )
 
 $ErrorActionPreference = "Stop"
@@ -135,12 +141,19 @@ if (-not $BuildOnly) {
         "-serial", "null"
         "-monitor", "telnet:localhost:55555,server,nowait"
         "-net", "none"
-        "-vga", "std"
-        "-display", "sdl,gl=on"
         "-s"
         "-device", "intel-hda,id=hda0,msi=off"
         "-device", "hda-output,bus=hda0.0"
     )
+    # Carte graphique (MaiGPU) ; la partie VGA de virtio-vga sert a Limine.
+    $qemuArgs += switch ($Gpu) {
+        "virtio-gl" { @("-vga", "none", "-device", "virtio-vga-gl,xres=1920,yres=1080", "-display", "sdl,gl=on") }
+        "virtio"    { @("-vga", "none", "-device", "virtio-vga,xres=1920,yres=1080", "-display", "sdl") }
+        default     { @("-vga", "std", "-display", "sdl,gl=on") }
+    }
+    # Pointeur absolu (virtio_input) : pas de capture ni de recalage du pointeur par QEMU.
+    $qemuArgs += @("-device", "virtio-tablet-pci")
+    Write-Info "GPU : $Gpu"
 
     if (Test-Path $DiskImage) {
         $qemuArgs += @("-drive", "format=raw,file=$DiskImage,if=ide")

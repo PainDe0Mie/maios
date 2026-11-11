@@ -130,6 +130,20 @@ impl<P: Pixel> Framebuffer<P> {
         })
     }
 
+    /// Framebuffer de `width × height` pixels sur une projection existante (mémoire d'un
+    /// scanout de GPU, par exemple), au moins aussi grande.
+    pub fn from_mapped_pages(
+        width: usize,
+        height: usize,
+        pages: memory::MappedPages,
+    ) -> Result<Framebuffer<P>, &'static str> {
+        Ok(Framebuffer {
+            width,
+            height,
+            buffer: pages.into_borrowed_slice_mut(0, width * height).map_err(|(_mp, s)| s)?,
+        })
+    }
+
     /// Returns a mutable reference to this framebuffer's memory as a slice of pixels.
     pub fn buffer_mut(&mut self) -> &mut [P] {
         &mut self.buffer

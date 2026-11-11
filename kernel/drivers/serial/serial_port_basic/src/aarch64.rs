@@ -109,6 +109,12 @@ impl SerialPort {
         }
     }
 
+    /// Writes the given bytes; the PL011 path stays blocking, so everything is written.
+    pub fn try_out_bytes(&mut self, bytes: &[u8]) -> usize {
+        self.out_bytes(bytes);
+        bytes.len()
+    }
+
     /// Read one byte from the serial port, blocking until data is available.
     pub fn in_byte(&mut self) -> u8 {
         self.inner.as_mut().unwrap().read_byte()

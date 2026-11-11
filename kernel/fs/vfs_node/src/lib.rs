@@ -174,6 +174,13 @@ impl FsNode for VFSDirectory {
     fn get_parent_dir(&self) -> Option<DirRef> { self.parent.upgrade() }
 
     fn set_parent_dir(&mut self, new_parent: WeakDirRef) { self.parent = new_parent; }
+
+    fn set_name(&mut self, name: String) -> Result<(), &'static str> {
+        self.name = name;
+        Ok(())
+    }
+
+    fn is_movable(&self) -> bool { true }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

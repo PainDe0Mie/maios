@@ -31,6 +31,7 @@ scheduler = { path = "../../sched/scheduler" }
 sleep = { path = "../../sched/sleep" }
 mgi = { path = "../../gfx/mgi" }
 mhc = { path = "../../system/mhc" }
+shapes = { path = "../../gfx/shapes" }
 audio_mixer = { path = "../../drivers/audio/audio_mixer" }
 net = { path = "../../net/net" }
 smoltcp = { version = "0.10", default-features = false }

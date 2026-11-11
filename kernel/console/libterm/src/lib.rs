@@ -443,13 +443,15 @@ impl Terminal {
         let start_x = (screen_width - win_w) / 2;
         let start_y = (screen_height - win_h) / 2;
 
-        let window = window::Window::with_title(
+        let mut window = window::Window::with_title(
             "Mai Terminal".to_string(),
             Coord::new(start_x as isize, start_y as isize),
             win_w,
             win_h,
             FONT_BACKGROUND_COLOR,
         )?;
+        // Identifiant lu par la barre des tâches (icône, regroupement), comme `app_id` Wayland.
+        window.set_app_id("maios.terminal");
 
         let area = window.area();
         let text_display = TextDisplay::new(area.width(), area.height(), FONT_FOREGROUND_COLOR, FONT_BACKGROUND_COLOR)?;

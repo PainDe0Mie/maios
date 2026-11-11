@@ -215,6 +215,9 @@ fn run_process(argv0: &str, path: &str, image: Vec<u8>, args: Vec<String>, cwd: 
         "SHELL=/disk/bin/sh".to_string(),
         "TERM=dumb".to_string(),
         "LANG=C".to_string(),
+        // Serveur Wayland du noyau (MaiLand).
+        "XDG_RUNTIME_DIR=/run/user/0".to_string(),
+        "WAYLAND_DISPLAY=wayland-0".to_string(),
         format!("PWD={}", cwd_path),
     ];
     let req = maiproc::SpawnRequest {
@@ -235,17 +238,7 @@ fn run_process(argv0: &str, path: &str, image: Vec<u8>, args: Vec<String>, cwd: 
             return -1;
         }
     };
-    let status = match child.join() {
-        Ok(task::ExitValue::Completed(s)) => s,
-        Ok(task::ExitValue::Killed(reason)) => {
-            println!("[{}] processus {} tue par le noyau ({:?})", path, child.id, reason);
-            return -1;
-        }
-        Err(e) => {
-            println!("Erreur : attente du processus : {}", e);
-            return -1;
-        }
-    };
+    let status = child.wait() as isize;
     let s = status as i32;
     if s & 0x7f != 0 {
         println!("[{}] {}", path, maiproc::describe_status(status));
@@ -412,9 +405,25 @@ fn has_theseus_relocations(file: &FileRef) -> bool {
     const SHT_SYMTAB: u32 = 2;
     const SHT_RELA: u32 = 4;
 
+    const ET_EXEC: u16 = 2;
+    const PT_INTERP: u32 = 3;
+
     let mut f = file.lock();
     let mut hdr = [0u8; 64];
     if f.read_at(&mut hdr, 0).ok() != Some(hdr.len()) || &hdr[0..4] != b"\x7fELF" || hdr[4] != 2 {
+        return false;
+    }
+    // Un exécutable Linux (PIE, ou lié dynamiquement : `PT_INTERP`) n'est jamais pour `loadc`,
+    // même non dépouillé (`.symtab`, `.rela.dyn`).
+    if u16::from_le_bytes([hdr[16], hdr[17]]) != ET_EXEC {
+        return false;
+    }
+    let phoff = u64::from_le_bytes(hdr[0x20..0x28].try_into().unwrap()) as usize;
+    let phnum = u16::from_le_bytes([hdr[0x38], hdr[0x39]]) as usize;
+    let mut ph = alloc::vec![0u8; phnum.min(128) * 56];
+    if f.read_at(&mut ph, phoff).ok() == Some(ph.len())
+        && ph.chunks_exact(56).any(|p| u32::from_le_bytes([p[0], p[1], p[2], p[3]]) == PT_INTERP)
+    {
         return false;
     }
     let shoff = u64::from_le_bytes([
@@ -448,7 +457,7 @@ fn resolve_executable_path(raw_path: &str, cwd: &DirRef) -> Option<(String, File
         "/disk/apps".to_string()
     } else if let Some(rest) = raw_path.strip_prefix("~/") {
         format!("/disk/apps/{}", rest)
-    } else if let Some(rest) = raw_path.strip_prefix("~") {
+    } else if let Some(rest) = raw_path.strip_prefix('~') {
         format!("/disk/apps/{}", rest)
     } else {
         raw_path.to_string()

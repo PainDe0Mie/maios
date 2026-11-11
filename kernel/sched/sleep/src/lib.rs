@@ -158,6 +158,15 @@ pub fn sleep(duration: Duration) -> Result<(), RunState> {
     Ok(())
 }
 
+/// Débloque `task` à l'instant `at` (délai d'une attente bloquante : futex, `wait4`, `poll`…).
+///
+/// La tâche doit déjà être bloquée par l'appelant ; un réveil arrivé avant le délai rend ce
+/// minuteur inutile mais sans danger : il débloquera au pire une tâche qui revérifie sa condition
+/// (toutes les attentes de MaiProc bouclent sur leur condition).
+pub fn wake_at(task: TaskRef, at: Instant) {
+    add_to_delayed_tasklist(SleepingTaskNode { action: Action::Sync(task), resume_time: at });
+}
+
 /// Blocks the current task by putting it to sleep until a specific tick count is reached,
 /// given by `resume_time`.
 ///

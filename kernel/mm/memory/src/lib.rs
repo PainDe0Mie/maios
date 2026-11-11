@@ -18,7 +18,7 @@ extern crate alloc;
 
 pub mod paging;
 mod zeroing;
-pub use zeroing::refill_zeroed_frames;
+pub use zeroing::{refill_zeroed_frames, RESERVE_FRAMES};
 pub use self::paging::{
     PageTable, Mapper, Mutability, Mutable, Immutable,
     MappedPages, BorrowedMappedPages, BorrowedSliceMappedPages,

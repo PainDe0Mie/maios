@@ -204,6 +204,10 @@ pub struct Panel {
     radius: usize,
 }
 
+impl Default for Panel {
+    fn default() -> Self { Self::new() }
+}
+
 impl Panel {
     pub fn new() -> Self {
         Self {
@@ -245,6 +249,10 @@ impl Panel {
 /// A horizontal separator line.
 pub struct Separator {
     color: Color,
+}
+
+impl Default for Separator {
+    fn default() -> Self { Self::new() }
 }
 
 impl Separator {

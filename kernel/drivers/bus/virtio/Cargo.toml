@@ -1,0 +1,18 @@
+[package]
+name    = "virtio"
+version = "0.1.0"
+edition = "2021"
+description = "Transport VirtIO 1.x sur PCI (capacités modernes, virtqueues séparées, EVENT_IDX, MSI-X)."
+
+[lib]
+name       = "virtio"
+crate-type = ["rlib"]
+
+[dependencies]
+log             = { version = "0.4", default-features = false }
+memory          = { path = "../../../mm/memory" }
+frame_allocator = { path = "../../../mm/frame_allocator" }
+kernel_config   = { path = "../../../boot/kernel_config" }
+pci             = { path = "../pci" }
+interrupts      = { path = "../../../arch/common/interrupts" }
+cpu             = { path = "../../../arch/common/cpu" }

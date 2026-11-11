@@ -28,6 +28,7 @@ ps2             = { path = "../../input/ps2" }
 serial_port     = { path = "../../serial/serial_port" }
 storage_manager = { path = "../../../fs/storage_manager" }
 nvme            = { path = "../../storage/nvme" }
+blk             = { path = "../../storage/blk" }
 ahci            = { path = "../../storage/ahci" }
 fat32           = { path = "../../../fs/fat32" }
 block_cache     = { path = "../../../fs/block_cache" }
@@ -38,6 +39,8 @@ root            = { path = "../../../fs/root" }
 partition_table = { path = "../../../fs/partition_table" }
 partition_device = { path = "../../../fs/partition_device" }
 mhc             = { path = "../../../system/mhc" }
+virtio_gpu      = { path = "../../gpu/virtio_gpu" }
+virtio_input    = { path = "../../input/virtio_input" }
 mgi             = { path = "../../../gfx/mgi" }
 intel_hda       = { path = "../../audio/intel_hda" }
 xhci            = { path = "../../input/xhci" }

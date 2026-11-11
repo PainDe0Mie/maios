@@ -1,6 +1,6 @@
 [package]
 name = "uvm"
-description = "MaiProc : memoire virtuelle des processus utilisateur (VMA, fautes a la demande, mmap, copies noyau/utilisateur, ASLR)"
+description = "MaiProc : memoire virtuelle des processus utilisateur (VMA, fautes a la demande, fork par tables partagees, copie a l'ecriture, invalidations TLB ciblees, ASLR)"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,7 +10,10 @@ spin = "0.9.4"
 memory = { path = "../memory" }
 frame_allocator = { path = "../frame_allocator" }
 kernel_config = { path = "../../boot/kernel_config" }
-sync_irq = { path = "../../../libs/sync_irq" }
+sync_preemption = { path = "../../sync/sync_preemption" }
+irq_safety = { git = "https://github.com/theseus-os/irq_safety" }
+interrupts = { path = "../../arch/common/interrupts" }
+apic = { path = "../../arch/x86_64/apic" }
 
 [lib]
 crate-type = ["rlib"]

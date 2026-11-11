@@ -64,6 +64,11 @@ pub fn kstart_ap(
     // set a flag telling the BSP that this AP has entered Rust code
     AP_READY_FLAG.store(true, Ordering::SeqCst);
 
+    // Le cœur principal mesure maintenant notre décalage de TSC : on répond, puis on corrige
+    // (horloge monotone commune à tous les cœurs).
+    #[cfg(target_arch = "x86_64")]
+    tsc::sync::ap_sync();
+
     // The early TLS image has already been initialized by the bootstrap CPU,
     // so all we need to do here is to reload it on this CPU.
     early_tls::reload();

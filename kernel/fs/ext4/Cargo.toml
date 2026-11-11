@@ -1,0 +1,10 @@
+[package]
+name = "ext4"
+version = "0.1.0"
+edition = "2021"
+description = "MaiSS : cœur ext4 sans dépendance (superbloc, groupes, inodes, extents, htree, données en ligne, attributs étendus, rejeu du journal JBD2), testé sur l'hôte."
+
+[dependencies]
+
+[lib]
+crate-type = ["rlib"]

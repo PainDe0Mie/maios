@@ -41,7 +41,7 @@ use shapes::{Coord, Rectangle};
 use spin::{Mutex, MutexGuard};
 use window_inner::{
     WindowInner, WindowMovingStatus, ResizeEdge,
-    MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT,
+    MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, DEFAULT_BORDER_SIZE, DEFAULT_TITLE_BAR_HEIGHT,
 };
 use window_manager::WINDOW_MANAGER;
 
@@ -112,6 +112,12 @@ pub struct Window {
     hovered: Option<Button>,
     /// Whether the left button is held on `hovered`.
     pressed: bool,
+    /// Un bouton a été enfoncé dans le contenu et n'est pas encore relâché : tous les
+    /// événements de pointeur vont à l'application, même hors du contenu (saisie implicite).
+    content_grab: bool,
+    /// Le dernier événement de pointeur transmis était dans le contenu (l'application reçoit
+    /// `PointerLeave` quand le pointeur en sort).
+    in_content: bool,
 }
 
 impl Window {
@@ -133,6 +139,19 @@ impl Window {
         height: usize,
         background: Color,
     ) -> Result<Window, &'static str> {
+        Self::with_options(title, coordinate, width, height, background, true)
+    }
+
+    /// Crée une fenêtre décorée par le système (`decorated`) ou dont l'application dessine
+    /// elle-même barre de titre et bordure (aucune décoration, contenu = fenêtre entière).
+    pub fn with_options(
+        title: String,
+        coordinate: Coord,
+        width: usize,
+        height: usize,
+        background: Color,
+        decorated: bool,
+    ) -> Result<Window, &'static str> {
         debug!("Window::with_title: {:?} at {:?} {}x{}", title, coordinate, width, height);
 
         if width < MIN_WINDOW_WIDTH || height < MIN_WINDOW_HEIGHT {
@@ -148,7 +167,14 @@ impl Window {
         let event_producer = event_consumer.clone();
 
         let task_id = task::get_my_current_task_id();
-        let window_inner = WindowInner::new(coordinate, framebuffer, event_producer, Some(task_id));
+        let mut window_inner = WindowInner::new(coordinate, framebuffer, event_producer, Some(task_id));
+        window_inner.title = title.clone();
+        if !decorated {
+            window_inner.decorated = false;
+            window_inner.title_bar_height = 0;
+            window_inner.border_size = 0;
+            window_inner.corner_radius = 0;
+        }
 
         let mut window = Window {
             inner: Arc::new(Mutex::new(window_inner)),
@@ -159,6 +185,8 @@ impl Window {
             restore_bounds: None,
             hovered: None,
             pressed: false,
+            content_grab: false,
+            in_content: false,
         };
 
         window.redraw_decorations(true);
@@ -210,6 +238,21 @@ impl Window {
                 Event::WindowResizeEvent(..) => {
                     pending.redraw_frame = true;
                     app_event = Some(event.clone());
+                }
+                Event::PointerLeave => {
+                    // Le pointeur est passé à une autre fenêtre ou au bureau.
+                    if self.hovered.is_some() || self.pressed {
+                        self.hovered = None;
+                        self.pressed = false;
+                        let mut inner = self.inner.lock();
+                        self.paint_buttons(&mut inner);
+                        pending.refresh_buttons = true;
+                    }
+                    self.content_grab = false;
+                    if core::mem::replace(&mut self.in_content, false) {
+                        app_event = Some(Event::PointerLeave);
+                    }
+                    self.last_mouse = MousePositionEvent::default();
                 }
                 other => {
                     app_event = Some(other.clone());
@@ -273,12 +316,44 @@ impl Window {
             return;
         }
 
+        // ── Saisie implicite du contenu : tout va à l'application jusqu'au relâchement ──
+        let held = |m: &MousePositionEvent| {
+            m.left_button_hold || m.right_button_hold || m.middle_button_hold || m.fourth_button_hold || m.fifth_button_hold
+        };
+        // Sans décoration du système, toute la fenêtre est du contenu : l'application déplace
+        // et redimensionne elle-même (`begin_move`, `begin_resize`).
+        if !inner.decorated {
+            let any_pressed_now = !held(&self.last_mouse) && held(mouse);
+            if !self.last_mouse.left_button_hold && mouse.left_button_hold {
+                pending.set_active = true;
+            }
+            if any_pressed_now {
+                self.content_grab = true;
+            }
+            if self.content_grab && !held(mouse) {
+                self.content_grab = false;
+            }
+            self.in_content = true;
+            *app_event = Some(Event::MousePositionEvent(mouse.clone()));
+            return;
+        }
+        if self.content_grab {
+            if !held(mouse) {
+                self.content_grab = false;
+            }
+            self.in_content = true;
+            *app_event = Some(Event::MousePositionEvent(mouse.clone()));
+            return;
+        }
+
         let (width, height) = inner.get_size();
         let (w, h) = (width as isize, height as isize);
         let tbh = inner.title_bar_height as isize;
         let (mx, my) = (mouse.coordinate.x, mouse.coordinate.y);
         let pressed_now  = !self.last_mouse.left_button_hold && mouse.left_button_hold;
         let released_now = self.last_mouse.left_button_hold && !mouse.left_button_hold;
+        let any_pressed_now = !held(&self.last_mouse) && held(mouse);
+
 
         // Clicking anywhere in the window raises it.
         if pressed_now {
@@ -300,6 +375,10 @@ impl Window {
         }
 
         if let Some(btn) = hit {
+            // Hors du contenu (barre de titre, bord saisi) : l'application l'apprend une fois.
+            if core::mem::replace(&mut self.in_content, false) {
+                *app_event = Some(Event::PointerLeave);
+            }
             if released_now {
                 match btn {
                     Button::Close => {
@@ -329,6 +408,11 @@ impl Window {
             let edge = resize_edge(on_top, on_bottom, on_left, on_right);
             inner.moving = WindowMovingStatus::Resizing(mouse.gcoordinate, edge);
             pending.refresh_float_border = true;
+            drop(inner);
+            // Hors du contenu (barre de titre, bord saisi) : l'application l'apprend une fois.
+            if core::mem::replace(&mut self.in_content, false) {
+                *app_event = Some(Event::PointerLeave);
+            }
             return;
         }
 
@@ -338,10 +422,19 @@ impl Window {
                 inner.moving = WindowMovingStatus::Moving(mouse.gcoordinate);
                 pending.refresh_float_border = true;
             }
+            drop(inner);
+            // Hors du contenu (barre de titre, bord saisi) : l'application l'apprend une fois.
+            if core::mem::replace(&mut self.in_content, false) {
+                *app_event = Some(Event::PointerLeave);
+            }
             return;
         }
 
         // ── Content area ──────────────────────────────────────────────────────
+        if any_pressed_now {
+            self.content_grab = true;
+        }
+        self.in_content = true;
         *app_event = Some(Event::MousePositionEvent(mouse.clone()));
     }
 
@@ -355,10 +448,13 @@ impl Window {
         let origin = {
             let mut inner = self.inner.lock();
             // The app may have painted over the bottom corners: round them again.
-            let style = self.style(&inner, self.last_is_active);
-            let (w, h) = inner.get_size();
-            let mut surface = deco::Surface::new(inner.framebuffer_mut().buffer_mut(), w, h);
-            deco::paint_bottom_corners(&mut surface, &style);
+            if inner.decorated {
+                let style = self.style(&inner, self.last_is_active);
+                inner.corner_radius = style.radius.max(0) as usize;
+                let (w, h) = inner.get_size();
+                let mut surface = deco::Surface::new(inner.framebuffer_mut().buffer_mut(), w, h);
+                deco::paint_bottom_corners(&mut surface, &style);
+            }
             inner.get_position()
         };
         let absolute = area.map(|bb| bb + origin);
@@ -370,6 +466,11 @@ impl Window {
         self.title = title;
         let (w, tbh) = {
             let mut inner = self.inner.lock();
+            inner.title = self.title.clone();
+            window_manager::notify_desktop(); // la barre des tâches montre le titre
+            if !inner.decorated {
+                return Ok(());
+            }
             self.paint_title_bar(&mut inner, self.last_is_active);
             (inner.get_size().0, inner.title_bar_height)
         };
@@ -382,6 +483,49 @@ impl Window {
     /// Returns the window's title.
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// Identifiant de l'application (la barre des tâches en tire l'icône).
+    pub fn set_app_id(&mut self, app_id: &str) {
+        self.inner.lock().app_id = String::from(app_id);
+        window_manager::notify_desktop(); // la barre des tâches en tire l'icône
+    }
+
+    /// La fenêtre porte les décorations du système.
+    pub fn is_decorated(&self) -> bool {
+        self.inner.lock().decorated
+    }
+
+    /// Ajoute ou retire les décorations du système en gardant la taille du contenu et sa place
+    /// à l'écran (la fenêtre grandit ou rétrécit autour). Le propriétaire reçoit un
+    /// `WindowResizeEvent` (nouvelle zone de contenu).
+    pub fn set_decorated(&mut self, on: bool) -> Result<(), &'static str> {
+        let wm_ref = WINDOW_MANAGER.get().ok_or("window manager not initialised")?;
+        let old = self.envelope();
+        {
+            let mut inner = self.inner.lock();
+            if inner.decorated == on {
+                return Ok(());
+            }
+            let c = inner.content_area();
+            let (cw, ch) = (c.width(), c.height());
+            let origin = inner.get_position() + (c.top_left.x, c.top_left.y);
+            let (b, t) = if on { (DEFAULT_BORDER_SIZE, DEFAULT_TITLE_BAR_HEIGHT) } else { (0, 0) };
+            inner.decorated = on;
+            inner.border_size = b;
+            inner.title_bar_height = t;
+            inner.corner_radius = if on { WINDOW_RADIUS as usize } else { 0 };
+            let tl = origin - (b as isize, t as isize);
+            let size = ((cw + 2 * b) as isize, (ch + t + b) as isize);
+            inner.resize(Rectangle { top_left: tl, bottom_right: tl + size })?;
+        }
+        self.hovered = None;
+        self.pressed = false;
+        self.redraw_decorations(self.last_is_active);
+        let new = self.envelope();
+        let mut wm = wm_ref.lock();
+        wm.refresh_windows(Some(old))?;
+        wm.refresh_windows(Some(new))
     }
 
     /// Returns the window's content area (excluding decorations), relative to the window.
@@ -416,9 +560,67 @@ impl Window {
         &self.inner
     }
 
+    /// Redimensionne la fenêtre pour que sa zone de contenu mesure `width` × `height` (même coin
+    /// supérieur gauche), redessine la décoration et abîme l'ancienne et la nouvelle enveloppe.
+    /// La file reçoit un `WindowResizeEvent`, comme après un redimensionnement à la souris.
+    pub fn resize_content(&mut self, width: usize, height: usize) -> Result<(), &'static str> {
+        let wm_ref = WINDOW_MANAGER.get().ok_or("window manager not initialised")?;
+        let old = self.envelope();
+        {
+            let mut inner = self.inner.lock();
+            let (b, t) = (inner.border_size, inner.title_bar_height);
+            let pos = inner.get_position();
+            let size = ((width + 2 * b) as isize, (height + t + b) as isize);
+            inner.resize(Rectangle { top_left: pos, bottom_right: pos + size })?;
+        }
+        self.restore_bounds = None;
+        self.redraw_decorations(self.last_is_active);
+        let new = self.envelope();
+        let mut wm = wm_ref.lock();
+        wm.refresh_windows(Some(old))?;
+        wm.refresh_windows(Some(new))
+    }
+
     /// Returns `true` if this window is currently maximised.
     pub fn is_maximized(&self) -> bool {
         self.restore_bounds.is_some()
+    }
+
+    /// Agrandit la fenêtre à tout l'écran (`true`) ou lui rend sa taille d'avant (`false`).
+    pub fn set_maximized(&mut self, on: bool) {
+        if on != self.is_maximized() {
+            self.toggle_maximize();
+        }
+    }
+
+    /// Déplacement interactif demandé par l'application (`xdg_toplevel.move`) : la fenêtre
+    /// suit le pointeur jusqu'au relâchement du bouton gauche, comme une prise par la barre de
+    /// titre. Sans effet si le bouton n'est pas enfoncé.
+    pub fn begin_move(&mut self) {
+        self.begin_drag(None);
+    }
+
+    /// Redimensionnement interactif depuis le bord `edge` (`xdg_toplevel.resize`).
+    pub fn begin_resize(&mut self, edge: ResizeEdge) {
+        self.begin_drag(Some(edge));
+    }
+
+    fn begin_drag(&mut self, edge: Option<ResizeEdge>) {
+        let Some(wm_ref) = WINDOW_MANAGER.get() else { return };
+        let (pos, left) = {
+            let wm = wm_ref.lock();
+            (wm.mouse_position(), wm.mouse_left())
+        };
+        if !left || self.is_maximized() {
+            return;
+        }
+        self.content_grab = false;
+        self.in_content = false;
+        self.inner.lock().moving = match edge {
+            None => WindowMovingStatus::Moving(pos),
+            Some(e) => WindowMovingStatus::Resizing(pos, e),
+        };
+        let _ = wm_ref.lock().move_floating_border();
     }
 
     // ── Decoration drawing ────────────────────────────────────────────────────
@@ -426,7 +628,12 @@ impl Window {
     /// Redraws the title bar, borders, rounded corners, title and buttons.
     pub fn redraw_decorations(&mut self, active: bool) {
         let mut inner = self.inner.lock();
+        if !inner.decorated {
+            inner.corner_radius = 0;
+            return;
+        }
         let style = self.style(&inner, active);
+        inner.corner_radius = style.radius.max(0) as usize;
         let (w, h) = inner.get_size();
         let mut s = deco::Surface::new(inner.framebuffer_mut().buffer_mut(), w, h);
         deco::paint_title_bar(&mut s, &style, 0, w as isize);
@@ -447,6 +654,9 @@ impl Window {
 
     /// Repaints only the button group with the current hover / pressed state.
     fn paint_buttons(&self, inner: &mut WindowInner) {
+        if !inner.decorated {
+            return;
+        }
         let style = self.style(inner, self.last_is_active);
         let (w, h) = inner.get_size();
         let mut s = deco::Surface::new(inner.framebuffer_mut().buffer_mut(), w, h);
@@ -484,7 +694,8 @@ impl Window {
             Some(wm) => wm,
             None => return,
         };
-        let (screen_w, screen_h) = wm_ref.lock().get_screen_size();
+        // Agrandie : la zone de travail (l'écran moins la barre des tâches).
+        let work = wm_ref.lock().work_area();
 
         self.hovered = None;
         self.pressed = false;
@@ -496,11 +707,7 @@ impl Window {
         } else {
             let envelope = self.envelope();
             self.restore_bounds = Some(envelope);
-            let full = Rectangle {
-                top_left:     Coord::new(0, 0),
-                bottom_right: Coord::new(screen_w as isize, screen_h as isize),
-            };
-            if let Err(e) = self.inner.lock().resize(full) {
+            if let Err(e) = self.inner.lock().resize(work) {
                 error!("toggle_maximize expand failed: {}", e);
             }
         }

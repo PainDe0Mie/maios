@@ -568,6 +568,13 @@ fn handle_limine_aps(kernel_mmi_ref: &MmiRef, aps: &'static [LimineAp]) -> Resul
         while boot.taken.load(Ordering::Acquire) == 0 || !AP_READY_FLAG.load(Ordering::SeqCst) {
             spin_loop();
         }
+        // Le cœur attend la mesure de son TSC (`ap_start::kstart_ap`) : sans interruption ici,
+        // pour que les aller-retours ne soient pas perturbés.
+        let (offset, rtt) = {
+            let _held = irq_safety::hold_interrupts();
+            tsc::sync::bsp_measure()
+        };
+        log::warn!(" AP {} : TSC decale de {} cycles (aller-retour {}), corrige", ap.lapic_id, offset, rtt);
         info!(" AP {} (proc {}) est dans le code Rust.", ap.lapic_id, ap.processor_id);
         ap_count += 1;
     }

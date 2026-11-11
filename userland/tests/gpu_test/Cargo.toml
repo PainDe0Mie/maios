@@ -1,0 +1,44 @@
+[package]
+name = "gpu_test"
+version = "0.1.0"
+edition = "2021"
+description = "MaiGPU G0 : banc du pilote virtio-gpu (informations, motif vérifié par capture, mise à jour partielle, curseur matériel, coût de la présentation)."
+
+[dependencies]
+log = "0.4.8"
+
+[dependencies.app_io]
+path = "../../../kernel/console/app_io"
+
+[dependencies.virtio_gpu]
+path = "../../../kernel/drivers/gpu/virtio_gpu"
+
+[dependencies.window]
+path = "../../../kernel/gfx/window"
+
+[dependencies.window_manager]
+path = "../../../kernel/gfx/window_manager"
+
+[dependencies.framebuffer]
+path = "../../../kernel/gfx/framebuffer"
+
+[dependencies.color]
+path = "../../../kernel/gfx/color"
+
+[dependencies.shapes]
+path = "../../../kernel/gfx/shapes"
+
+[dependencies.event_types]
+path = "../../../kernel/gfx/event_types"
+
+[dependencies.keycodes_ascii]
+path = "../../../libs/keycodes_ascii"
+
+[dependencies.time]
+path = "../../../kernel/sched/time"
+
+[dependencies.sleep]
+path = "../../../kernel/sched/sleep"
+
+[dependencies.virtio_input]
+path = "../../../kernel/drivers/input/virtio_input"

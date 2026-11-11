@@ -45,8 +45,12 @@ pub fn hold_preemption_no_timer_disable() -> PreemptionGuard {
 
 #[inline]
 fn hold_preemption_internal() -> PreemptionGuard {
-    let cpu_id = cpu::current_cpu();
+    // Préemption coupée D'ABORD, cœur lu ensuite (comme `get_cpu()` de Linux). Dans l'autre ordre,
+    // une interruption entre les deux pouvait migrer la tâche : le garde portait l'ancien cœur, et
+    // `schedule()` manipulait la file d'un autre cœur (entité courante écrasée → tâche prête jamais
+    // choisie ; tâche marquée « en cours » sur le mauvais cœur → panique de `switch_to`).
     let prev_val = PREEMPTION_COUNT.fetch_add(1);
+    let cpu_id = cpu::current_cpu();
     if prev_val == u8::MAX {
         // Overflow occurred and the counter value wrapped around, which is a bug.
         panic!("BUG: Overflow occurred in the preemption counter for CPU {}", cpu_id);

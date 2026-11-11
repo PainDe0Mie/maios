@@ -116,8 +116,28 @@ impl IoApic {
         self.read_reg(0x2)
     }
 
+    /// Première interruption globale (GSI) servie par cet IoApic.
+    pub fn gsi_base(&self) -> u32 {
+        self.gsi_base
+    }
+
+    /// Règle la polarité et le mode de déclenchement d'une entrée (bits 13 et 15 de la table de
+    /// redirection), sans toucher au reste.
+    ///
+    /// * `active_low` : la ligne est active à l'état bas (cas des INTx PCI sur du vrai matériel).
+    /// * `level` : déclenchée sur niveau. Une ligne de niveau programmée sur front ne relève plus
+    ///   d'interruption tant qu'elle reste haute, et une interruption manquée n'est jamais
+    ///   rattrapée ; sur niveau, l'IoApic redélivre tant que le périphérique n'a pas été servi
+    ///   (bit Remote IRR, effacé par l'EOI du Local APIC).
+    pub fn set_irq_mode(&mut self, ioapic_irq: u8, active_low: bool, level: bool) {
+        let low_index: u32 = 0x10 + ((ioapic_irq as u32) * 2);
+        let mut low = self.read_reg(low_index);
+        low = (low & !(1 << 13)) | ((active_low as u32) << 13);
+        low = (low & !(1 << 15)) | ((level as u32) << 15);
+        self.write_reg(low_index, low);
+    }
+
     /// Masks (disables) the given IRQ line. 
-    /// NOTE: this function is UNTESTED!
     pub fn mask_irq(&mut self, irq: u8) {
         let irq_reg: u32 = 0x10 + (2 * irq as u32);
         let direction = self.read_reg(irq_reg);

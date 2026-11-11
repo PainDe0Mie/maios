@@ -516,6 +516,7 @@ pub fn setup_context_trampoline(
 /// Internal routine shared by `task_wrapper` and `task_wrapper_restartable`.
 fn task_wrapper_internal<F, A, R>(
     current_task_id: usize,
+    prev: Option<TaskRef>,
 ) -> (Result<R, task::KillReason>, ExitableTaskRef)
 where
     A: Send + 'static,
@@ -557,6 +558,9 @@ where
     unsafe { preemption::force_enable_preemption(); }
     // Le changement de contexte est terminé : la tâche peut maintenant être interrompue.
     irq_safety::enable_interrupts();
+    // La tâche précédente est libérée interruptions actives (sa destruction peut rendre de la
+    // mémoire), comme le `zombie` de `schedule()`.
+    drop(prev);
 
     fence(Ordering::Release);
 
@@ -576,9 +580,16 @@ where
     R: Send + 'static,
     F: FnOnce(A) -> R,
 {
+    // Fin du changement de contexte AVANT tout verrou (comme `schedule_tail` de Linux) : tant
+    // que la tâche précédente reste marquée « en cours » sur ce cœur, un réveil venu d'un autre
+    // cœur l'attend en tournant, interruptions coupées. Si ce cœur prenait ici un verrou ordinaire
+    // (la liste des tâches) tenu par le code que ce réveil a interrompu, les deux cœurs
+    // s'attendraient pour toujours (vu avec les fins NVMe pendant des `spawn`).
+    // (Le numéro de la tâche est dans `r15` : à lire avant tout appel, qui l'écraserait.)
     let current_task_id = context_switch::read_first_register();
+    let prev = task::finish_task_switch();
     info!("task_wrapper: task {} started", current_task_id);
-    let (result, exitable_task_ref) = task_wrapper_internal::<F, A, R>(current_task_id);
+    let (result, exitable_task_ref) = task_wrapper_internal::<F, A, R>(current_task_id, prev);
 
     match result {
         Ok(exit_value)   => task_cleanup_success::<F, A, R>(exitable_task_ref, exit_value),
@@ -593,9 +604,16 @@ where
     R: Send + 'static,
     F: FnOnce(A) -> R + Send + Sync + Clone + 'static,
 {
+    // Fin du changement de contexte AVANT tout verrou (comme `schedule_tail` de Linux) : tant
+    // que la tâche précédente reste marquée « en cours » sur ce cœur, un réveil venu d'un autre
+    // cœur l'attend en tournant, interruptions coupées. Si ce cœur prenait ici un verrou ordinaire
+    // (la liste des tâches) tenu par le code que ce réveil a interrompu, les deux cœurs
+    // s'attendraient pour toujours (vu avec les fins NVMe pendant des `spawn`).
+    // (Le numéro de la tâche est dans `r15` : à lire avant tout appel, qui l'écraserait.)
     let current_task_id = context_switch::read_first_register();
+    let prev = task::finish_task_switch();
     info!("task_wrapper_restartable: task {} started", current_task_id);
-    let (result, exitable_task_ref) = task_wrapper_internal::<F, A, R>(current_task_id);
+    let (result, exitable_task_ref) = task_wrapper_internal::<F, A, R>(current_task_id, prev);
 
     match result {
         Ok(exit_value)   => task_restartable_cleanup_success::<F, A, R>(exitable_task_ref, exit_value),
@@ -791,9 +809,24 @@ fn remove_current_task_from_runqueue(current_task: &ExitableTaskRef) {
 #[inline(never)]
 fn idle_task_entry(_cpu_id: CpuId) {
     info!("Entered idle task loop on core {}: {:?}", cpu::current_cpu(), task::get_my_current_task());
+    let mut stuck: u64 = 0;
     loop {
         // Si quelqu'un d'autre est runnable, switcher vers lui
         if !task::scheduler::schedule() {
+            if task::scheduler::need_resched() {
+                stuck += 1;
+                if stuck == 2_000_000 {
+                    log::error!(
+                        "DIAG idle cpu {} : schedule() echoue en boucle, preemption active {}, interruptions {}",
+                        cpu::current_cpu(),
+                        preemption::preemption_enabled(),
+                        irq_safety::interrupts_enabled()
+                    );
+                    log::error!("DIAG {}", task::scheduler::debug_pick());
+                }
+            } else {
+                stuck = 0;
+            }
             // MaiMM : un cœur inactif remplit le pool de frames pré-zéroées (un lot de 256 Kio à
             // la fois, puis on revérifie l'ordonnanceur). Quand le pool est plein, on dort.
             // Puis la maintenance du tas (libérations distantes, pages et segments vides rendus,

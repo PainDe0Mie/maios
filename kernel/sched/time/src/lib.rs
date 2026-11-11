@@ -42,6 +42,11 @@ impl Instant {
         now::<Monotonic>()
     }
 
+    /// Valeur brute du compteur de l'horloge monotone (ticks de la source : TSC, HPET…).
+    pub fn ticks(&self) -> u64 {
+        self.counter
+    }
+
     pub fn elapsed(&self) -> Duration {
         Self::now().duration_since(*self)
     }
@@ -115,6 +120,11 @@ impl ops::SubAssign<Duration> for Instant {
     fn sub_assign(&mut self, rhs: Duration) {
         *self = *self - rhs;
     }
+}
+
+/// Période de la source de l'horloge monotone, en femtosecondes par tick (vDSO).
+pub fn monotonic_period_fs() -> u64 {
+    MONOTONIC_PERIOD.load().0
 }
 
 /// A clock period, measured in femtoseconds.

@@ -1,5 +1,8 @@
 pub use pic::IRQ_BASE_OFFSET;
 
+mod msi;
+pub use msi::{register_msi_callback, unregister_msi_callback, MsiCallback, MsiVector, MAX_DYNAMIC_VECTORS};
+
 // use rtc;
 use apic::{INTERRUPT_CHIP, InterruptChip};
 use cpu::CpuId;

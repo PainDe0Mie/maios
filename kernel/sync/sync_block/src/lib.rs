@@ -104,8 +104,9 @@ impl MutexFlavor for Block {
             data.queue.wait_until(|| Self::try_lock(mutex, data))
         } else {
             // Unlikely case that another thread just acquired the lock, but hasn't yet set
-            // data.holder.
-            log::warn!("could not get holder task for mutex middle path");
+            // data.holder (ou détenteur déjà sorti de la liste des tâches). Course normale, que le
+            // chemin lent traite : pas de `warn!` (des rafales sur le port série sous Firefox).
+            log::trace!("could not get holder task for mutex middle path");
 
             if let Some(guards) = Self::try_lock(mutex, data) {
                 return guards;

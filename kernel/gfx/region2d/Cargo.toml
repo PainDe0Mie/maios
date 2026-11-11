@@ -1,0 +1,10 @@
+[package]
+name = "region2d"
+version = "0.1.0"
+edition = "2021"
+description = "MaiCompositor : régions (ensembles de rectangles disjoints) pour le suivi des zones abîmées et l'élimination des surfaces cachées."
+
+[dependencies]
+
+[lib]
+crate-type = ["rlib"]

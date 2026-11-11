@@ -85,7 +85,10 @@ impl DerefMut for TransmitBuffer {
 pub struct ReceiveBuffer {
     mp: MappedPages,
     phys_addr: PhysicalAddress,
+    /// Octets valides (trame reçue), au plus `capacity`.
     length: u16,
+    /// Taille du tampon donnée à la carte ; un tampon rendu à la réserve la retrouve entière.
+    capacity: u16,
     pool: &'static mpmc::Queue<ReceiveBuffer>,
 }
 
@@ -102,6 +105,7 @@ impl ReceiveBuffer {
                 mp,
                 phys_addr,
                 length,
+                capacity: length,
                 pool,
             })
         }
@@ -115,11 +119,16 @@ impl ReceiveBuffer {
         self.length
     }
 
-    /// Sets the buffers length.
+    /// Capacité du tampon (octets que la carte peut y écrire).
+    pub fn capacity(&self) -> u16 {
+        self.capacity
+    }
+
+    /// Fixe la longueur des données valides.
     ///
-    /// Returns an error if the length is greater than the current length.
+    /// Erreur si elle dépasse la capacité du tampon.
     pub fn set_length(&mut self, length: u16) -> Result<(), &'static str> {
-        if length > self.length {
+        if length > self.capacity {
             Err("ReceiveBuffer::set_length(): length too long")
         } else {
             self.length = length;
@@ -158,13 +167,16 @@ impl Drop for ReceiveBuffer {
         // we construct a new ReceiveBuffer object that is identical to this one being dropped,
         // and do an in-place replacement of its `MappedPages` object with an empty MP object,
         // allowing us to take ownership of the real MP object and put it into the new_rb. 
+        // Le tampon repart à pleine capacité : rendu avec une longueur nulle, il refusait la trame
+        // suivante (`set_length`), et l'anneau de réception de la carte restait bloqué dessus
+        // une fois les tampons neufs de la réserve épuisés.
         let new_rb = ReceiveBuffer {
             mp: core::mem::replace(&mut self.mp, MappedPages::empty()),
             phys_addr: self.phys_addr,
-            length: 0,
+            length: self.capacity,
+            capacity: self.capacity,
             pool: self.pool,
         };
-        // we set the length to 0 as a quick way to "clear" the buffer. We could also zero out the whole MP. 
 
         // Now, we can add the new receive buffer to the pool 
         if let Err(_e) = self.pool.push(new_rb) {

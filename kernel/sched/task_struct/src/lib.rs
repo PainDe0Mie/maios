@@ -75,7 +75,132 @@ pub struct SchedEntity {
     /// Horodatage (ns) du dernier réveil, pour mesurer la latence réveil -> exécution.
     pub wake_ts: AtomicU64,
     /// Changement de classe en attente, appliqué par l'ordonnanceur au prochain passage.
-    pub pending_class: AtomicCell<Option<maisched::Class>>,
+    pub pending_class: AtomicClass,
+    /// Cœurs permis (`sched_setaffinity`), hérités à la création d'un fil.
+    pub cpus_allowed: CpuMask,
+    /// Diagnostic : dernière prise d'un cœur (`switch_to`) et dernière libération
+    /// (`finish_task_switch`), codées par `task::trace_word` (cœur, autre tâche, numéro d'ordre).
+    pub trace_on: AtomicU64,
+    pub trace_off: AtomicU64,
+}
+
+/// Nombre de cœurs que décrit un [`CpuMask`] (celui de `task::scheduler::MAX_CPUS`).
+pub const CPU_MASK_BITS: usize = 256;
+const CPU_MASK_WORDS: usize = CPU_MASK_BITS / 64;
+
+/// Ensemble de cœurs permis, lu sans verrou par l'ordonnanceur (aussi depuis un réveil venu
+/// d'une interruption).
+///
+/// `restricted` faux = tous les cœurs (cas courant : un seul chargement atomique). Un lecteur
+/// peut voir un masque à moitié écrit pendant `set` : l'ordonnanceur se corrige au passage
+/// suivant (une tâche sur un cœur qu'elle n'a plus le droit d'utiliser est migrée quand elle le
+/// rend), ce qui n'exige donc pas de *seqlock*.
+pub struct CpuMask {
+    words: [AtomicU64; CPU_MASK_WORDS],
+    restricted: core::sync::atomic::AtomicBool,
+}
+
+impl CpuMask {
+    pub const fn all() -> CpuMask {
+        const FULL: AtomicU64 = AtomicU64::new(u64::MAX);
+        CpuMask { words: [FULL; CPU_MASK_WORDS], restricted: core::sync::atomic::AtomicBool::new(false) }
+    }
+
+    /// Le cœur `cpu` est-il permis ?
+    #[inline]
+    pub fn allows(&self, cpu: usize) -> bool {
+        if !self.restricted.load(Ordering::Acquire) {
+            return true;
+        }
+        cpu < CPU_MASK_BITS && self.words[cpu / 64].load(Ordering::Relaxed) & (1 << (cpu % 64)) != 0
+    }
+
+    pub fn is_restricted(&self) -> bool {
+        self.restricted.load(Ordering::Acquire)
+    }
+
+    /// Copie du masque (tous les bits posés s'il n'est pas restreint).
+    pub fn get(&self) -> [u64; CPU_MASK_WORDS] {
+        if !self.is_restricted() {
+            return [u64::MAX; CPU_MASK_WORDS];
+        }
+        core::array::from_fn(|i| self.words[i].load(Ordering::Relaxed))
+    }
+
+    /// Pose le masque ; `ncpus` : nombre de cœurs du système (un masque qui les couvre tous
+    /// redevient « non restreint »).
+    pub fn set(&self, mask: &[u64; CPU_MASK_WORDS], ncpus: usize) {
+        let all = (0..ncpus.min(CPU_MASK_BITS)).all(|c| mask[c / 64] & (1 << (c % 64)) != 0);
+        if all {
+            self.restricted.store(false, Ordering::Release);
+        }
+        for (w, &m) in self.words.iter().zip(mask.iter()) {
+            w.store(if all { u64::MAX } else { m }, Ordering::Relaxed);
+        }
+        if !all {
+            self.restricted.store(true, Ordering::Release);
+        }
+    }
+
+    /// Recopie le masque d'une autre tâche (création d'un fil, `fork`).
+    pub fn copy_from(&self, other: &CpuMask) {
+        let r = other.is_restricted();
+        for (w, o) in self.words.iter().zip(other.words.iter()) {
+            w.store(o.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        self.restricted.store(r, Ordering::Release);
+    }
+}
+
+/// `Option<maisched::Class>` dans un `AtomicU32` : toujours sans verrou.
+///
+/// `AtomicCell<Option<Class>>` (3 octets) passait par les verrous globaux de crossbeam : un
+/// `take()` dans un réveil venu d'une interruption tournait pour toujours si le code interrompu
+/// tenait le même verrou (voir [`AtomicRunState`]).
+pub struct AtomicClass(core::sync::atomic::AtomicU32);
+
+impl AtomicClass {
+    const NONE: u32 = 0;
+
+    pub const fn new() -> AtomicClass {
+        AtomicClass(core::sync::atomic::AtomicU32::new(Self::NONE))
+    }
+
+    fn encode(c: Option<maisched::Class>) -> u32 {
+        match c {
+            None => Self::NONE,
+            Some(maisched::Class::Fair { batch }) => 1 | (batch as u32) << 8,
+            Some(maisched::Class::Rt { prio, rr }) => 2 | (prio as u32) << 8 | (rr as u32) << 16,
+            Some(maisched::Class::Idle) => 3,
+        }
+    }
+
+    fn decode(v: u32) -> Option<maisched::Class> {
+        match v & 0xFF {
+            1 => Some(maisched::Class::Fair { batch: v >> 8 & 1 != 0 }),
+            2 => Some(maisched::Class::Rt { prio: (v >> 8) as u8, rr: v >> 16 & 1 != 0 }),
+            3 => Some(maisched::Class::Idle),
+            _ => None,
+        }
+    }
+
+    pub fn load(&self) -> Option<maisched::Class> {
+        Self::decode(self.0.load(core::sync::atomic::Ordering::Acquire))
+    }
+
+    pub fn store(&self, c: Option<maisched::Class>) {
+        self.0.store(Self::encode(c), core::sync::atomic::Ordering::Release)
+    }
+
+    pub fn take(&self) -> Option<maisched::Class> {
+        Self::decode(self.0.swap(Self::NONE, core::sync::atomic::Ordering::AcqRel))
+    }
+}
+
+impl Default for AtomicClass {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // SAFETY : l'entité n'est accédée que sous le verrou de la file qui la possède.
@@ -89,7 +214,10 @@ impl SchedEntity {
             cpu: AtomicUsize::new(0),
             nice: AtomicI8::new(0),
             wake_ts: AtomicU64::new(0),
-            pending_class: AtomicCell::new(None),
+            pending_class: AtomicClass::new(),
+            cpus_allowed: CpuMask::all(),
+            trace_on: AtomicU64::new(0),
+            trace_off: AtomicU64::new(0),
         }
     }
 
@@ -165,6 +293,9 @@ pub struct UserContext {
     pub kstack_top: usize,
     /// Registres vectoriels du fil, sauvés quand il quitte le cœur.
     pub fpu: uentry::FpuState,
+    /// Sélecteurs de segment et entrées TLS de la GDT (fils 32 bits), échangés au changement
+    /// de contexte.
+    pub seg: uentry::SegState,
     /// Fil utilisateur porté par la tâche (type défini par la couche processus : `maiproc::Thread`).
     pub process: Arc<dyn Any + Send + Sync>,
 }
@@ -179,7 +310,7 @@ pub struct Task {
     /// The name of this task.
     pub name: String,
     /// The definition of this task's runstate (Running, Blocked, etc).
-    pub runstate: AtomicCell<RunState>,
+    pub runstate: AtomicRunState,
     /// The CPU that this task is currently running on.
     pub running_on_cpu: AtomicCell<OptionalCpuId>,
     /// The stack of this task.
@@ -243,7 +374,7 @@ impl Task {
         Task {
             id,
             name,
-            runstate: AtomicCell::new(RunState::Runnable),
+            runstate: AtomicRunState::new(RunState::Runnable),
             running_on_cpu: AtomicCell::new(None.into()),
             kstack,
             mmi,
@@ -300,6 +431,97 @@ impl fmt::Debug for Task {
 impl fmt::Display for Task {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}{{{}}}", self.name, self.id)
+    }
+}
+
+/// État d'une tâche, atomique et **sans verrou** pour les états qui changent sans cesse.
+///
+/// `RunState` contient la valeur de sortie (16 octets) : `AtomicCell<RunState>` de crossbeam le
+/// protégeait par un verrou tournant global (tableau de verrous indexé par l'adresse). Une
+/// interruption qui réveillait une tâche (`unblock()` d'une fin NVMe) pendant que le code
+/// interrompu, sur le même cœur, était au milieu de son propre `block()` attendait ce verrou pour
+/// toujours : le cœur se figeait, interruptions coupées (vu avec `nmi_backtrace` sous `blkbench`).
+///
+/// Ici l'état tient dans un `AtomicU8` ; seule la valeur de sortie, écrite une fois à la fin de
+/// la tâche, est sous un verrou qui coupe les interruptions (un détenteur ne peut donc pas être
+/// interrompu sur son cœur).
+pub struct AtomicRunState {
+    state: core::sync::atomic::AtomicU8,
+    exit: IrqSafeMutex<Option<ExitValue>>,
+}
+
+const RS_INITING: u8 = 0;
+const RS_RUNNABLE: u8 = 1;
+const RS_BLOCKED: u8 = 2;
+const RS_EXITED: u8 = 3;
+
+impl AtomicRunState {
+    pub fn new(s: RunState) -> AtomicRunState {
+        let a = AtomicRunState { state: core::sync::atomic::AtomicU8::new(RS_INITING), exit: IrqSafeMutex::new(None) };
+        a.store(s);
+        a
+    }
+
+    fn code(s: RunState) -> u8 {
+        match s {
+            RunState::Initing => RS_INITING,
+            RunState::Runnable => RS_RUNNABLE,
+            RunState::Blocked => RS_BLOCKED,
+            RunState::Exited(_) => RS_EXITED,
+        }
+    }
+
+    fn decode(&self, c: u8) -> RunState {
+        match c {
+            RS_INITING => RunState::Initing,
+            RS_RUNNABLE => RunState::Runnable,
+            RS_BLOCKED => RunState::Blocked,
+            _ => RunState::Exited(self.exit.lock().unwrap_or(ExitValue::Completed(0))),
+        }
+    }
+
+    pub fn load(&self) -> RunState {
+        self.decode(self.state.load(core::sync::atomic::Ordering::Acquire))
+    }
+
+    pub fn store(&self, s: RunState) {
+        use core::sync::atomic::Ordering::Release;
+        if let RunState::Exited(v) = s {
+            let mut g = self.exit.lock();
+            *g = Some(v);
+            self.state.store(RS_EXITED, Release);
+        } else {
+            self.state.store(Self::code(s), Release);
+        }
+    }
+
+    /// Comme `AtomicCell::compare_exchange` : `Ok(ancien)` si l'état valait `current`,
+    /// `Err(état actuel)` sinon.
+    pub fn compare_exchange(&self, current: RunState, new: RunState) -> Result<RunState, RunState> {
+        use core::sync::atomic::Ordering::{AcqRel, Acquire};
+        let (cc, nc) = (Self::code(current), Self::code(new));
+        if cc != RS_EXITED && nc != RS_EXITED {
+            // Chemin des réveils et des blocages : un seul `cmpxchg`, sans verrou.
+            return self.state.compare_exchange(cc, nc, AcqRel, Acquire).map(|_| current).map_err(|c| self.decode(c));
+        }
+        // Sortie (ou état de sortie comparé) : valeur et état changent ensemble sous le verrou.
+        let mut g = self.exit.lock();
+        let cur = self.state.load(Acquire);
+        let cur_state = if cur == RS_EXITED { RunState::Exited(g.unwrap_or(ExitValue::Completed(0))) } else { self.decode(cur) };
+        if cur_state != current {
+            return Err(cur_state);
+        }
+        if let RunState::Exited(v) = new {
+            *g = Some(v);
+        }
+        self.state.store(nc, core::sync::atomic::Ordering::Release);
+        Ok(current)
+    }
+}
+
+impl core::fmt::Debug for AtomicRunState {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(f, "{:?}", self.load())
     }
 }
 

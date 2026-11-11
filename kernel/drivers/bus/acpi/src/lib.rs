@@ -11,6 +11,8 @@ use rsdp::Rsdp;
 use acpi_table::AcpiTables;
 use acpi_table_handler::acpi_table_handler;
 
+pub mod power;
+
 
 /// The singleton instance of the `AcpiTables` struct,
 /// which contains the MappedPages and location of all discovered ACPI tables.
@@ -58,10 +60,28 @@ pub fn init(rsdp_address: Option<PhysicalAddress>, page_table: &mut PageTable) -
 
     // FADT is mandatory, and contains the address of the DSDT
     {
-        let acpi_tables = ACPI_TABLES.lock();
-        let _fadt = fadt::Fadt::get(&acpi_tables).ok_or("The required FADT APIC table wasn't found (signature 'FACP')")?;
-        // here: do something with the DSDT here, when needed.
-        // debug!("DSDT physical address: {:#X}", {_fadt.dsdt});
+        let mut acpi_tables = ACPI_TABLES.lock();
+        let fadt = *fadt::Fadt::get(&acpi_tables).ok_or("The required FADT APIC table wasn't found (signature 'FACP')")?;
+        // DSDT : seulement pour l'extinction (paquet `_S5_`), voir `power`.
+        let (x_dsdt, dsdt32) = (fadt.x_dsdt, fadt.dsdt);
+        let dsdt_phys = if x_dsdt != 0 { x_dsdt as usize } else { dsdt32 as usize };
+        let mut dsdt_len = None;
+        if let Some(pa) = PhysicalAddress::new(dsdt_phys).filter(|_| dsdt_phys != 0) {
+            match acpi_tables.map_new_table(pa, page_table) {
+                Ok((sig, len)) if &sig == b"DSDT" => {
+                    if acpi_tables.add_table_location(sig, pa, None).is_ok() {
+                        dsdt_len = Some(len);
+                    }
+                }
+                Ok(_) => warn!("ACPI : la DSDT annoncée par la FADT n'a pas la bonne signature"),
+                Err(e) => warn!("ACPI : DSDT non projetée : {e}"),
+            }
+        }
+        let dsdt = dsdt_len.and_then(|len| {
+            let loc = acpi_tables.table_location(b"DSDT")?;
+            acpi_tables.mapping().as_slice::<u8>(loc.offset, len).ok()
+        });
+        power::init(&fadt, dsdt);
     }
 
     // WAET is optional, and contains info about potentially optimizing timer-related actions.

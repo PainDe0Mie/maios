@@ -1,14 +1,36 @@
-//! A basic logger implementation for system-wide logging in Mai. 
+//! A basic logger implementation for system-wide logging in Mai.
 //!
 //! This enables Mai crates to use the [`log`] crate's macros anywhere,
 //! such as `error!()`, `warn!()`, `info!()`, `debug!()`, and `trace!()`.
 //!
-//! Currently, log statements are written to one or more **writers**, 
-//! which are objects that implement the [`core::fmt::Write`] trait.
+//! Currently, log statements are written to one or more **sinks** ([`LogSink`]),
+//! typically the COM1 serial port.
 //!
 //! Early log messages (before memory management is initialized) are saved
 //! to a static fixed-sized buffer such that they are not lost and
 //! can be retrieved once logging sinks are ready to be used.
+//!
+//! # Journal asynchrone
+//!
+//! Écrire sur un port série en synchrone fait payer à chaque appelant de `warn!` le débit de la
+//! ligne : 87 µs par octet à 115 200 bauds, ~10 ms pour une ligne, interruptions coupées. Comme
+//! les consoles à fil de Linux (`nbcon`, 6.12), une fois [`start_async`] appelé :
+//!
+//! * l'appelant met son message en forme **directement dans un anneau** de [`RING_SIZE`] octets
+//!   (une copie mémoire sous un verrou court, `PRODUCER`), publie `HEAD`, puis sonne la tâche de
+//!   vidage (`log_flusher`) ;
+//! * la tâche de vidage ([`drain`]) émet l'anneau par rafales **sans jamais attendre la ligne**
+//!   ([`LogSink::write_nonblocking`] : le FIFO du 16550 quand il est vide), et avance `TAIL` ;
+//! * aucune perte : un anneau plein fait vider l'anneau par le producteur lui-même, en synchrone
+//!   (contre-pression plutôt qu'oubli : le harnais de test lit ce journal) ;
+//! * les `error!` restent synchrones : le message est émis avant que l'appelant ne reprenne la
+//!   main (une erreur précède souvent un arrêt) ;
+//! * les chemins d'urgence (NMI, exceptions) appellent [`flush_emergency`], qui vide l'anneau
+//!   sans dépendre de la tâche ni, en dernier recours, du verrou.
+//!
+//! Ordre des verrous : `PRODUCER` puis `LOGGER` (le consommateur). Le verrou `LOGGER` n'est tenu
+//! que le temps d'une rafale, interruptions coupées. Règle : **ne jamais journaliser sous un
+//! verrou de file de MaiSched** (la sonnette réveille une tâche, ce qui prend ce verrou).
 
 #![no_std]
 #![feature(trait_alias)]
@@ -20,7 +42,12 @@ extern crate sync_irq;
 extern crate serial_port_basic;
 
 use log::{Record, Level, Metadata, Log};
-use core::{fmt::{self, Write}, ops::Deref};
+use core::{
+    cell::UnsafeCell,
+    fmt::{self, Write},
+    ops::Deref,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use sync_irq::IrqSafeMutex;
 use serial_port_basic::SerialPort;
 use alloc::{sync::Arc, vec::Vec};
@@ -33,6 +60,12 @@ pub const DEFAULT_LOG_LEVEL: Level = Level::Warn;
 
 /// The maximum number of output streams that a logger can write to.
 pub const LOG_MAX_WRITERS: usize = 2;
+
+/// Taille de l'anneau du journal asynchrone (puissance de deux).
+pub const RING_SIZE: usize = 1 << 16;
+
+/// Octets émis au plus par appel de [`drain`] (une rafale, verrou tenu).
+const DRAIN_BUDGET: usize = 256;
 
 /// The size of the buffer used to save early log messages.
 pub const EARLY_LOG_BUFFER_SIZE: usize = {
@@ -55,7 +88,25 @@ static EARLY_LOG_BUFFER: IrqSafeMutex<EarlyLogBuffer<EARLY_LOG_BUFFER_SIZE>> =
 /// This is accessed in the [`DummyLogger`]'s log/write methods,
 /// it is not called directly by the `log` crate.
 /// If `None`, it is uninitialized, and the [`EARLY_LOGGER`] will be used as a fallback.
+///
+/// En mode asynchrone, ce verrou est aussi celui du **consommateur** de l'anneau.
 static LOGGER: IrqSafeMutex<Option<Logger>> = IrqSafeMutex::new(None);
+
+/// A destination for log output, such as a serial port.
+///
+/// `fmt::Write` sert au mode synchrone (avant [`start_async`]) ; les deux méthodes d'octets
+/// servent à l'anneau, qui contient déjà les fins de ligne traduites (`\n` suivi de `\r`).
+pub trait LogSink: Write + Send {
+    /// Writes all of `bytes`, waiting for the device as needed.
+    fn write_blocking(&mut self, bytes: &[u8]);
+
+    /// Writes as many of `bytes` as the device accepts **without waiting** and returns that
+    /// count (0 if the device is busy). The default implementation writes everything.
+    fn write_nonblocking(&mut self, bytes: &[u8]) -> usize {
+        self.write_blocking(bytes);
+        bytes.len()
+    }
+}
 
 /// An early logger that can only write to a fixed number of [`SerialPort`]s,
 /// intended for basic use before dynamic heap allocation is available.
@@ -120,7 +171,7 @@ impl fmt::Write for EarlyLogger {
 ///
 /// This is the "backend" for the `log` crate that allows Mai to use its `log!()` macros.
 struct Logger {
-    writers: Vec<Arc<IrqSafeMutex<dyn Write + Send>>>,
+    writers: Vec<Arc<IrqSafeMutex<dyn LogSink>>>,
 }
 
 /// Removes all of the writers (output streams) from the early logger and returns them.
@@ -189,6 +240,211 @@ impl<const SIZE: usize> fmt::Write for EarlyLogBuffer<SIZE> {
 }
 
 
+// ---------------------------------------------------------------------------------------------
+// Anneau du journal asynchrone
+// ---------------------------------------------------------------------------------------------
+
+/// Octets de l'anneau. Les producteurs (sérialisés par `PRODUCER`) n'écrivent qu'au-delà de
+/// `HEAD`, dans la place libre ; le consommateur (sérialisé par `LOGGER`) ne lit qu'entre
+/// `TAIL` et `HEAD`. Les deux zones ne se recouvrent jamais.
+struct Ring(UnsafeCell<[u8; RING_SIZE]>);
+// SAFE : accès partagé réglé par HEAD/TAIL comme décrit ci-dessus.
+unsafe impl Sync for Ring {}
+
+static RING: Ring = Ring(UnsafeCell::new([0; RING_SIZE]));
+/// Octets publiés depuis le démarrage (compteur monotone ; position = valeur % RING_SIZE).
+static HEAD: AtomicUsize = AtomicUsize::new(0);
+/// Octets émis depuis le démarrage.
+static TAIL: AtomicUsize = AtomicUsize::new(0);
+/// Sérialise les producteurs (interruptions coupées : un gestionnaire d'interruption peut
+/// journaliser).
+static PRODUCER: IrqSafeMutex<()> = IrqSafeMutex::new(());
+/// Mode asynchrone actif (la tâche de vidage tourne).
+static ASYNC: AtomicBool = AtomicBool::new(false);
+/// Sonnette de la tâche de vidage (`fn()` rangée en entier ; 0 = aucune).
+static KICK: AtomicUsize = AtomicUsize::new(0);
+
+/// Écrit dans l'anneau à la suite de `HEAD`, en traduisant les fins de ligne comme le pilote
+/// série (`\n` → `\n\r`, `\r` → `\r\n`). Ne s'emploie que sous `PRODUCER`.
+struct RingWriter {
+    head: usize,
+}
+
+impl RingWriter {
+    #[inline]
+    fn push(&mut self, byte: u8) {
+        if self.head - TAIL.load(Ordering::Acquire) >= RING_SIZE {
+            // Anneau plein : on publie ce qui est écrit, puis on vide nous-mêmes (en
+            // synchrone) au lieu de perdre des octets.
+            HEAD.store(self.head, Ordering::Release);
+            flush_sync();
+        }
+        // SAFE : cette case est libre (entre HEAD et TAIL + RING_SIZE) et seul le producteur
+        // qui tient PRODUCER y écrit.
+        unsafe { (*RING.0.get())[self.head % RING_SIZE] = byte; }
+        self.head += 1;
+    }
+}
+
+impl fmt::Write for RingWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for b in s.bytes() {
+            self.push(b);
+            if b == b'\n' {
+                self.push(b'\r');
+            } else if b == b'\r' {
+                self.push(b'\n');
+            }
+        }
+        // Publier au fil de l'eau : un message plus long que l'anneau reste possible.
+        HEAD.store(self.head, Ordering::Release);
+        Ok(())
+    }
+}
+
+/// Envoie `bytes` aux sorties. La première décide du nombre d'octets acceptés (sans attendre
+/// si `blocking` est faux) ; les autres reçoivent les mêmes octets en bloquant.
+fn write_sinks(logger: &Logger, bytes: &[u8], blocking: bool) -> usize {
+    let mut sinks = logger.writers.iter();
+    let first = match sinks.next() {
+        Some(s) => s,
+        None => return bytes.len(), // aucune sortie : on jette
+    };
+    let n = {
+        let mut sink = first.lock();
+        if blocking {
+            sink.write_blocking(bytes);
+            bytes.len()
+        } else {
+            let mut off = 0;
+            while off < bytes.len() {
+                let w = sink.write_nonblocking(&bytes[off..]);
+                if w == 0 {
+                    break;
+                }
+                off += w;
+            }
+            off
+        }
+    };
+    for s in sinks {
+        s.lock().write_blocking(&bytes[..n]);
+    }
+    n
+}
+
+/// Émet au plus `budget` octets de l'anneau ; l'appelant tient `LOGGER`. Rend le nombre émis.
+fn drain_locked(logger: &Logger, budget: usize, blocking: bool) -> usize {
+    let tail = TAIL.load(Ordering::Relaxed);
+    let head = HEAD.load(Ordering::Acquire);
+    let n = (head - tail).min(budget);
+    if n == 0 {
+        return 0;
+    }
+    let start = tail % RING_SIZE;
+    let first = n.min(RING_SIZE - start);
+    // SAFE : [tail, head) est publié et aucun producteur n'y écrit avant que TAIL n'avance.
+    let ring = unsafe { &*RING.0.get() };
+    let mut done = write_sinks(logger, &ring[start..start + first], blocking);
+    if done == first && n > first {
+        done += write_sinks(logger, &ring[..n - first], blocking);
+    }
+    TAIL.store(tail + done, Ordering::Release);
+    done
+}
+
+/// Vide tout l'anneau en bloquant (anneau plein, `error!`).
+fn flush_sync() {
+    if let Some(logger) = &*LOGGER.lock() {
+        while drain_locked(logger, usize::MAX, true) > 0 {}
+    }
+}
+
+/// Résultat d'un appel de [`drain`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drain {
+    /// L'anneau est vide.
+    Empty,
+    /// Des octets attendent mais le périphérique est occupé (FIFO plein) : réessayer plus tard.
+    Busy,
+    /// Des octets ont été émis.
+    Progress,
+}
+
+/// Émet une rafale de l'anneau sans attendre le périphérique. Appelée par la tâche de vidage.
+pub fn drain() -> Drain {
+    if !pending() {
+        return Drain::Empty;
+    }
+    match &*LOGGER.lock() {
+        Some(logger) => {
+            if drain_locked(logger, DRAIN_BUDGET, false) > 0 {
+                Drain::Progress
+            } else {
+                Drain::Busy
+            }
+        }
+        None => Drain::Empty,
+    }
+}
+
+/// Des octets attendent-ils dans l'anneau ?
+#[inline]
+pub fn pending() -> bool {
+    HEAD.load(Ordering::Acquire) != TAIL.load(Ordering::Acquire)
+}
+
+/// Passe le journal en mode asynchrone. `kick` réveille la tâche de vidage ; elle doit être
+/// sûre en interruption et ne faire qu'un réveil (pas de journalisation).
+pub fn start_async(kick: fn()) {
+    KICK.store(kick as usize, Ordering::Release);
+    ASYNC.store(true, Ordering::Release);
+}
+
+#[inline]
+fn kick() {
+    let k = KICK.load(Ordering::Acquire);
+    if k != 0 {
+        // SAFE : KICK ne contient que des `fn()` rangées par `start_async`.
+        let f: fn() = unsafe { core::mem::transmute::<usize, fn()>(k) };
+        f();
+    }
+}
+
+/// Vide l'anneau depuis un contexte d'urgence (NMI, exception du noyau, arrêt), sans la tâche.
+///
+/// Prend le verrou du consommateur s'il se libère vite ; sinon (le code interrompu le tient,
+/// par exemple une NMI arrivée pendant une rafale sur ce cœur) écrit directement sur COM1.
+pub fn flush_emergency() {
+    if !ASYNC.load(Ordering::Acquire) || !pending() {
+        return;
+    }
+    for _ in 0..1_000_000 {
+        if let Some(guard) = LOGGER.try_lock() {
+            if let Some(logger) = &*guard {
+                while drain_locked(logger, usize::MAX, true) > 0 {}
+            }
+            return;
+        }
+        core::hint::spin_loop();
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let tail = TAIL.load(Ordering::Acquire);
+        let head = HEAD.load(Ordering::Acquire);
+        let n = (head - tail).min(RING_SIZE);
+        let start = tail % RING_SIZE;
+        let first = n.min(RING_SIZE - start);
+        // SAFE : lecture d'octets publiés ; au pire une ligne en double ou abîmée, en urgence.
+        let ring = unsafe { &*RING.0.get() };
+        let port = serial_port_basic::SerialPortAddress::COM1;
+        serial_port_basic::emergency_out_bytes(port, &ring[start..start + first]);
+        serial_port_basic::emergency_out_bytes(port, &ring[..n - first]);
+        TAIL.store(tail + n, Ordering::Release);
+    }
+}
+
+
 /// The static instance of the dummy logger, as required by the `log` crate.
 static DUMMY_LOGGER: DummyLogger = DummyLogger;
 
@@ -197,7 +453,7 @@ static DUMMY_LOGGER: DummyLogger = DummyLogger;
 /// This exists because the `log` crate only allows a logger implementation
 /// to be initialized once from a singleton static instance.
 /// To get around that limitation, we store the actual logger states
-/// **outside** of the logger struct, such that we can modify them later 
+/// **outside** of the logger struct, such that we can modify them later
 /// after the `log` crate has already been initialized.
 struct DummyLogger;
 
@@ -207,7 +463,23 @@ impl DummyLogger {
     ///
     /// This function writes to the real (fully-featured) [`LOGGER`] if it has been initialized;
     /// otherwise, it falls back to writing to the [`EARLY_LOGGER`] instead.
-    fn write_fmt(&self, arguments: fmt::Arguments) -> fmt::Result {
+    ///
+    /// En mode asynchrone, le message va dans l'anneau ; `urgent` le fait émettre avant de
+    /// rendre la main.
+    fn write_fmt(&self, arguments: fmt::Arguments, urgent: bool) -> fmt::Result {
+        if ASYNC.load(Ordering::Acquire) {
+            {
+                let _producer = PRODUCER.lock();
+                let mut w = RingWriter { head: HEAD.load(Ordering::Relaxed) };
+                let _ = w.write_fmt(arguments);
+            }
+            if urgent {
+                flush_sync();
+            } else {
+                kick();
+            }
+            return Ok(());
+        }
         if let Some(logger) = &*LOGGER.lock() {
             for writer in logger.writers.iter() {
                 let _ = writer.deref().lock().write_fmt(arguments);
@@ -249,11 +521,12 @@ impl Log for DummyLogger {
                 line_loc,
                 record.args(),
                 LogColor::Reset.as_terminal_string(),
-            )
+            ),
+            record.level() == Level::Error,
         );
         // If there was an error above, there's literally nothing we can do but ignore it,
         // because there is no other lower-level way to log errors than the serial port.
-        
+
         #[cfg(mirror_log_to_vga)]
         if let Some(func) = mirror_log::get_log_mirror_function() {
             // Currently printing to the VGA terminal doesn't support ANSI color escape sequences,
@@ -268,7 +541,7 @@ impl Log for DummyLogger {
     }
 
     fn flush(&self) {
-        // flushing the log is a no-op, since there is no write buffering.
+        flush_sync();
     }
 }
 
@@ -296,7 +569,7 @@ pub fn early_init(
 
     // Tell the `log` crate to use our early logger via the dummy logger.
     // We ignore any errors returned to allow `early_init` to be called multiple times.
-    let _ = log::set_logger(&DUMMY_LOGGER); 
+    let _ = log::set_logger(&DUMMY_LOGGER);
     set_log_level(log_level.unwrap_or(DEFAULT_LOG_LEVEL));
 }
 
@@ -306,18 +579,18 @@ pub fn early_init(
 /// # Arguments
 /// * `log_level`: the log level that should be used.
 ///    If `None`, the [`DEFAULT_LOG_LEVEL`] will be used.
-/// * `writers`: an iterator over the backends that the system logger 
+/// * `writers`: an iterator over the backends that the system logger
 ///    will write log messages to.
 ///    Typically this is just a single writer, such as the COM1 serial port.
 pub fn init<I, W>(log_level: Option<Level>, writers: impl IntoIterator<Item = I>)
 where
-    W: Write + Send + 'static,
+    W: LogSink + 'static,
     I: Into<Arc<IrqSafeMutex<W>>>,
 {
     // Populate the fields of the real logger instance
     let logger = Logger {
         writers: writers.into_iter()
-            .map(|i| i.into() as Arc<IrqSafeMutex<dyn Write + Send>>)
+            .map(|i| i.into() as Arc<IrqSafeMutex<dyn LogSink>>)
             .collect::<Vec<_>>(),
     };
     *LOGGER.lock() = Some(logger);
@@ -329,12 +602,12 @@ where
     set_log_level(log_level.unwrap_or(DEFAULT_LOG_LEVEL));
 }
 
-/// Set the log level, which determines whether a given log message is actually logged. 
-/// 
+/// Set the log level, which determines whether a given log message is actually logged.
+///
 /// For example, if `Level::Trace` is set, all log levels will be logged.
-/// 
-/// If `Level::Info` is set, `debug!()` and `trace!()` will not be logged, 
-/// but `info!()`, `warn!()`, and `error!()` will be. 
+///
+/// If `Level::Info` is set, `debug!()` and `trace!()` will not be logged,
+/// but `info!()`, `warn!()`, and `error!()` will be.
 pub fn set_log_level(level: Level) {
     log::set_max_level(level.to_level_filter())
 }
@@ -343,11 +616,11 @@ pub fn set_log_level(level: Level) {
 ///
 /// If the logger has not yet been initialized, no log messages will be emitted
 /// and an `Error` will be returned.
-/// 
+///
 /// Tip: use the `format_args!()` macro from the core library to create
 /// the `Arguments` parameter needed here.
 pub fn write_fmt(args: fmt::Arguments) -> fmt::Result {
-    DUMMY_LOGGER.write_fmt(args)
+    DUMMY_LOGGER.write_fmt(args, false)
 }
 
 /// Convenience function for writing a simple string to the logger.
@@ -384,7 +657,7 @@ impl LogColor {
 			LogColor::Purple  =>  "\x1b[35m",
             LogColor::Cyan    =>  "\x1b[36m",
             LogColor::White   =>  "\x1b[37m",
-            LogColor::Reset   =>  "\x1b[0m\n", 
+            LogColor::Reset   =>  "\x1b[0m\n",
         }
     }
 }

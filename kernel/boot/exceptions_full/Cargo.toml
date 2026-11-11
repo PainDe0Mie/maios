@@ -11,6 +11,9 @@ log = "0.4.8"
 locked_idt = { path = "../../../libs/locked_idt" }
 uentry = { path = "../../arch/x86_64/uentry" }
 
+[dependencies.logger]
+path = "../../console/logger"
+
 [dependencies.early_printer]
 path = "../early_printer"
 

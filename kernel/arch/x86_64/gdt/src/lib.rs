@@ -126,6 +126,8 @@ pub fn create_gdt(tss: &TaskStateSegment) -> (
     // 5)   user 64-bit code segment
     // 6)   user 64-bit data segment
     // 7-8) tss segment
+    // 12-14) TLS des fils 32 bits (`set_thread_area`, comme `GDT_ENTRY_TLS_MIN` de Linux x86_64),
+    //        écrites à chaque changement de contexte par `uentry::switch_segments`
     //
     // DO NOT rearrange the below calls to gdt.add_entry(), x86_64 has **VERY PARTICULAR** rules about this
 
@@ -145,14 +147,15 @@ pub fn create_gdt(tss: &TaskStateSegment) -> (
 /// See more info about GDT [here](http://wiki.osdev.org/Global_Descriptor_Table)
 /// and [here](http://www.flingos.co.uk/docs/reference/Global-Descriptor-Table/).
 pub struct Gdt {
-    table: [u64; 10],  // max size is 8192 entries, but we don't need that many.
+    /// 16 entrées : 0-8 fixes, 9-11 libres, 12-14 TLS des fils 32 bits, 15 libre.
+    table: [u64; 16],  // max size is 8192 entries, but we don't need that many.
     next_free: usize,
 }
 
 impl Gdt {
     pub const fn new() -> Gdt {
         Gdt {
-            table: [0; 10], 
+            table: [0; 16],
             next_free: 1, // skip the 0th entry because that must be null
         }
     }
@@ -234,21 +237,32 @@ impl Descriptor {
         Descriptor::UserSegment(flags)
     }
 
+    /// Code 32 bits plat (base 0, limite 4 Gio par pages, lecture permise) : le mode
+    /// compatible applique base et limite, contrairement au mode 64 bits.
     pub const fn user_code_32_segment() -> Descriptor {
-        let flags = DescriptorFlags::SIZE.bits() | 
-                    DescriptorFlags::PRESENT.bits() | 
-                    DescriptorFlags::PRIVILEGE_RING3.bits() | 
-                    DescriptorFlags::USER_SEGMENT.bits() | 
-                    DescriptorFlags::EXECUTABLE.bits();
+        let flags = DescriptorFlags::SIZE.bits() |
+                    DescriptorFlags::GRANULARITY.bits() |
+                    DescriptorFlags::LIMIT.bits() |
+                    DescriptorFlags::PRESENT.bits() |
+                    DescriptorFlags::PRIVILEGE_RING3.bits() |
+                    DescriptorFlags::USER_SEGMENT.bits() |
+                    DescriptorFlags::EXECUTABLE.bits() |
+                    DescriptorFlags::READ_WRITE.bits() |
+                    DescriptorFlags::ACCESSED.bits();
         Descriptor::UserSegment(flags)
     }
 
+    /// Données plates 4 Gio, pile 32 bits (B = 1) : `ss`, `ds`, `es` des fils 32 bits, `ss`
+    /// des fils 64 bits (`sysret` charge STAR + 8 = ce segment).
     pub const fn user_data_32_segment() -> Descriptor {
-        let flags = DescriptorFlags::SIZE.bits() | 
-                    DescriptorFlags::PRESENT.bits() | 
-                    DescriptorFlags::PRIVILEGE_RING3.bits() | 
-                    DescriptorFlags::USER_SEGMENT.bits() | 
-                    DescriptorFlags::READ_WRITE.bits(); 
+        let flags = DescriptorFlags::SIZE.bits() |
+                    DescriptorFlags::GRANULARITY.bits() |
+                    DescriptorFlags::LIMIT.bits() |
+                    DescriptorFlags::PRESENT.bits() |
+                    DescriptorFlags::PRIVILEGE_RING3.bits() |
+                    DescriptorFlags::USER_SEGMENT.bits() |
+                    DescriptorFlags::READ_WRITE.bits() |
+                    DescriptorFlags::ACCESSED.bits();
         Descriptor::UserSegment(flags)
     }
 
@@ -294,7 +308,11 @@ impl Descriptor {
 
 bitflags::bitflags! {
     struct DescriptorFlags: u64 {
-        const ACCESSED          = 1 << 40; // should always be zero, don't use this
+        /// Bits 0-15 et 48-51 de la limite (0xFFFFF : tout l'espace avec `GRANULARITY`).
+        const LIMIT             = 0x000F_0000_0000_FFFF;
+        /// Pré-posé sur les segments de données et de code 32 bits : le processeur n'a pas à
+        /// l'écrire dans la GDT au premier chargement.
+        const ACCESSED          = 1 << 40;
         const READ_WRITE        = 1 << 41; // ignored by 64-bit CPU modes
         // const _CONFORMING       = 1 << 42; // not used yet ??
         const EXECUTABLE        = 1 << 43; // should be 1 for code segments, 0 for data segments
@@ -307,5 +325,7 @@ bitflags::bitflags! {
         const PRESENT           = 1 << 47;
         const LONG_MODE         = 1 << 53; // data segments should set this bit to 0
         const SIZE              = 1 << 54; // set to 1 for 32-bit segments, otherwise 0.
+        /// Limite comptée en pages de 4 Kio.
+        const GRANULARITY       = 1 << 55;
     }
 }

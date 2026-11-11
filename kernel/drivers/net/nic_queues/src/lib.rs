@@ -112,8 +112,15 @@ impl<S: RxQueueRegisters, T: RxDescriptor> RxQueue<S,T> {
             // getting back the receive buffer that is part of the received ethernet frame
             self.rx_bufs_in_use.push(new_receive_buf);
             let mut current_rx_buf = self.rx_bufs_in_use.swap_remove(cur); 
-            current_rx_buf.set_length(length as u16)?; // set the ReceiveBuffer's length to the size of the actual packet received
-            receive_buffers_in_frame.push(current_rx_buf);
+            // Longueur de la trame reçue. Un refus ne doit jamais bloquer l'anneau : la trame est
+            // jetée (son tampon retourne à la réserve) et le descripteur rendu à la carte.
+            match current_rx_buf.set_length(length as u16) {
+                Ok(()) => receive_buffers_in_frame.push(current_rx_buf),
+                Err(e) => {
+                    error!("NIC : trame de {} octets jetee : {}", length, e);
+                    receive_buffers_in_frame.clear();
+                }
+            }
 
             // move on to the next receive buffer to see if it's ready for us to take
             self.rx_cur = (cur as u16 + 1) % self.num_rx_descs;
@@ -121,7 +128,9 @@ impl<S: RxQueueRegisters, T: RxDescriptor> RxQueue<S,T> {
 
             if self.rx_descs[cur].end_of_packet() {
                 let buffers = core::mem::take(&mut receive_buffers_in_frame);
-                self.received_frames.push_back(ReceivedFrame(buffers));
+                if !buffers.is_empty() {
+                    self.received_frames.push_back(ReceivedFrame(buffers));
+                }
             } else {
                 warn!("NIC::poll_queue_and_store_received_packets(): Received multi-rxbuffer frame, this scenario not fully tested!");
             }

@@ -219,9 +219,10 @@ fn hid_poll_task(slot_id: u8) -> isize {
             if !still_pressed {
                 if let Some(keycode) = hid_usage_to_keycode(prev_usage) {
                     let event = Event::new_keyboard_event(
-                        KeyEvent::new(keycode, KeyAction::Released, modifiers),
+                        KeyEvent::with_code(keycode, KeyAction::Released, modifiers, keycodes_ascii::hid_usage_to_evdev(prev_usage)),
                     );
                     let _ = queue.push(event);
+                    event_types::notify_input();
                 }
             }
         }
@@ -235,9 +236,10 @@ fn hid_poll_task(slot_id: u8) -> isize {
             if !was_pressed {
                 if let Some(keycode) = hid_usage_to_keycode(cur_usage) {
                     let event = Event::new_keyboard_event(
-                        KeyEvent::new(keycode, KeyAction::Pressed, modifiers),
+                        KeyEvent::with_code(keycode, KeyAction::Pressed, modifiers, keycodes_ascii::hid_usage_to_evdev(cur_usage)),
                     );
                     let _ = queue.push(event);
+                    event_types::notify_input();
                 }
             }
         }
@@ -276,9 +278,10 @@ fn process_modifier_changes(
                 KeyAction::Released
             };
             let event = Event::new_keyboard_event(
-                KeyEvent::new(keycode, action, *modifiers),
+                KeyEvent::with_code(keycode, action, *modifiers, keycodes_ascii::hid_usage_to_evdev(usage)),
             );
             let _ = queue.push(event);
+                    event_types::notify_input();
         }
     }
 }

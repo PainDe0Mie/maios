@@ -33,7 +33,7 @@ use log::*;
 use core::{fmt, ops::{Deref, DerefMut}, mem::size_of, task::Waker};
 use alloc::vec::Vec;
 use spin::{Once, Mutex};
-use memory::{PhysicalAddress, BorrowedSliceMappedPages, Mutable, MappedPages, map_frame_range, MMIO_FLAGS};
+use memory::{PhysicalAddress, BorrowedSliceMappedPages, Mutable, MappedPages, map_frame_range, MMIO_FLAGS, PAGE_SIZE};
 use bit_field::BitField;
 use volatile::Volatile;
 use zerocopy::FromBytes;
@@ -184,6 +184,14 @@ pub struct VirtioCapInfo {
     pub bar_offset: u32,
     /// Length of the region in bytes.
     pub length:     u32,
+    /// `id` de la capacité (octet 5) : distingue les régions de mémoire partagée (type 8).
+    pub id:         u8,
+    /// Mot qui suit la structure commune (décalage 16) : `notify_off_multiplier` pour la
+    /// capacité de notification (type 2), moitié haute du décalage pour une région de mémoire
+    /// partagée (type 8).
+    pub extra:      u32,
+    /// Moitié haute de la longueur d'une région de mémoire partagée (type 8, décalage 20).
+    pub length_hi:  u32,
 }
 
 /// If a BAR's bits [2:1] equal this value, that BAR describes a 64-bit address.
@@ -741,7 +749,18 @@ impl PciLocation {
                 let bar       = self.pci_read_8(PciRegister { index: cap_index + 1, span: Byte0 });
                 let bar_offset= self.pci_read_32(PciRegister{ index: cap_index + 2, span: FullDword });
                 let length    = self.pci_read_32(PciRegister{ index: cap_index + 3, span: FullDword });
-                caps.push(VirtioCapInfo { cfg_type, bar, bar_offset, length });
+                let id        = self.pci_read_8(PciRegister { index: cap_index + 1, span: Byte1 });
+                // Champs au-delà des 16 octets communs : seulement pour la notification (type 2,
+                // `notify_off_multiplier`) et la mémoire partagée (type 8, `offset_hi`/`length_hi`).
+                let (extra, length_hi) = match cfg_type {
+                    2 => (self.pci_read_32(PciRegister { index: cap_index + 4, span: FullDword }), 0),
+                    8 => (
+                        self.pci_read_32(PciRegister { index: cap_index + 4, span: FullDword }),
+                        self.pci_read_32(PciRegister { index: cap_index + 5, span: FullDword }),
+                    ),
+                    _ => (0, 0),
+                };
+                caps.push(VirtioCapInfo { cfg_type, bar, bar_offset, length, id, extra, length_hi });
             }
 
             cap_addr = next & 0xFC;
@@ -972,35 +991,52 @@ impl PciDevice {
         Ok(())  
     }
 
+    /// Emplacement de la table MSI-X et de son tableau des messages en attente (PBA), lu dans
+    /// la capacité MSI-X (PCI Local Bus 3.0, § 6.8.2). `None` si l'appareil n'a pas MSI-X.
+    pub fn msix_info(&self) -> Option<MsixInfo> {
+        let cap_addr = self.find_pci_capability(PciCapability::Msix)?;
+        let idx = cap_addr >> 2;
+        let ctrl = self.pci_read_16(PciRegister { index: idx, span: Word1 });
+        let table = self.pci_read_32(PciRegister { index: idx + 1, span: FullDword });
+        let pba = self.pci_read_32(PciRegister { index: idx + 2, span: FullDword });
+        Some(MsixInfo {
+            table_size: (ctrl & 0x7FF) as usize + 1,
+            table_bar: (table & 0x7) as usize,
+            table_offset: (table & !0x7) as usize,
+            pba_bar: (pba & 0x7) as usize,
+            pba_offset: (pba & !0x7) as usize,
+        })
+    }
+
+    /// Règle les bits *MSI-X Enable* (15) et *Function Mask* (14) du registre de contrôle.
+    /// Ordre conseillé : activer masqué, programmer les entrées, puis démasquer.
+    pub fn pci_msix_control(&self, enable: bool, function_mask: bool) -> Result<(), &'static str> {
+        let cap_addr = self.find_pci_capability(PciCapability::Msix).ok_or("Device not MSI-X capable")?;
+        let reg = PciRegister { index: cap_addr >> 2, span: Word1 };
+        let mut ctrl = self.pci_read_16(reg);
+        ctrl = if enable { ctrl | (1 << 15) } else { ctrl & !(1 << 15) };
+        ctrl = if function_mask { ctrl | (1 << 14) } else { ctrl & !(1 << 14) };
+        self.pci_write_16(reg, ctrl);
+        Ok(())
+    }
+
     /// Returns the memory mapped msix vector table
     ///
     /// - returns `Err("Device not MSI-X capable")` if the device doesn't have the MSI-X capability
     /// - returns `Err("Invalid BAR content")` if the Base Address Register contains an invalid address
+    ///
+    /// La table peut commencer au milieu d'une page de sa BAR : la projection part de la page
+    /// qui la contient (l'ancienne version projetait à partir de l'adresse non alignée).
     pub fn pci_mem_map_msix(&self, max_vectors: usize) -> Result<MsixVectorTable, &'static str> {
-        // retreive the address in the pci config space for the msi-x capability
-        let cap_addr = self.find_pci_capability(PciCapability::Msix).ok_or("Device not MSI-X capable")?;
-        assert_eq!(cap_addr & 0b11, 0, "pci_enable_msix: Invalid MSI-X capability address alignment");
-        let msix_reg_index = cap_addr >> 2;
-
-        // get physical address of vector table
-        const VECTOR_TABLE_OFFSET: u8 = 1;
-        let vector_table_reg = PciRegister {
-            index: msix_reg_index + VECTOR_TABLE_OFFSET,
-            span: FullDword,
-        };
-        let table_offset = self.pci_read_32(vector_table_reg);
-        let bar = table_offset & 0x7;
-        let offset = table_offset >> 3;
-        let addr = self.bars[bar as usize] + offset;
-
-        // find the memory base address and size of the area for the vector table
-        let mem_base = PhysicalAddress::new(addr as usize).ok_or("Invalid BAR content")?;
-        let mem_size_in_bytes = size_of::<MsixVectorEntry>() * max_vectors;
-
-        // debug!("msi-x vector table bar: {}, base_address: {:#X} and size: {} bytes", bar, mem_base, mem_size_in_bytes);
+        let info = self.msix_info().ok_or("Device not MSI-X capable")?;
+        let max_vectors = max_vectors.min(info.table_size);
+        let base = self.determine_mem_base(info.table_bar)?.value() + info.table_offset;
+        let page_off = base % PAGE_SIZE;
+        let mem_base = PhysicalAddress::new(base - page_off).ok_or("Invalid BAR content")?;
+        let mem_size_in_bytes = page_off + size_of::<MsixVectorEntry>() * max_vectors;
 
         let msix_mapped_pages = map_frame_range(mem_base, mem_size_in_bytes, MMIO_FLAGS)?;
-        let vector_table = BorrowedSliceMappedPages::from_mut(msix_mapped_pages, 0, max_vectors)
+        let vector_table = BorrowedSliceMappedPages::from_mut(msix_mapped_pages, page_off, max_vectors)
             .map_err(|(_mp, err)| err)?;
 
         Ok(MsixVectorTable::new(vector_table))
@@ -1116,6 +1152,44 @@ impl DerefMut for PciDevice {
 pub enum PciConfigSpaceAccessMechanism {
     MemoryMapped = 0,
     IoPort = 1,
+}
+
+/// Emplacement de la table MSI-X d'un appareil ([`PciDevice::msix_info`]).
+#[derive(Debug, Clone, Copy)]
+pub struct MsixInfo {
+    /// Nombre d'entrées de la table.
+    pub table_size: usize,
+    /// BAR qui contient la table, et décalage dans cette BAR.
+    pub table_bar: usize,
+    pub table_offset: usize,
+    /// BAR et décalage du tableau des messages en attente.
+    pub pba_bar: usize,
+    pub pba_offset: usize,
+}
+
+/// Programme l'entrée MSI-X à l'adresse virtuelle `entry` (16 octets) : message vers le Local
+/// APIC `apic_id`, vecteur `vector`, entrée démasquée (Intel SDM vol. 3, § 11.11).
+///
+/// # Safety
+/// `entry` doit désigner une entrée projetée de la table MSI-X de l'appareil.
+pub unsafe fn msix_write_entry(entry: *mut u32, apic_id: u32, vector: u8) {
+    // Masquer pendant la mise à jour, puis écrire adresse, adresse haute, donnée, et démasquer.
+    let ctl = entry.add(3);
+    ctl.write_volatile(ctl.read_volatile() | 1);
+    entry.write_volatile(MSIX_INTERRUPT_REGION | ((apic_id & 0xFF) << MSIX_DEST_ID_SHIFT));
+    entry.add(1).write_volatile(0);
+    entry.add(2).write_volatile(vector as u32);
+    ctl.write_volatile(ctl.read_volatile() & !1);
+}
+
+/// Masque (`true`) ou démasque l'entrée MSI-X à l'adresse `entry`.
+///
+/// # Safety
+/// Comme [`msix_write_entry`].
+pub unsafe fn msix_mask_entry(entry: *mut u32, masked: bool) {
+    let ctl = entry.add(3);
+    let v = ctl.read_volatile();
+    ctl.write_volatile(if masked { v | 1 } else { v & !1 });
 }
 
 /// A memory-mapped array of [`MsixVectorEntry`]

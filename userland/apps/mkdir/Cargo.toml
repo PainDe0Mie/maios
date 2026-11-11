@@ -2,6 +2,7 @@
 name = "mkdir"
 version = "0.1.0"
 authors = ["Christine Wang <chrissywang54@gmail.com>"]
+edition = "2021"
 
 [dependencies]
 getopts = "0.2.21"
@@ -17,6 +18,12 @@ path = "../../../kernel/fs/fs_node"
 
 [dependencies.vfs_node]
 path = "../../../kernel/fs/vfs_node"
+
+[dependencies.path]
+path = "../../../kernel/fs/path"
+
+[dependencies.root]
+path = "../../../kernel/fs/root"
 
 
 # [dependencies.application_main_fn]

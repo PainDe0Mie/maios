@@ -141,8 +141,7 @@ impl<'a> DrawContext<'a> {
         let bitmap = &font::FONT_BASIC[idx];
         let ax = self.origin_x + x;
         let ay = self.origin_y + y;
-        for row in 0..font::CHARACTER_HEIGHT {
-            let bits = bitmap[row];
+        for (row, &bits) in bitmap.iter().enumerate() {
             for col in 0..8usize {
                 if bits & (0x80 >> col) != 0 {
                     self.fb.draw_pixel(

@@ -32,6 +32,8 @@ extern crate log;
 extern crate spin;
 
 use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use color::Color;
 use shapes::{Coord, Rectangle};
@@ -59,7 +61,8 @@ pub fn init() -> Result<(), &'static str> {
 // VSync counter
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Global VSync frame counter — incremented each time `present()` completes.
+/// Compteur VSync : une unité par image de l'horloge du compositeur (60 Hz quand quelqu'un
+/// attend ou que l'écran change, arrêté sinon).
 static VSYNC_FRAME: AtomicU64 = AtomicU64::new(0);
 
 /// Returns the current VSync frame number.
@@ -68,9 +71,10 @@ pub fn vsync_counter() -> u64 {
     VSYNC_FRAME.load(Ordering::Acquire)
 }
 
-/// Increments the VSync counter. Called by present().
-fn bump_vsync() {
-    VSYNC_FRAME.fetch_add(1, Ordering::Release);
+/// Fait avancer le compteur VSync. Appelée par le compositeur à chaque battement de son
+/// horloge d'images (une fois par image affichée), et par lui seul.
+pub fn signal_vblank() -> u64 {
+    VSYNC_FRAME.fetch_add(1, Ordering::AcqRel) + 1
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -119,34 +123,16 @@ pub fn is_exclusive_fullscreen() -> bool {
     EXCLUSIVE_FS.load(Ordering::Acquire)
 }
 
-/// Presents the exclusive fullscreen buffer by copying it to the backbuffer.
-pub fn present_exclusive() {
-    let buf_ptr = EXCLUSIVE_BUF_PTR.load(Ordering::Acquire);
-    let buf_len = EXCLUSIVE_BUF_LEN.load(Ordering::Acquire);
-    if buf_ptr == 0 || buf_len == 0 { return; }
-
-    if let Some(mgi_ref) = MGI.get() {
-        let mut guard = mgi_ref.lock();
-        let (w, h) = guard.provider.resolution();
-        let pixels_needed = w * h;
-        let copy_len = buf_len.min(pixels_needed);
-
-        // Copy user buffer directly into backbuffer
-        let back = guard.backbuffer_ptr_mut();
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                buf_ptr as *const AlphaPixel,
-                back as *mut AlphaPixel,
-                copy_len,
-            );
-        }
-
-        // Mark all dirty and present
-        guard.provider.invalidate_all();
-        guard.provider.present();
+/// Tampon du plein écran exclusif `(adresse, nombre de pixels)`, s'il est actif.
+///
+/// Le compositeur le recopie directement vers l'affichage à chaque image.
+pub fn exclusive_buffer() -> Option<(usize, usize)> {
+    if !is_exclusive_fullscreen() {
+        return None;
     }
-
-    bump_vsync();
+    let ptr = EXCLUSIVE_BUF_PTR.load(Ordering::Acquire);
+    let len = EXCLUSIVE_BUF_LEN.load(Ordering::Acquire);
+    if ptr == 0 || len == 0 { None } else { Some((ptr, len)) }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -264,8 +250,19 @@ pub enum DrawCommand<'a> {
 // GraphicsProvider trait
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Accès direct aux deux tampons, pour le compositeur (seul à écrire dans le tampon arrière
+/// pendant une image) : `back` en RAM, `front` projeté sur la mémoire vidéo.
+pub struct Surfaces<'a> {
+    pub back:   &'a mut [AlphaPixel],
+    pub front:  &'a mut [AlphaPixel],
+    pub width:  usize,
+    pub height: usize,
+}
+
 /// Trait implémenté par tous les backends graphiques (soft, VirtIO, GPU…).
 pub trait GraphicsProvider {
+    /// Les deux tampons à la fois (emprunts disjoints).
+    fn surfaces(&mut self) -> Surfaces<'_>;
     /// Exécute les commandes sur le backbuffer et met à jour le dirty tracking.
     fn submit<'a>(&mut self, commands: &[DrawCommand<'a>]);
     /// Copie les zones sales du backbuffer vers la VRAM/frontbuffer.
@@ -280,6 +277,103 @@ pub trait GraphicsProvider {
     fn backbuffer_raw_ptr_mut(&mut self) -> usize;
     /// Returns raw pointer to frontbuffer pixel data (immutable).
     fn frontbuffer_raw_ptr(&self) -> usize;
+    /// Remplace le tampon avant (même taille) et rend l'ancien.
+    fn replace_frontbuffer(&mut self, fb: Framebuffer<AlphaPixel>) -> Result<Framebuffer<AlphaPixel>, Framebuffer<AlphaPixel>>;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Scanout — sortie d'affichage branchée à chaud (GPU)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Rectangle de l'écran à présenter, en pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanoutRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Image d'un curseur matériel : ARGB 8888 **non prémultiplié** (alpha 255 = opaque, l'inverse
+/// de MaiOS), `width × height` pixels ligne par ligne, point chaud dans l'image.
+pub struct CursorPlane<'a> {
+    pub argb: &'a [u32],
+    pub width: usize,
+    pub height: usize,
+    pub hot_x: u32,
+    pub hot_y: u32,
+}
+
+/// État d'un GPU pour les outils (gestionnaire des tâches) : identité et compteurs **cumulés**
+/// depuis le démarrage ; l'outil en fait des débits par différence entre deux lectures.
+#[derive(Clone, Debug, Default)]
+pub struct GpuReport {
+    /// Carte (« virtio-gpu »), avec l'écran annoncé par l'EDID s'il y en a un.
+    pub adapter: String,
+    /// Pilote et ce qu'il sait faire (« virtio_gpu, 2D »).
+    pub driver: String,
+    /// Emplacement sur le bus (« PCI 00:02.0 »).
+    pub location: String,
+    /// Fonctions négociées (« EDID, EVENT_IDX »).
+    pub features: String,
+    /// Mode du scanout.
+    pub width: u32,
+    pub height: u32,
+    /// Mémoire des ressources de l'appareil (tampons d'image, curseur), en octets.
+    pub memory_bytes: u64,
+    /// Temps où l'appareil avait au moins une commande d'affichage en cours (ns) : base de
+    /// l'utilisation, comme le temps actif d'un moteur dans le gestionnaire des tâches de
+    /// Windows (WDDM) ou `drm-engine-*` de `fdinfo` sous Linux.
+    pub busy_ns: u64,
+    /// Présentations, octets transférés vers l'appareil.
+    pub presents: u64,
+    pub transfer_bytes: u64,
+    /// Somme et nombre des latences « soumission → fence » des présentations, et maximum.
+    pub present_lat_total_ns: u64,
+    pub present_lat_count: u64,
+    pub present_lat_max_ns: u64,
+    /// Commandes, erreurs, notifications de l'appareil, interruptions reçues.
+    pub commands: u64,
+    pub errors: u64,
+    pub notifies: u64,
+    pub interrupts: u64,
+    /// Curseur matériel présent, déplacements du curseur.
+    pub hw_cursor: bool,
+    pub cursor_moves: u64,
+}
+
+/// Une sortie d'affichage pilotée par un GPU (virtio-gpu…) : MGI prend sa mémoire comme
+/// tampon avant ([`Mgi::attach_scanout`]), et le compositeur lui dit quelles zones il a
+/// changées.
+///
+/// Contrat : le compositeur appelle [`Scanout::wait_idle`] avant d'écrire dans le tampon avant
+/// (l'appareil peut encore lire la présentation précédente), puis [`Scanout::present`] avec
+/// les rectangles écrits. `present` ne bloque pas.
+pub trait Scanout: Send + Sync {
+    /// Nom pour les journaux (« virtio-gpu »).
+    fn name(&self) -> &str;
+    /// Taille du scanout en pixels.
+    fn size(&self) -> (usize, usize);
+    /// La mémoire du scanout comme tampon (B8G8R8X8, une seule fois). Elle doit vivre tant que
+    /// la sortie est branchée : MGI la garde pour toujours.
+    fn take_framebuffer(&self) -> Option<Framebuffer<AlphaPixel>>;
+    /// Envoie les rectangles à l'affichage (asynchrone).
+    fn present(&self, rects: &[ScanoutRect]);
+    /// Attend que l'appareil ait fini de lire le tampon avant.
+    fn wait_idle(&self);
+    /// Vrai si aucune présentation n'est en cours.
+    fn is_idle(&self) -> bool;
+    /// Côté du curseur matériel en pixels (0 : pas de curseur matériel).
+    fn cursor_size(&self) -> usize;
+    /// Pose l'image du curseur matériel (`None` : caché) au point `(x, y)` de l'écran (le
+    /// point chaud y est placé).
+    fn set_cursor(&self, image: Option<&CursorPlane<'_>>, x: i32, y: i32);
+    /// Déplace le curseur matériel (point chaud en `(x, y)`).
+    fn move_cursor(&self, x: i32, y: i32);
+    /// Identité et compteurs du GPU (sans verrou bloquant : lu par les applications).
+    fn report(&self) -> Option<GpuReport> {
+        None
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -289,11 +383,34 @@ pub trait GraphicsProvider {
 /// Point d'entrée principal de MGI.
 pub struct Mgi {
     provider: Box<dyn GraphicsProvider + Send>,
+    scanout: Option<Arc<dyn Scanout>>,
 }
 
 impl Mgi {
     pub fn new(provider: Box<dyn GraphicsProvider + Send>) -> Self {
-        Self { provider }
+        Self { provider, scanout: None }
+    }
+
+    /// Branche une sortie GPU : sa mémoire devient le tampon avant (même résolution exigée).
+    /// L'ancien tampon avant (le framebuffer du chargeur) est rendu. L'appelant recompose
+    /// ensuite tout l'écran.
+    pub fn attach_scanout(&mut self, out: Arc<dyn Scanout>) -> Result<Framebuffer<AlphaPixel>, &'static str> {
+        if out.size() != self.provider.resolution() {
+            return Err("MGI : le scanout n'a pas la résolution de l'écran");
+        }
+        let fb = out.take_framebuffer().ok_or("MGI : tampon du scanout déjà pris")?;
+        if fb.get_size() != self.provider.resolution() {
+            return Err("MGI : tampon du scanout de mauvaise taille");
+        }
+        let old = self.provider.replace_frontbuffer(fb).map_err(|_| "MGI : tampon avant refusé")?;
+        info!("MGI : sortie {} branchée", out.name());
+        self.scanout = Some(out);
+        Ok(old)
+    }
+
+    /// Sortie GPU branchée, s'il y en a une.
+    pub fn scanout(&self) -> Option<&Arc<dyn Scanout>> {
+        self.scanout.as_ref()
     }
 
     /// Soumet une liste de commandes de dessin.
@@ -318,6 +435,12 @@ impl Mgi {
     #[inline]
     pub fn invalidate_all(&mut self) {
         self.provider.invalidate_all();
+    }
+
+    /// Les deux tampons, pour le compositeur.
+    #[inline]
+    pub fn surfaces(&mut self) -> Surfaces<'_> {
+        self.provider.surfaces()
     }
 
     /// Returns a raw pointer to the backbuffer pixel data (for SYS_MAP_FRAMEBUFFER).
@@ -659,6 +782,16 @@ impl SoftwareGraphicsProvider {
 }
 
 impl GraphicsProvider for SoftwareGraphicsProvider {
+    fn surfaces(&mut self) -> Surfaces<'_> {
+        let (width, height) = self.frontbuffer.get_size();
+        Surfaces {
+            back: self.backbuffer.buffer_mut(),
+            front: self.frontbuffer.buffer_mut(),
+            width,
+            height,
+        }
+    }
+
     fn submit<'a>(&mut self, commands: &[DrawCommand<'a>]) {
         for cmd in commands {
             match cmd {
@@ -754,9 +887,7 @@ impl GraphicsProvider for SoftwareGraphicsProvider {
 
         // Remettre le tilemap à zéro pour la prochaine frame
         self.tilemap.clear();
-
-        // Incrémenter le compteur VSync
-        bump_vsync();
+        // Le compteur VSync n'avance plus ici : c'est l'horloge d'images du compositeur.
     }
 
     fn resolution(&self) -> (usize, usize) {
@@ -777,5 +908,12 @@ impl GraphicsProvider for SoftwareGraphicsProvider {
 
     fn frontbuffer_raw_ptr(&self) -> usize {
         self.frontbuffer.buffer().as_ptr() as usize
+    }
+
+    fn replace_frontbuffer(&mut self, fb: Framebuffer<AlphaPixel>) -> Result<Framebuffer<AlphaPixel>, Framebuffer<AlphaPixel>> {
+        if fb.get_size() != self.frontbuffer.get_size() {
+            return Err(fb);
+        }
+        Ok(core::mem::replace(&mut self.frontbuffer, fb))
     }
 }

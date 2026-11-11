@@ -105,15 +105,116 @@ pub struct KeyEvent {
     pub keycode: Keycode,
     pub action: KeyAction,
     pub modifiers: KeyboardModifiers,
+    /// Code de touche physique de Linux (`KEY_*` de `input-event-codes.h`, ce que portent
+    /// `wl_keyboard.key` et evdev) ; 0 si inconnu. Il distingue ce que [`Keycode`] confond
+    /// (Ctrl et Alt droits, flèches et pavé numérique, Entrée du pavé…).
+    pub code: u16,
 }
 
 impl KeyEvent {
+    /// Événement dont le code physique se déduit du [`Keycode`] (touches non étendues).
     pub fn new(keycode: Keycode, action: KeyAction, modifiers: KeyboardModifiers) -> KeyEvent {
-        KeyEvent {
-            keycode, 
-            action,
-            modifiers,
-        }
+        KeyEvent { keycode, action, modifiers, code: keycode.evdev() }
+    }
+
+    /// Événement dont le pilote connaît le code physique exact.
+    pub fn with_code(keycode: Keycode, action: KeyAction, modifiers: KeyboardModifiers, code: u16) -> KeyEvent {
+        KeyEvent { keycode, action, modifiers, code }
+    }
+}
+
+// ── Codes de touches de Linux (evdev) ────────────────────────────────────────
+
+/// Quelques codes `KEY_*` de Linux.
+pub mod evdev {
+    pub const KEY_ESC: u16 = 1;
+    pub const KEY_LEFTCTRL: u16 = 29;
+    pub const KEY_LEFTSHIFT: u16 = 42;
+    pub const KEY_RIGHTSHIFT: u16 = 54;
+    pub const KEY_LEFTALT: u16 = 56;
+    pub const KEY_CAPSLOCK: u16 = 58;
+    pub const KEY_NUMLOCK: u16 = 69;
+    pub const KEY_SCROLLLOCK: u16 = 70;
+    pub const KEY_RIGHTCTRL: u16 = 97;
+    pub const KEY_RIGHTALT: u16 = 100;
+    pub const KEY_PAUSE: u16 = 119;
+    pub const KEY_LEFTMETA: u16 = 125;
+    pub const KEY_RIGHTMETA: u16 = 126;
+    pub const KEY_COMPOSE: u16 = 127;
+    /// Codes au plus (les états de touches tiennent dans un tableau de bits de cette taille).
+    pub const KEY_MAX: u16 = 0x2ff;
+}
+
+/// Code evdev d'un code de balayage du jeu 1 du PS/2 (`extended` : précédé de `0xE0`), selon la
+/// table de traduction d'`atkbd` de Linux. 0 : à ignorer (fausses touches Maj que le clavier
+/// émet autour des touches étendues quand Verr. Num est actif, codes inconnus).
+pub fn ps2_set1_to_evdev(make: u8, extended: bool) -> u16 {
+    if !extended {
+        return match make {
+            1..=83 | 86..=88 => make as u16,
+            _ => 0,
+        };
+    }
+    match make {
+        0x10 => 165, // KEY_PREVIOUSSONG
+        0x19 => 163, // KEY_NEXTSONG
+        0x1C => 96,  // KEY_KPENTER
+        0x1D => 97,  // KEY_RIGHTCTRL
+        0x20 => 113, // KEY_MUTE
+        0x21 => 140, // KEY_CALC
+        0x22 => 164, // KEY_PLAYPAUSE
+        0x24 => 166, // KEY_STOPCD
+        0x2E => 114, // KEY_VOLUMEDOWN
+        0x30 => 115, // KEY_VOLUMEUP
+        0x32 => 172, // KEY_HOMEPAGE
+        0x35 => 98,  // KEY_KPSLASH
+        0x37 => 99,  // KEY_SYSRQ (Impr. écran)
+        0x38 => 100, // KEY_RIGHTALT (AltGr)
+        0x46 => 119, // KEY_PAUSE (Ctrl+Pause)
+        0x47 => 102, // KEY_HOME
+        0x48 => 103, // KEY_UP
+        0x49 => 104, // KEY_PAGEUP
+        0x4B => 105, // KEY_LEFT
+        0x4D => 106, // KEY_RIGHT
+        0x4F => 107, // KEY_END
+        0x50 => 108, // KEY_DOWN
+        0x51 => 109, // KEY_PAGEDOWN
+        0x52 => 110, // KEY_INSERT
+        0x53 => 111, // KEY_DELETE
+        0x5B => 125, // KEY_LEFTMETA
+        0x5C => 126, // KEY_RIGHTMETA
+        0x5D => 127, // KEY_COMPOSE (touche Menu)
+        0x5E => 116, // KEY_POWER
+        0x5F => 142, // KEY_SLEEP
+        0x63 => 143, // KEY_WAKEUP
+        // 0x2A / 0x36 : fausses Maj ; le reste est inconnu.
+        _ => 0,
+    }
+}
+
+/// Code evdev d'un usage HID du clavier (page 0x07), table `hid_keyboard` de Linux.
+pub fn hid_usage_to_evdev(usage: u8) -> u16 {
+    #[rustfmt::skip]
+    const TABLE: [u8; 0x74] = [
+          0,  0,  0,  0, 30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38,
+         50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44,  2,  3,
+          4,  5,  6,  7,  8,  9, 10, 11, 28,  1, 14, 15, 57, 12, 13, 26,
+         27, 43, 43, 39, 40, 41, 51, 52, 53, 58, 59, 60, 61, 62, 63, 64,
+         65, 66, 67, 68, 87, 88, 99, 70,119,110,102,104,111,107,109,106,
+        105,108,103, 69, 98, 55, 74, 78, 96, 79, 80, 81, 75, 76, 77, 71,
+         72, 73, 82, 83, 86,127,116,117,183,184,185,186,187,188,189,190,
+        191,192,193,194,
+    ];
+    match usage {
+        0xE0 => 29,
+        0xE1 => 42,
+        0xE2 => 56,
+        0xE3 => 125,
+        0xE4 => 97,
+        0xE5 => 54,
+        0xE6 => 100,
+        0xE7 => 126,
+        u => TABLE.get(u as usize).copied().unwrap_or(0) as u16,
     }
 }
 
@@ -301,6 +402,21 @@ pub enum Keycode {
 } 
 
 impl Keycode {
+    /// Code evdev de Linux de cette touche, en la supposant non étendue (le jeu 1 du PS/2 et
+    /// evdev partagent les codes 1 à 88).
+    pub fn evdev(&self) -> u16 {
+        let v = *self as u8;
+        let v = if v >= KEY_RELEASED_OFFSET { v - KEY_RELEASED_OFFSET } else { v };
+        match v {
+            1..=83 | 86..=88 => v as u16,
+            89 => evdev::KEY_PAUSE,
+            91 => evdev::KEY_LEFTMETA,
+            92 => evdev::KEY_RIGHTMETA,
+            93 => evdev::KEY_COMPOSE,
+            _ => 0,
+        }
+    }
+
     /// Obtains the ascii value for a keycode under the given modifiers,
     /// using the currently active keyboard layout.
     pub fn to_ascii(&self, modifiers: KeyboardModifiers) -> Option<char> {

@@ -125,23 +125,32 @@ impl<L: HierarchicalLevel> Table<L> {
         self.next_table_address(index).map(|vaddr| unsafe { &mut *(vaddr.value() as *mut _) })
     }
 
-    /// Returns a mutable reference to the next lowest-level page table, 
+    /// Returns a mutable reference to the next lowest-level page table,
     /// creating and initializing a new one if it doesn't already exist.
-    /// 
-    /// A convenience wrapper around `next_table_address()`; see that method for more.
     ///
-    /// TODO: return a `Result` here instead of panicking.
+    /// Panics when no frame is left for the new table: only for boot-time mappings, where
+    /// running out of memory is fatal anyway. Everything else uses
+    /// [`Self::try_next_table_create`].
     pub fn next_table_create(
         &mut self,
         index: usize,
         flags: PteFlagsArch,
     ) -> &mut Table<L::NextLevel> {
+        self.try_next_table_create(index, flags).expect("next_table_create(): no frames available")
+    }
+
+    /// Like [`Self::next_table_create`], but fails instead of panicking when no frame is left.
+    pub fn try_next_table_create(
+        &mut self,
+        index: usize,
+        flags: PteFlagsArch,
+    ) -> Result<&mut Table<L::NextLevel>, &'static str> {
         if self.next_table(index).is_none() {
             assert!(!is_huge(&self[index].flags()), "mapping code does not support huge pages");
             // MaiMM M1 : une frame pré-zéroée par un cœur inactif évite de zéroer la table ici.
             let (af, zeroed) = match frame_allocator::allocate_zeroed_frame() {
                 Some(af) => (af, true),
-                None => (frame_allocator::allocate_frames(1).expect("next_table_create(): no frames available"), false),
+                None => (frame_allocator::allocate_frames(1).ok_or("page table: out of memory")?, false),
             };
             self[index].set_entry(
                 af.as_allocated_frame(),
@@ -152,7 +161,7 @@ impl<L: HierarchicalLevel> Table<L> {
             }
             core::mem::forget(af); // we currently forget frames allocated as page table frames since we don't yet have a way to track them.
         }
-        self.next_table_mut(index).unwrap()
+        Ok(self.next_table_mut(index).unwrap())
     }
 }
 

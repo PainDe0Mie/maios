@@ -29,6 +29,18 @@ extern crate alloc;
 pub mod theme;
 pub mod draw;
 pub mod widgets;
+/// Canevas anticrénelé avec découpage (nouvelles applications).
+pub mod canvas;
+/// Pointeur et clavier.
+pub mod input;
+/// Composants interactifs en mode immédiat.
+pub mod kit;
+/// Icônes vectorielles.
+pub mod icons;
+/// Presse-papiers partagé par les applications.
+pub mod clipboard;
+/// Types de fichiers (octets magiques, extension).
+pub mod files;
 
 /// Re-exports for convenient `use mai_ui::prelude::*;`
 pub mod prelude {

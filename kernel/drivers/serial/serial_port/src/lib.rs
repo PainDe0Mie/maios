@@ -293,6 +293,17 @@ impl core2::io::Write for SerialPort {
     }    
 }
 
+/// Sortie du journal : l'anneau asynchrone du logger émet par rafales du FIFO, sans attendre.
+impl logger::LogSink for SerialPort {
+    fn write_blocking(&mut self, bytes: &[u8]) {
+        self.inner.out_bytes(bytes);
+    }
+
+    fn write_nonblocking(&mut self, bytes: &[u8]) -> usize {
+        self.inner.try_out_bytes(bytes)
+    }
+}
+
 /// Forward the implementation of [`core::fmt::Write`] to the inner [`SerialPortBasic`].
 impl fmt::Write for SerialPort {
     fn write_str(&mut self, s: &str) -> fmt::Result {

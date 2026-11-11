@@ -303,11 +303,16 @@ impl Mapper {
 
         // TODO FIXME: implement huge pages here.
 
+        // Tables intermédiaires d'abord : un manque de mémoire échoue ici, avant qu'aucune
+        // entrée feuille ne soit posée (sinon des frames rendues par l'appelant resteraient
+        // projetées).
+        self.prepare_tables(&pages, higher_level_flags)?;
+
         // iterate over pages and frames in lockstep
         for (page, frame) in pages.range().clone().into_iter().zip(frames.borrow().into_iter()) {
-            let p3 = self.p4_mut().next_table_create(page.p4_index(), higher_level_flags);
-            let p2 = p3.next_table_create(page.p3_index(), higher_level_flags);
-            let p1 = p2.next_table_create(page.p2_index(), higher_level_flags);
+            let p3 = self.p4_mut().try_next_table_create(page.p4_index(), higher_level_flags)?;
+            let p2 = p3.try_next_table_create(page.p3_index(), higher_level_flags)?;
+            let p1 = p2.try_next_table_create(page.p2_index(), higher_level_flags)?;
 
             if !p1[page.p1_index()].is_unused() {
                 error!("map_allocated_pages_to(): page {:#X} -> frame {:#X}, page was already in use!", page.start_address(), frame.start_address());
@@ -330,6 +335,23 @@ impl Mapper {
         ))
     }
     
+
+    /// Crée (si besoin) les tables P3, P2 et P1 de toutes les pages de `pages`, une fois par
+    /// table de 2 Mio couverte. Échoue proprement s'il manque une frame.
+    fn prepare_tables(&mut self, pages: &AllocatedPages, flags: PteFlagsArch) -> Result<(), &'static str> {
+        let mut last_p1 = None;
+        for page in pages.range().clone() {
+            let key = (page.p4_index(), page.p3_index(), page.p2_index());
+            if last_p1 == Some(key) {
+                continue;
+            }
+            let p3 = self.p4_mut().try_next_table_create(page.p4_index(), flags)?;
+            let p2 = p3.try_next_table_create(page.p3_index(), flags)?;
+            p2.try_next_table_create(page.p2_index(), flags)?;
+            last_p1 = Some(key);
+        }
+        Ok(())
+    }
 
     /// Maps the given virtual `AllocatedPages` to the given physical `AllocatedFrames`.
     /// 
@@ -377,12 +399,13 @@ impl Mapper {
             .valid(true)
             .exclusive(true);
 
+        self.prepare_tables(&pages, higher_level_flags)?;
         for page in pages.range().clone() {
             let af = frame_allocator::allocate_frames(1).ok_or("map_allocated_pages(): couldn't allocate new frame, out of memory")?;
 
-            let p3 = self.p4_mut().next_table_create(page.p4_index(), higher_level_flags);
-            let p2 = p3.next_table_create(page.p3_index(), higher_level_flags);
-            let p1 = p2.next_table_create(page.p2_index(), higher_level_flags);
+            let p3 = self.p4_mut().try_next_table_create(page.p4_index(), higher_level_flags)?;
+            let p2 = p3.try_next_table_create(page.p3_index(), higher_level_flags)?;
+            let p1 = p2.try_next_table_create(page.p2_index(), higher_level_flags)?;
 
             if !p1[page.p1_index()].is_unused() {
                 error!("map_allocated_pages(): page {:#X} -> frame {:#X}, page was already in use!",
@@ -1542,6 +1565,11 @@ pub fn get_pte_raw(virtual_address: VirtualAddress) -> Option<u64> {
     }
 }
 
+/// Écrit brutalement l'entrée de table de `virtual_address` (diagnostic, pilotes historiques).
+///
+/// # Safety
+/// L'appelant garantit que la nouvelle valeur désigne une frame valide pour cette adresse et
+/// invalide lui-même la TLB ; aucune vérification n'est faite.
 pub unsafe fn set_pte_raw(virtual_address: VirtualAddress, value: u64) -> bool {
     use x86_64::registers::control::Cr3;
     

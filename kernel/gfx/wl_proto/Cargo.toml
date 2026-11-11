@@ -1,0 +1,11 @@
+[package]
+name = "wl_proto"
+version = "0.1.0"
+edition = "2021"
+description = "MaiLand W0 : cœur du protocole Wayland (format filaire vérifié, table d'objets, signatures générées depuis les XML), sans dépendance, testé sur l'hôte."
+build = "build.rs"
+
+[dependencies]
+
+[lib]
+crate-type = ["rlib"]

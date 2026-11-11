@@ -16,6 +16,8 @@ extern crate shapes;
 extern crate alloc;
 
 use alloc::string::String;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
 use mpmc::Queue;
 use event_types::Event;
 use framebuffer::{Framebuffer, AlphaPixel};
@@ -70,7 +72,57 @@ pub struct WindowInner {
     framebuffer: Framebuffer<AlphaPixel>,
     /// Current drag/resize state.
     pub moving: WindowMovingStatus,
+    /// Rayon des coins arrondis : le compositeur mélange ces quatre coins et copie le reste en
+    /// bloc (zone opaque, comme `wl_surface.set_opaque_region`). Trop grand reste correct
+    /// (plus de mélange), trop petit ne l'est pas.
+    pub corner_radius: usize,
+    /// Fenêtre entièrement translucide : tous ses pixels sont mélangés à ce qui est dessous.
+    pub translucent: bool,
+    /// Appelée après chaque événement déposé dans la file de la fenêtre (sûre en interruption :
+    /// une sonnette). Un propriétaire qui dort au lieu de scruter sa file (le serveur Wayland)
+    /// s'y fait réveiller.
+    pub on_event: Option<fn()>,
+    /// Contenu lu directement dans le tampon de l'application (composition directe) : le
+    /// compositeur ne lit pas `framebuffer` sur cette zone, sauf aux coins arrondis du bas, que
+    /// le propriétaire y recopie (la décoration les arrondit dans `framebuffer`).
+    pub direct: Option<DirectContent>,
+    /// Décorée par le système (barre de titre, bordure). `false` : l'application dessine les
+    /// siennes (décorations côté client, `xdg-decoration` en mode `client_side`) ; titre et
+    /// bordure ont alors une épaisseur nulle.
+    pub decorated: bool,
+    /// Titre affiché (barre de titre, barre des tâches).
+    pub title: String,
+    /// Identifiant de l'application (`xdg_toplevel.set_app_id`, nom du fichier `.desktop`) :
+    /// la barre des tâches en tire l'icône.
+    pub app_id: String,
+    /// Numéro de création, croissant : ordre stable des boutons de la barre des tâches.
+    pub serial: u64,
 }
+
+/// Prochain numéro de création de fenêtre.
+static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
+
+/// Source de pixels lue par le compositeur au moment de composer (tampon d'un client Wayland,
+/// sans copie). Doit rester valide et lisible tant qu'elle est attachée à une fenêtre.
+pub trait ContentPlane: Send + Sync {
+    /// Écrit dans `out` la ligne `y` du contenu, colonnes `[x, x + out.len())`, dans la
+    /// convention de MaiOS (alpha `0` = opaque, couleurs non prémultipliées).
+    fn read_row(&self, x: usize, y: usize, out: &mut [AlphaPixel]);
+}
+
+/// Contenu direct d'une fenêtre : sa source et sa place dans la fenêtre.
+#[derive(Clone)]
+pub struct DirectContent {
+    pub plane: Arc<dyn ContentPlane>,
+    /// Coin du contenu dans la fenêtre (pixels de la fenêtre).
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+/// Rayon par défaut, prudent, tant que la décoration n'a pas fixé le sien.
+pub const DEFAULT_CORNER_RADIUS: usize = 16;
 
 impl WindowInner {
     /// Creates a new `WindowInner` backed by the given `framebuffer`.
@@ -89,6 +141,14 @@ impl WindowInner {
             event_producer,
             framebuffer,
             moving: WindowMovingStatus::Stationary,
+            corner_radius: DEFAULT_CORNER_RADIUS,
+            translucent: false,
+            on_event: None,
+            direct: None,
+            decorated: true,
+            title: String::new(),
+            app_id: String::new(),
+            serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -206,6 +266,10 @@ impl WindowInner {
     /// Returns `Err(event)` if the queue was full.
     #[inline]
     pub fn send_event(&self, event: Event) -> Result<(), Event> {
-        self.event_producer.push(event)
+        self.event_producer.push(event)?;
+        if let Some(ring) = self.on_event {
+            ring();
+        }
+        Ok(())
     }
 }

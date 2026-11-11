@@ -8,6 +8,7 @@
 extern crate alloc;
 
 mod component;
+pub mod resolve;
 
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::{
@@ -291,39 +292,12 @@ impl Path {
     /// If the path does not point to a file system object, `None` is returned.
     #[inline]
     pub fn get(&self, cwd: &fs_node::DirRef) -> Option<fs_node::FileOrDir> {
-        let mut iter = self.components().peekable();
-        let mut current = match iter.peek() {
-            Some(Component::RootDir) => {
-                iter.next();
-                root::get_root().clone()
-            }
-            _ => cwd.clone(),
-        };
+        resolve::resolve(cwd, &self.inner, true).ok().map(|r| r.node)
+    }
 
-        while let Some(component) = iter.next() {
-            match component {
-                Component::RootDir => current = root::get_root().clone(),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    let temp = current.lock().get_parent_dir()?;
-                    current = temp;
-                }
-                Component::Normal(name) => {
-                    if iter.peek().is_none() {
-                        return current.lock().get(name);
-                    } else {
-                        let temp = match current.lock().get(name) {
-                            Some(fs_node::FileOrDir::Dir(directory)) => directory,
-                            // Path didn't exist or had a file in the middle e.g. /dir/file/dir
-                            _ => return None,
-                        };
-                        current = temp;
-                    }
-                }
-            }
-        }
-
-        Some(fs_node::FileOrDir::Dir(current))
+    /// Comme [`Path::get`] sans suivre un lien symbolique final (`lstat`, `readlink`).
+    pub fn get_nofollow(&self, cwd: &fs_node::DirRef) -> Option<fs_node::FileOrDir> {
+        resolve::resolve(cwd, &self.inner, false).ok().map(|r| r.node)
     }
 
     // TODO: Move out of path crate.

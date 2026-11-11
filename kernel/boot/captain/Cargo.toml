@@ -26,6 +26,7 @@ console = { path = "../../console/console" }
 task_fs = { path = "../../fs/task_fs" }
 memory = { path = "../../mm/memory" }
 logger = { path = "../../console/logger" }
+log_flusher = { path = "../../console/log_flusher" }
 spawn = { path = "../../sched/spawn" }
 stack = { path = "../../mm/stack" }
 task = { path = "../../sched/task" }
@@ -38,6 +39,8 @@ first_application = { path = "../first_application" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 window_manager = { path = "../../gfx/window_manager" }
+mailand = { path = "../../gfx/mailand" }
+virtio_gpu = { path = "../../drivers/gpu/virtio_gpu" }
 exceptions_full = { path = "../exceptions_full" }
 heap = { path = "../../mm/heap" }
 time = { path = "../../sched/time" }

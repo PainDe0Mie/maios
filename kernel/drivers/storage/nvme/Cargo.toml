@@ -1,17 +1,22 @@
 [package]
 name    = "nvme"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+description = "MaiSS : pilote NVMe à files multiples (MSI-X par cœur, PRP sans copie, cloches fantômes)."
 
 [lib]
 name       = "nvme"
 crate-type = ["rlib"]
 
 [dependencies]
-log            = { version = "0.4", default-features = false }
-spin           = { version = "0.9", default-features = false, features = ["mutex", "once"] }
-memory         = { path = "../../../mm/memory" }
-pci            = { path = "../../bus/pci" }
-storage_device = { path = "../storage_device" }
-io             = { path = "../../../console/io" }
-interrupts     = { path = "../../../arch/common/interrupts" }
+log             = { version = "0.4", default-features = false }
+spin            = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "once"] }
+memory          = { path = "../../../mm/memory" }
+frame_allocator = { path = "../../../mm/frame_allocator" }
+kernel_config   = { path = "../../../boot/kernel_config" }
+pci             = { path = "../../bus/pci" }
+interrupts      = { path = "../../../arch/common/interrupts" }
+cpu             = { path = "../../../arch/common/cpu" }
+time            = { path = "../../../sched/time" }
+sync_irq        = { path = "../../../../libs/sync_irq" }
+blk             = { path = "../blk" }

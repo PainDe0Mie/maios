@@ -21,7 +21,31 @@ use stdio::{StdioReader, StdioWriter};
 use tty::{LineDiscipline, Slave};
 
 pub trait ImmutableRead: Send + Sync + 'static {
+    /// Blocking read (native applications).
     fn read(&self, buf: &mut [u8]) -> io::Result<usize>;
+
+    /// Non-blocking read: `Some(n)` (`n == 0` at EOF) or `None` when nothing is available yet.
+    /// A reader that cannot read without blocking says so with
+    /// [`ImmutableRead::nonblocking`] = `false`.
+    fn try_read(&self, _buf: &mut [u8]) -> Option<usize> {
+        None
+    }
+
+    /// Whether [`try_read`](ImmutableRead::try_read) and [`poll_read`](ImmutableRead::poll_read)
+    /// are supported (otherwise only the blocking `read`).
+    fn nonblocking(&self) -> bool {
+        false
+    }
+
+    /// Readiness (bytes or EOF) ; registers `waker` to be woken by the next write or EOF.
+    fn poll_read(&self, _waker: Option<&core::task::Waker>) -> bool {
+        true
+    }
+
+    /// Bytes waiting (`FIONREAD`), if known.
+    fn available(&self) -> Option<usize> {
+        None
+    }
 }
 
 pub trait ImmutableWrite: Send + Sync + 'static {
@@ -48,6 +72,22 @@ pub trait ImmutableWrite: Send + Sync + 'static {
 impl ImmutableRead for StdioReader {
     fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         self.lock().read(buf)
+    }
+
+    fn try_read(&self, buf: &mut [u8]) -> Option<usize> {
+        self.try_read_now(buf)
+    }
+
+    fn nonblocking(&self) -> bool {
+        true
+    }
+
+    fn poll_read(&self, waker: Option<&core::task::Waker>) -> bool {
+        self.poll_readable(waker)
+    }
+
+    fn available(&self) -> Option<usize> {
+        Some(StdioReader::available(self))
     }
 }
 

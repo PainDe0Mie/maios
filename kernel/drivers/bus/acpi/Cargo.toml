@@ -24,6 +24,12 @@ path = "rsdp"
 [dependencies.rsdt]
 path = "rsdt"
 
+[dependencies.sdt]
+path = "sdt"
+
+[dependencies.port_io]
+path = "../../../../libs/port_io"
+
 [dependencies.fadt]
 path = "fadt"
 

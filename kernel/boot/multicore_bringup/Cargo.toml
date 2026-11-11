@@ -10,6 +10,7 @@ spin = "0.9.4"
 volatile = "0.2.7"
 zerocopy = "0.5.0"
 log = "0.4.8"
+irq_safety = { git = "https://github.com/theseus-os/irq_safety" }
 memory = { path = "../../mm/memory" }
 stack = { path = "../../mm/stack" }
 cpu = { path = "../../arch/common/cpu" }
@@ -26,6 +27,7 @@ arm_boards = { path = "../../arch/aarch64/arm_boards" }
 pit_clock_basic = { path = "../../arch/x86_64/pit_clock_basic" }
 acpi = { path = "../../drivers/bus/acpi" }
 apic = { path = "../../arch/x86_64/apic" }
+tsc = { path = "../../arch/x86_64/tsc" }
 madt = { path = "../../drivers/bus/acpi/madt" }
 
 [lib]

@@ -463,6 +463,10 @@ pub fn init(
     })
 }
 
+/// Rechargerait la table de pages du noyau (sans effet pour l'instant).
+///
+/// # Safety
+/// À appeler interruptions coupées, quand plus rien n'utilise l'espace d'adresses courant.
 pub unsafe fn switch_to_kernel_page_table() {
     // Pour l'instant vide pour permettre la compilation.
     // TODO: Implémenter le switch vers le CR3 du kernel.

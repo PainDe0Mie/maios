@@ -3,6 +3,7 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
 
+extern crate alloc;
 extern crate memory_swap;
 extern crate memory_x86_64;
 
@@ -71,6 +72,9 @@ static EMERGENCY_LOCK: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 fn emergency_print(s: &str) {
+    // Journal asynchrone : ce qui attend encore dans l'anneau passe d'abord, sinon les
+    // dernières lignes avant un blocage n'apparaîtraient qu'après (ou jamais).
+    logger::flush_emergency();
     #[cfg(target_arch = "x86_64")]
     {
         // Acquire spinlock
@@ -392,16 +396,106 @@ fn nmi_entry_hook(regs: &uentry::UserRegs) -> bool {
             return true;
         }
     }
-    emergency_println!("
-EXCEPTION: NON-MASKABLE INTERRUPT at {:#X}
-{:#X?}
-",
-        stack_frame.instruction_pointer,
-        stack_frame,
-    );
-    log_exception(0x2, stack_frame.instruction_pointer.as_u64() as usize, None, None);
-    kill_and_halt(0x2, stack_frame, None, true);
+    // NMI sans cause connue (la commande `nmi` du moniteur QEMU, un bouton NMI, un chien de
+    // garde matériel) : vidage de diagnostic de chaque cœur, sans tuer personne, comme
+    // `nmi_backtrace` de Linux (« Uhhuh. NMI received for unknown reason », puis on continue).
+    nmi_backtrace(regs);
     true
+}
+
+static NMI_PRINT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Cœur, tâche, `rip` résolu, puis les adresses de la pile qui tombent dans du code du noyau
+/// (pile parcourue mot à mot, sans pointeurs de cadre : des entrées peuvent être périmées, comme
+/// les « ? » des traces de Linux).
+fn nmi_backtrace(regs: &uentry::UserRegs) {
+    use core::sync::atomic::Ordering;
+    while NMI_PRINT.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        core::hint::spin_loop();
+    }
+    let curr = task::get_my_current_task();
+    let resolve = |addr: u64| -> Option<(alloc::string::String, usize)> {
+        let t = curr.as_ref()?;
+        t.namespace
+            .get_section_containing_address(VirtualAddress::new(addr as usize)?, false)
+            .map(|(sec, off)| (alloc::format!("{}", sec.name), off))
+    };
+    emergency_println!(
+        "NMI : cpu {} tache {:?} rip {:#x} {} rsp {:#x} rflags {:#x}",
+        cpu::current_cpu(),
+        curr.as_ref().map(|t| (t.id, t.name.clone())),
+        regs.rip,
+        resolve(regs.rip).map_or(alloc::string::String::from("??"), |(n, o)| alloc::format!("{} + {:#x}", n, o)),
+        regs.rsp,
+        regs.rflags
+    );
+    if regs.cs & 3 == 0 && regs.rsp >= 0xFFFF_8000_0000_0000 {
+        let mut found = 0;
+        for i in 0..1024usize {
+            let a = regs.rsp as usize + i * 8;
+            // Une page non projetée (au-dessus du haut de la pile) arrête le parcours : pas de
+            // faute de page dans une NMI.
+            if (i == 0 || a % 4096 == 0) && VirtualAddress::new(a).and_then(memory::translate).is_none() {
+                break;
+            }
+            // SAFETY : adresse de la pile noyau interrompue, projetée (vérifié ci-dessus).
+            let v = unsafe { core::ptr::read_volatile(a as *const u64) };
+            if v >= 0xFFFF_FFFF_8000_0000 {
+                if let Some((n, o)) = resolve(v) {
+                    emergency_println!("    ? {:#x} {} + {:#x}", v, n, o);
+                    found += 1;
+                    if found == 24 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    // Le cœur 0 liste aussi les tâches qui ne tournent pas : état et adresses de code trouvées
+    // sur leur pile sauvegardée (où chacune attend).
+    if cpu::current_cpu().value() == 0 {
+        match task::try_all_tasks() {
+            None => emergency_println!("NMI : liste des taches verrouillee"),
+            Some(tasks) => {
+                emergency_println!("NMI : files {}", task::scheduler::nmi_debug_cpus());
+                for (id, t) in tasks {
+                    let state = t.runstate.load();
+                    let on = Option::<cpu::CpuId>::from(t.running_on_cpu.load());
+                    if t.is_an_idle_task || on.is_some() {
+                        continue;
+                    }
+                    emergency_println!("TACHE {} {:?} {:?} sp {:#x}", id, t.name, state, t.saved_sp);
+                    if matches!(state, task::RunState::Runnable) {
+                        emergency_println!("    ordonnanceur : {}", task::scheduler::nmi_debug_task(&t));
+                    }
+                    let mut found = 0;
+                    for i in 0..512usize {
+                        let a = t.saved_sp + i * 8;
+                        if t.saved_sp == 0 || ((i == 0 || a % 4096 == 0) && VirtualAddress::new(a).and_then(memory::translate).is_none()) {
+                            break;
+                        }
+                        // SAFETY : pile noyau sauvegardée de la tâche, page projetée (vérifiée).
+                        let v = unsafe { core::ptr::read_volatile(a as *const u64) };
+                        if v >= 0xFFFF_8F80_0000_0000 {
+                            let r = VirtualAddress::new(v as usize)
+                                .and_then(|va| t.namespace.get_section_containing_address(va, false));
+                            if let Some((sec, off)) = r {
+                                emergency_println!("    ? {:#x} {} + {:#x}", v, sec.name, off);
+                                found += 1;
+                            } else if v < 0xFFFF_FFFF_8000_0000 && v >= 0xFFFF_8F80_0000_0000 && v < 0xFFFF_9000_0000_0000 {
+                                emergency_println!("    ? {:#x} (programme C)", v);
+                                found += 1;
+                            }
+                            if found == 14 {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    NMI_PRINT.store(false, Ordering::Release);
 }
 
 

@@ -15,8 +15,10 @@ dependencies = [
  "log",
  "madt",
  "memory",
+ "port_io",
  "rsdp",
  "rsdt",
+ "sdt",
  "spin 0.9.4",
  "time",
  "waet",
@@ -79,6 +81,7 @@ dependencies = [
  "spawn",
  "stack",
  "sync_irq",
+ "tsc",
 ]
 
 [[package]]
@@ -295,14 +298,6 @@ dependencies = [
 [[package]]
 name = "color"
 version = "0.1.0"
-
-[[package]]
-name = "compositor"
-version = "0.1.0"
-dependencies = [
- "framebuffer",
- "shapes",
-]
 
 [[package]]
 name = "const_format"
@@ -736,17 +731,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "framebuffer_compositor"
-version = "0.1.0"
-dependencies = [
- "compositor",
- "framebuffer",
- "hashbrown 0.11.2",
- "shapes",
- "spin 0.9.4",
-]
-
-[[package]]
 name = "framebuffer_drawer"
 version = "0.1.0"
 dependencies = [
@@ -1166,6 +1150,7 @@ dependencies = [
  "root",
  "rtc",
  "scheduler",
+ "shapes",
  "sleep",
  "smoltcp",
  "spawn",
@@ -1388,6 +1373,7 @@ dependencies = [
  "apic",
  "arm_boards",
  "cpu",
+ "irq_safety",
  "kernel_config",
  "log",
  "madt",
@@ -1398,6 +1384,7 @@ dependencies = [
  "psci",
  "spin 0.9.4",
  "stack",
+ "tsc",
  "volatile 0.2.7",
  "zerocopy 0.5.0",
 ]
@@ -1412,10 +1399,13 @@ dependencies = [
  "rand",
  "rand_chacha",
  "random",
+ "sleep",
  "smoltcp",
+ "spawn",
  "spin 0.9.4",
  "sync_block",
  "sync_irq",
+ "time",
 ]
 
 [[package]]
@@ -1744,6 +1734,10 @@ checksum = "d92195228612ac8eed47adbc2ed0f04e513a4ccb98175b6f2bd04d963b533655"
 dependencies = [
  "rand_core",
 ]
+
+[[package]]
+name = "region2d"
+version = "0.1.0"
 
 [[package]]
 name = "root"
@@ -2461,30 +2455,24 @@ dependencies = [
 name = "window_manager"
 version = "0.1.0"
 dependencies = [
- "color",
- "compositor",
- "cpu",
  "event_types",
- "font",
  "framebuffer",
- "framebuffer_compositor",
- "framebuffer_drawer",
  "keyboard",
  "keycodes_ascii",
- "lazy_static",
  "log",
  "mgi",
- "mhc",
  "mod_mgmt",
  "mouse_data",
  "mpmc",
- "path",
- "scheduler",
+ "region2d",
  "shapes",
  "sleep",
  "spawn",
  "spin 0.9.4",
+ "sync_irq",
+ "task",
  "time",
+ "wait_queue",
  "window_inner",
 ]
 

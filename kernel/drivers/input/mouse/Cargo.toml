@@ -23,8 +23,8 @@ path = "../ps2"
 [dependencies.event_types]
 path = "../../../gfx/event_types"
 
-[dependencies.port_io]
-path = "../../../../libs/port_io"
+[dependencies.time]
+path = "../../../sched/time"
 
 [lib]
 crate-type = ["rlib"]

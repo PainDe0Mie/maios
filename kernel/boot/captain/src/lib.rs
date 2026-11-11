@@ -326,6 +326,19 @@ pub fn init(
         Ok((key_producer, mouse_producer)) => {
             device_manager::init(key_producer, mouse_producer)?;
             warn!("MGI window manager and input devices initialized");
+            // MaiGPU G0 : un GPU virtio devient la sortie de MaiCompositor (scanout à la
+            // résolution de l'écran, présentation par zones abîmées, curseur matériel).
+            if let Some(gpu) = virtio_gpu::get() {
+                let (w, h) = window_manager::screen_size();
+                match gpu.create_display(w as u32, h as u32) {
+                    Ok(d) => window_manager::attach_scanout(d),
+                    Err(e) => error!("virtio-gpu : scanout non cree : {}", e),
+                }
+            }
+            // Serveur Wayland (MaiLand) : une fenêtre de MaiCompositor par `xdg_toplevel`.
+            if let Err(e) = mailand::start() {
+                error!("MaiLand : serveur Wayland non demarre : {}", e);
+            }
         }
         Err(e) => {
             error!("Window manager init failed (expected in --nographic): {}", e);
@@ -363,6 +376,10 @@ pub fn init(
     console::start_connection_detection()?;
 
     first_application::start()?;
+
+    // Journal asynchrone : à partir d'ici, `warn!` ne fait plus qu'une copie dans un anneau que
+    // la tâche `log_flusher` émet sur le port série (le démarrage, lui, est resté synchrone).
+    log_flusher::start()?;
 
     warn!(
         "captain::init(): initialization done! \

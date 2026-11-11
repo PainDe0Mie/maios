@@ -26,6 +26,7 @@ mod_mgmt = { path = "../../loader/mod_mgmt" }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 page_attribute_table = { path = "../../arch/x86_64/page_attribute_table" }
 apic = { path = "../../arch/x86_64/apic" }
+tsc = { path = "../../arch/x86_64/tsc" }
 
 [lib]
 crate-type = ["rlib"]

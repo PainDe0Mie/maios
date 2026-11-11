@@ -24,7 +24,8 @@ lazy_static! {
     /// Returns a tuple for easy access to the name of the root so we don't have to lock it
     pub static ref ROOT: (String, DirRef) = {
         let root_dir = RootDirectory {
-            children: BTreeMap::new() 
+            children: BTreeMap::new(),
+            links: BTreeMap::new(),
         };
         let strong_root = Arc::new(Mutex::new(root_dir)) as DirRef;
         (ROOT_DIRECTORY_NAME.to_string(), strong_root)
@@ -40,11 +41,19 @@ pub fn get_root() -> &'static DirRef {
 pub struct RootDirectory {
     /// A list of DirRefs or pointers to the child directories   
     children: BTreeMap<String, FileOrDir>,
+    /// Cibles des enfants qui sont des liens symboliques (prêtés par une racine ext4 :
+    /// `/bin -> usr/bin`). Lues une fois à l'insertion, quand personne ne tient le nœud (contrat
+    /// d'`insert`) : la résolution des chemins n'a jamais à verrouiller un enfant.
+    links: BTreeMap<String, String>,
 }
 
 impl Directory for RootDirectory {
     fn insert(&mut self, node: FileOrDir) -> Result<Option<FileOrDir>, &'static str> {
         let name = node.get_name();
+        match node.read_link() {
+            Some(t) => { self.links.insert(name.clone(), t); }
+            None => { self.links.remove(&name); }
+        }
         if let Some(mut old_node) = self.children.insert(name, node) {
             old_node.set_parent_dir(Weak::<Mutex<RootDirectory>>::new());
             Ok(Some(old_node))
@@ -55,6 +64,11 @@ impl Directory for RootDirectory {
 
     fn get(&self, name: &str) -> Option<FileOrDir> {
         self.children.get(name).cloned()
+    }
+
+    fn get_with_link(&self, name: &str) -> Option<(FileOrDir, Option<String>)> {
+        let node = self.children.get(name)?.clone();
+        Some((node, self.links.get(name).cloned()))
     }
 
     fn list(&self) -> Vec<String> {
@@ -70,7 +84,9 @@ impl Directory for RootDirectory {
             }
         }
         
-        if let Some(mut old_node) = self.children.remove(&node.get_name()) {
+        let name = node.get_name();
+        self.links.remove(&name);
+        if let Some(mut old_node) = self.children.remove(&name) {
             old_node.set_parent_dir(Weak::<Mutex<RootDirectory>>::new());
             Some(old_node)
         } else {
@@ -97,4 +113,7 @@ impl FsNode for RootDirectory {
     fn set_parent_dir(&mut self, _: WeakDirRef) {
         // do nothing
     }
+
+    /// La racine est un dossier en mémoire : on peut y déplacer des nœuds et en sortir.
+    fn is_movable(&self) -> bool { true }
 }

@@ -22,6 +22,7 @@ members = [
 	"kernel/fs/[!.]*/",
 	"kernel/drivers/bus/[!.]*/",
 	"kernel/drivers/storage/[!.]*/",
+	"kernel/drivers/gpu/[!.]*/",
 	"kernel/drivers/net/[!.]*/",
 	"kernel/drivers/input/[!.]*/",
 	"kernel/drivers/audio/[!.]*/",
@@ -39,6 +40,8 @@ members = [
 	"userland/tests/mm_bench",
 	"userland/tests/sched_bench",
 	"userland/tests/heap_bench",
+	"userland/tests/gpu_test",
+	"userland/tests/blkbench",
 	"userland/tests/qemu_test",
 	"userland/tests/test_win_compat",
 ]

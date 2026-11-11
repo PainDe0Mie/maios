@@ -1,6 +1,6 @@
 [package]
 name = "maiproc"
-description = "MaiProc : processus en mode utilisateur (anneau 3), chargeur ELF et personnalite Linux"
+description = "MaiProc : processus en mode utilisateur (anneau 3) : fork, execve, signaux, futex, tubes, chargeur ELF et personnalite Linux"
 version = "0.1.0"
 edition = "2021"
 
@@ -25,8 +25,12 @@ fs_node = { path = "../../fs/fs_node" }
 path = { path = "../../fs/path" }
 root = { path = "../../fs/root" }
 memfs = { path = "../../fs/memfs" }
+tmpfs = { path = "../../fs/tmpfs" }
 vfs_node = { path = "../../fs/vfs_node" }
 sync_irq = { path = "../../../libs/sync_irq" }
+sync_preemption = { path = "../../sync/sync_preemption" }
+irq_safety = { git = "https://github.com/theseus-os/irq_safety" }
+net = { path = "../../net/net" }
 
 [lib]
 crate-type = ["rlib"]

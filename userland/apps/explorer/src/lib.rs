@@ -1,309 +1,87 @@
-//! Explorer — gestionnaire de bureau pour mai_os
+//! Explorer — bureau, barre des tâches et menu de MaiOS.
 //!
-//! Les icônes du bureau sont lues depuis le dossier `root:/desktop/`.
-//! Chaque fichier `.desk` dans ce dossier décrit un raccourci :
+//! - Bureau : fond d'écran procédural, grande horloge, tout le contenu de `root:/desktop`
+//!   (`desk`) : raccourcis `.desk`/`.desktop` (vraies icônes du thème quand l'appli en a une :
+//!   `mai_icons`), dossiers et fichiers (icônes de `mai_ui`, vignettes des images), ouverts
+//!   d'un clic (Fichiers, programme, visionneuse). Événements du pointeur hors des fenêtres et
+//!   touche Super seule reçus par la file du bureau de MaiCompositor.
+//! - Barre des tâches (`taskbar`) et menu MaiOS (`menu`) : surimpressions translucides.
+//! - Catalogue (`catalog`) : raccourcis natifs et applications Linux (`.desktop`).
 //!
-//!   name=Terminal
-//!   prefix=shell-
-//!   color=1ABC9C
-//!
-//! Pour ajouter une app au bureau : créer un fichier .desk dans /desktop.
-//! Pour retirer une app : supprimer le fichier .desk.
-//!
-//! Les raccourcis par défaut (Terminal, TaskManager, Fichiers) sont créés
-//! au premier boot par `desktop_init::init()`.
+//! Aucune scrutation : la tâche dort sur une sonnette (`window_manager::Doorbell`) que sonnent
+//! la file du bureau, les deux surimpressions et tout changement de la liste des fenêtres
+//! (`window_manager::set_desktop_ring`) ; seule l'horloge la réveille chaque seconde.
 
 #![no_std]
 extern crate alloc;
-extern crate color;
-extern crate mai_ui;
-extern crate shapes;
-extern crate spawn;
-extern crate task;
-extern crate window_manager;
-extern crate scheduler;
-extern crate sleep;
-extern crate path;
-extern crate mod_mgmt;
-extern crate window_inner;
-extern crate root;
-extern crate fs_node;
-extern crate memfs;
-extern crate vfs_node;
-extern crate io;
-extern crate framebuffer;
-extern crate font;
-#[cfg(target_arch = "x86_64")]
-extern crate rtc;
+#[macro_use]
+extern crate log;
 
+mod catalog;
+mod desk;
+mod icons;
+mod menu;
 mod paint;
+mod taskbar;
 
-#[macro_use] extern crate log;
-
-use alloc::vec::Vec;
-use alloc::string::{String, ToString};
 use alloc::format;
-use color::Color;
-use shapes::{Coord, Rectangle};
-use window_inner::WindowInner;
-use fs_node::{FileOrDir, DirRef};
+use alloc::string::String;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
+use event_types::Event;
 use framebuffer::AlphaPixel;
-use mai_ui::theme;
-use paint::{rgb, Canvas, Glyph, Rgb, SegStyle, BLACK, WHITE};
+use keycodes_ascii::{KeyAction, Keycode};
+use mpmc::Queue;
+use spin::Mutex;
+use time::{Duration, Instant};
+use window_inner::WindowInner;
+use window_manager::Doorbell;
+
+use catalog::App;
+use desk::Target;
+use icons::Icons;
+use mai_ui::files::FileKind;
+use mai_ui::icons::Icon;
+use paint::{rgb, Canvas, Rgb, SegStyle, BLACK, WHITE};
 
 // ================================================================
-// CONFIG
-// ================================================================
-const TASKBAR_H:       usize = 48;
-const ICON_W:          usize = 100;
-const ICON_H:          usize = 88;
-const ICON_TILE:       isize = 48;
-const ICON_GAP:        usize = 10;
-const DESKTOP_PAD_X:   usize = 20;
-const DESKTOP_PAD_Y:   usize = 22;
-const TASKBAR_BTN_W:   usize = 152;
-const TASKBAR_BTN_H:   usize = 36;
-const TASKBAR_BTN_GAP: usize = 6;
-const TASKBAR_BTN_X0:  usize = 62;
-
-// Palette locale (Tokyo Night) en complément de mai_ui::theme
-const C_TASKBAR:   Rgb = rgb(0x12131F);
-const C_TEXT:      Rgb = rgb(0xE4E9FF);
-const C_TEXT_SOFT: Rgb = rgb(0xA9B1D6);
-const C_TEXT_DIM:  Rgb = rgb(0x737AA2);
-
-// ================================================================
-// FORMAT DES RACCOURCIS .desk
-// ================================================================
-//
-// Fichier texte UTF-8, une clé=valeur par ligne :
-//   name=Terminal          ← nom affiché sous l'icône
-//   prefix=shell-          ← préfixe du crate dans le namespace
-//   color=1ABC9C           ← couleur hex RGB sans #
-//
-// Les lignes commençant par # sont ignorées.
-
-#[derive(Clone)]
-struct ShortcutDef {
-    name:   String,
-    prefix: String,
-    color:  Color,
-}
-
-/// Parse un fichier .desk (contenu texte) en ShortcutDef.
-fn parse_desk(content: &str) -> Option<ShortcutDef> {
-    let mut name   = None;
-    let mut prefix = None;
-    let mut color  = None;
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
-        if let Some(v) = line.strip_prefix("name=")   { name   = Some(v.to_string()); }
-        if let Some(v) = line.strip_prefix("prefix=") { prefix = Some(v.to_string()); }
-        if let Some(v) = line.strip_prefix("color=")  {
-            let rgb = u32::from_str_radix(v.trim(), 16).unwrap_or(0xC0CAF5);
-            color = Some(Color::new(rgb));
-        }
-    }
-
-    Some(ShortcutDef {
-        name:   name?,
-        prefix: prefix?,
-        color:  color.unwrap_or(Color::new(0x00C0CAF5)),
-    })
-}
-
-// ================================================================
-// LECTURE DU DOSSIER BUREAU
+// CONFIGURATION
 // ================================================================
 
-/// Lit `root:/desktop/` et retourne tous les raccourcis valides.
-fn load_shortcuts() -> Vec<ShortcutDef> {
-    let desktop_dir = {
-        let root = root::get_root();
-        // Drop lock immédiatement après get
-        let dir = root.lock().get("desktop");
-        match dir {
-            Some(FileOrDir::Dir(d)) => d,
-            _ => {
-                warn!("[explorer] root:/desktop/ introuvable — bureau vide");
-                return Vec::new();
-            }
-        }
-    };
+const ICON_W: isize = 118;
+const ICON_H: isize = 104;
+const ICON_SIZE: usize = 48;
+const ICON_GAP: isize = 10;
+const DESKTOP_PAD_X: isize = 20;
+const DESKTOP_PAD_Y: isize = 22;
+/// Un lancement sans fenêtre au bout de ce délai est oublié.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(120);
 
-    let names = desktop_dir.lock().list();
-    let mut shortcuts = Vec::new();
+// Palette (Tokyo Night).
+pub(crate) const C_ACCENT: Rgb = rgb(0x7AA2F7);
+pub(crate) const C_PURPLE: Rgb = rgb(0xBB9AF7);
+pub(crate) const C_TEXT: Rgb = rgb(0xE4E9FF);
+pub(crate) const C_TEXT_SOFT: Rgb = rgb(0xA9B1D6);
+pub(crate) const C_TEXT_DIM: Rgb = rgb(0x737AA2);
 
-    for name in &names {
-        if !name.ends_with(".desk") { continue; }
+/// Sonnette de la tâche de l'explorateur.
+static BELL: Doorbell = Doorbell::new();
 
-        let file = match desktop_dir.lock().get(name) {
-            Some(FileOrDir::File(f)) => f,
-            _ => continue,
-        };
-
-        // Lire le contenu du fichier
-        let len = file.lock().len();
-        let mut buf = alloc::vec![0u8; len];
-        use io::ByteReader;
-        let _ = file.lock().read_at(&mut buf, 0);
-
-        if let Ok(text) = core::str::from_utf8(&buf) {
-            if let Some(def) = parse_desk(text) {
-                shortcuts.push(def);
-            }
-        }
-    }
-
-    shortcuts
-}
-
-// ================================================================
-// ICÔNE
-// ================================================================
-struct Icon {
-    x: isize, y: isize,
-    app_path: String,
-    name:     String,
-    color:    Color,
-    glyph:    Glyph,
-    hovered:  bool,
-}
-
-/// Choisit le pictogramme d'une app d'après le préfixe de son crate.
-fn glyph_for(def: &ShortcutDef) -> Glyph {
-    match def.prefix.as_str() {
-        "shell-"        => Glyph::Terminal,
-        "task_manager-" => Glyph::Monitor,
-        "file_manager-" => Glyph::Folder,
-        _ => Glyph::Letter(
-            def.name.chars().next().map(|c| c.to_ascii_uppercase()).unwrap_or('?'),
-        ),
-    }
-}
-
-impl Icon {
-    fn hit(&self, px: isize, py: isize) -> bool {
-        px >= self.x && px < self.x + ICON_W as isize
-        && py >= self.y && py < self.y + ICON_H as isize
-    }
-}
-
-/// Construit la liste des icônes depuis les raccourcis lus dans /desktop.
-fn build_icons(shortcuts: &[ShortcutDef], sh: usize) -> Vec<Icon> {
-    // Les icônes s'empilent en colonnes à gauche, de haut en bas.
-    let per_col = ((sh.saturating_sub(TASKBAR_H + DESKTOP_PAD_Y)) / (ICON_H + ICON_GAP)).max(1);
-
-    let ns_dir = match task::with_current_task(|t| t.namespace.dir().clone()) {
-        Ok(d)  => d,
-        Err(_) => { error!("[explorer] no current task"); return Vec::new(); }
-    };
-
-    let mut icons = Vec::new();
-    let mut idx = 0usize;
-
-    for def in shortcuts {
-        // Cherche le crate dans le namespace (ex: "shell-abc123")
-        if let Some(file) = ns_dir.get_file_starting_with(&def.prefix) {
-            let full = file.lock().get_absolute_path();
-            let col  = idx / per_col;
-            let row  = idx % per_col;
-            icons.push(Icon {
-                x:        (DESKTOP_PAD_X + col * (ICON_W + ICON_GAP)) as isize,
-                y:        (DESKTOP_PAD_Y + row * (ICON_H + ICON_GAP)) as isize,
-                app_path: full,
-                name:     def.name.clone(),
-                color:    def.color,
-                glyph:    glyph_for(def),
-                hovered:  false,
-            });
-            idx += 1;
-        } else {
-            warn!("[explorer] App '{}' (prefix='{}') introuvable dans le namespace",
-                  def.name, def.prefix);
-        }
-    }
-
-    icons
-}
-
-// ================================================================
-// APP EN COURS (taskbar)
-// ================================================================
-#[derive(PartialEq, Clone, Copy)]
-enum AppState { Normal, Minimized }
-
-struct RunningApp {
-    name:         String,
-    color:        Color,
-    task:         task::JoinableTaskRef,
-    task_id:      usize,
-    state:        AppState,
-    btn_hov:      bool,
-    window_seen:  bool,
-    window_ref:   Option<alloc::sync::Arc<spin::Mutex<WindowInner>>>,
-}
-
-impl RunningApp {
-    fn is_minimized(&self) -> bool { self.state == AppState::Minimized }
-
-    fn update_window_seen(&mut self) {
-        if self.window_seen { return; }
-        if let Some(wm_ref) = window_manager::WINDOW_MANAGER.get() {
-            let wm = wm_ref.lock();
-            if let Some(win) = wm.get_window_by_task_id(self.task_id) {
-                self.window_seen = true;
-                self.window_ref = Some(win);
-                return;
-            }
-            if let Some(active) = wm.get_active_window() {
-                let win_tid = active.lock().task_id;
-                if let Some(wtid) = win_tid {
-                    if wtid > self.task_id && wtid < self.task_id + 10 {
-                        self.window_seen = true;
-                        self.window_ref = Some(active);
-                    }
-                }
-            }
-        }
-    }
-
-    fn should_remove(&self) -> bool {
-        if self.task.has_exited() { return true; }
-        if self.window_seen {
-            if let Some(ref win) = self.window_ref {
-                if let Some(wm_ref) = window_manager::WINDOW_MANAGER.get() {
-                    let tid = win.lock().task_id.unwrap_or(0);
-                    return wm_ref.lock().get_window_by_task_id(tid).is_none();
-                }
-            }
-        }
-        false
-    }
-
-    fn btn_rect(&self, sh: usize, i: usize) -> Rectangle {
-        let x = (TASKBAR_BTN_X0 + i * (TASKBAR_BTN_W + TASKBAR_BTN_GAP)) as isize;
-        let y = (sh - TASKBAR_H + (TASKBAR_H - TASKBAR_BTN_H) / 2) as isize;
-        Rectangle {
-            top_left:     Coord::new(x, y),
-            bottom_right: Coord::new(x + TASKBAR_BTN_W as isize, y + TASKBAR_BTN_H as isize),
-        }
-    }
+fn ring() {
+    BELL.ring();
 }
 
 // ================================================================
 // HORLOGE
 // ================================================================
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Clock {
-    hour:  u8,
-    min:   u8,
-    day:   u8,
-    month: u8,
-    year:  u16,
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Clock {
+    pub hour: u8,
+    pub min: u8,
+    pub day: u8,
+    pub month: u8,
+    pub year: u16,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -312,440 +90,694 @@ fn read_clock() -> Option<Clock> {
     if t.months == 0 || t.months > 12 || t.days == 0 || t.days > 31 {
         return None;
     }
-    Some(Clock {
-        hour:  t.hours % 24,
-        min:   t.minutes % 60,
-        day:   t.days,
-        month: t.months,
-        year:  2000 + t.years as u16,
-    })
+    Some(Clock { hour: t.hours % 24, min: t.minutes % 60, day: t.days, month: t.months, year: 2000 + t.years as u16 })
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn read_clock() -> Option<Clock> { None }
+fn read_clock() -> Option<Clock> {
+    None
+}
 
 const JOURS: [&str; 7] = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
 const MOIS: [&str; 12] = [
-    "janvier", "février", "mars", "avril", "mai", "juin",
-    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+    "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre",
 ];
 
 /// Jour de la semaine (0 = dimanche), algorithme de Sakamoto.
 fn weekday(year: u16, month: u8, day: u8) -> usize {
     const T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
     let mut y = year as i32;
-    if month < 3 { y -= 1; }
+    if month < 3 {
+        y -= 1;
+    }
     let m = (month.clamp(1, 12) - 1) as usize;
     (y + y / 4 - y / 100 + y / 400 + T[m] + day as i32).rem_euclid(7) as usize
 }
 
 impl Clock {
     fn long_date(&self) -> String {
-        format!("{} {} {} {}",
-                JOURS[weekday(self.year, self.month, self.day)],
-                self.day,
-                MOIS[(self.month.clamp(1, 12) - 1) as usize],
-                self.year)
+        format!(
+            "{} {} {} {}",
+            JOURS[weekday(self.year, self.month, self.day)],
+            self.day,
+            MOIS[(self.month.clamp(1, 12) - 1) as usize],
+            self.year
+        )
     }
 
-    fn short_date(&self) -> String {
+    pub(crate) fn short_date(&self) -> String {
         format!("{:02}/{:02}/{}", self.day, self.month, self.year)
     }
 
     fn greeting(&self) -> &'static str {
         match self.hour {
-            5..=11  => "Bonjour",
+            5..=11 => "Bonjour",
             12..=17 => "Bon après-midi",
-            _       => "Bonsoir",
+            _ => "Bonsoir",
         }
     }
 }
 
 // ================================================================
-// DESSIN
+// BUREAU
 // ================================================================
 
-fn redraw(wall: &[AlphaPixel], icons: &[Icon], apps: &[RunningApp], clock: Option<Clock>) {
-    let wm_ref = match window_manager::WINDOW_MANAGER.get() { Some(r) => r, None => return };
-    let mut wm = wm_ref.lock();
-    {
-        let fb = wm.get_bottom_framebuffer_mut();
-        let (w, h) = (fb.width(), fb.height());
-        let buf = fb.buffer_mut();
-        if buf.len() != wall.len() || buf.len() < w * h {
-            warn!("[explorer] taille du fond d'écran incohérente");
-            return;
-        }
-        // Le fond d'écran est calculé une seule fois puis recopié.
-        buf.copy_from_slice(wall);
+/// Place d'une entrée du bureau (même indice que `Desktop::entries`).
+struct DeskIcon {
+    x: isize,
+    y: isize,
+}
 
-        let mut c = Canvas::new(buf, w, h);
-        draw_clock_widget(&mut c, clock);
-        for icon in icons {
-            draw_icon(&mut c, icon);
-        }
-        draw_taskbar(&mut c, apps, clock);
+impl DeskIcon {
+    fn hit(&self, px: isize, py: isize) -> bool {
+        px >= self.x && px < self.x + ICON_W && py >= self.y && py < self.y + ICON_H
     }
-    let _ = wm.refresh_all();
-    wm.present();
+
+    fn rect(&self) -> shapes::Rectangle {
+        shapes::Rectangle {
+            top_left: shapes::Coord::new(self.x - 8, self.y - 8),
+            bottom_right: shapes::Coord::new(self.x + ICON_W + 8, self.y + ICON_H + 8),
+        }
+    }
+}
+
+/// `n` entrées rangées en colonnes à gauche, de haut en bas, au-dessus de la barre des tâches.
+fn layout_icons(n: usize, sh: usize) -> Vec<DeskIcon> {
+    let usable = sh as isize - taskbar::HEIGHT as isize - DESKTOP_PAD_Y;
+    let per_col = (usable / (ICON_H + ICON_GAP)).max(1);
+    (0..n as isize)
+        .map(|k| {
+            let (col, row) = (k / per_col, k % per_col);
+            DeskIcon { x: DESKTOP_PAD_X + col * (ICON_W + ICON_GAP), y: DESKTOP_PAD_Y + row * (ICON_H + ICON_GAP) }
+        })
+        .collect()
+}
+
+/// Apparence d'une entrée du bureau.
+enum Look {
+    /// Icône d'application (thème ou tuile).
+    Image(Arc<mai_icons::Image>),
+    /// Vignette d'une image.
+    Thumb(Arc<icons::Thumb>),
+    /// Icône de fichier de `mai_ui` (comme dans Fichiers).
+    Icon(Icon),
+}
+
+struct Desktop {
+    wall: Vec<AlphaPixel>,
+    /// Contenu de `/desktop` et place de chaque entrée.
+    entries: Vec<desk::Entry>,
+    icons: Vec<DeskIcon>,
+    /// Empreinte du dossier à la dernière lecture.
+    fingerprint: u64,
+    screen_h: usize,
+    hover: Option<usize>,
+    press: Option<usize>,
+    left: bool,
+    clock: Option<Clock>,
+}
+
+impl Desktop {
+    /// Relit `/desktop` si son contenu a changé ; rend `true` s'il faut tout redessiner.
+    fn rescan(&mut self, apps: &mut Vec<App>, cache: &mut Icons, force: bool) -> bool {
+        let fp = desk::fingerprint();
+        if !force && fp == self.fingerprint {
+            return false;
+        }
+        self.fingerprint = fp;
+        self.entries = desk::scan(apps);
+        self.icons = layout_icons(self.entries.len(), self.screen_h);
+        self.hover = None;
+        self.press = None;
+        let paths: Vec<&str> = self.entries.iter().map(|e| e.path.as_str()).collect();
+        cache.keep_thumbs(&paths);
+        true
+    }
+
+    /// Redessine le bureau et abîme `damage` (`None` : tout).
+    fn redraw(&self, apps: &[App], cache: &mut Icons, damage: Option<shapes::Rectangle>) {
+        let ok = window_manager::with_desktop_mut(|fb| {
+            let (w, h) = (fb.width(), fb.height());
+            let buf = fb.buffer_mut();
+            if buf.len() != self.wall.len() || buf.len() < w * h {
+                warn!("[explorer] taille du fond d'écran incohérente");
+                return false;
+            }
+            buf.copy_from_slice(&self.wall);
+            let mut c = Canvas::new(buf, w, h);
+            draw_clock_widget(&mut c, self.clock);
+            for (k, (icon, e)) in self.icons.iter().zip(&self.entries).enumerate() {
+                let look = match e.target {
+                    Target::App(i) => Look::Image(cache.app(&apps[i], ICON_SIZE)),
+                    Target::Folder => Look::Icon(Icon::Folder),
+                    Target::File(FileKind::Image) => {
+                        cache.thumb(&e.path, e.len, ICON_SIZE).map(Look::Thumb).unwrap_or(Look::Icon(Icon::Image))
+                    }
+                    Target::File(kind) => Look::Icon(kind.icon()),
+                };
+                draw_icon(&mut c, icon, &e.label, &look, self.hover == Some(k), self.press == Some(k));
+            }
+            true
+        });
+        if ok == Some(true) {
+            match damage {
+                Some(r) => window_manager::damage(r),
+                None => window_manager::damage_all(),
+            }
+        }
+    }
 }
 
 /// Grande horloge en haut à droite du bureau.
 fn draw_clock_widget(c: &mut Canvas, clock: Option<Clock>) {
-    let clk = match clock { Some(k) => k, None => return };
-    let accent: Rgb = theme::C_ACCENT.into();
-    let purple: Rgb = theme::C_PURPLE.into();
-
+    let Some(clk) = clock else { return };
     let st = SegStyle { w: 30, h: 56, t: 7 };
     let digits_w = 4 * st.w + 2 * (st.w / 3) + 2 * (st.w / 3 + 2) + st.t;
     let right = c.width() - 44;
     let top = 38;
     let x = right - digits_w;
 
-    // Halo coloré diffus derrière les chiffres, ombre, puis chiffres.
-    c.clock_digits(x - 1, top + 1, clk.hour, clk.min, st, accent, 40);
+    c.clock_digits(x - 1, top + 1, clk.hour, clk.min, st, C_ACCENT, 40);
     c.clock_digits(x + 2, top + 4, clk.hour, clk.min, st, BLACK, 120);
     c.clock_digits(x, top, clk.hour, clk.min, st, C_TEXT, 255);
 
-    // Petit trait d'accent en dégradé
     let bar_y = top + st.h + 14;
     for i in 0..40isize {
-        let col = accent.mix(purple, (i * 256 / 40) as u32);
+        let col = C_ACCENT.mix(C_PURPLE, (i * 256 / 40) as u32);
         c.fill(right - 40 + i, bar_y, 1, 3, col, 255);
     }
-
     let date = clk.long_date();
     let dw = paint::text_width(&date, 1, 1);
     c.text_ex(right - dw + 1, bar_y + 13, &date, 1, 1, BLACK, 160);
     c.text_ex(right - dw, bar_y + 12, &date, 1, 1, C_TEXT, 255);
-
     let greet = format!("{}, bienvenue sur MaiOS", clk.greeting());
     let gw = paint::text_width(&greet, 1, 0);
     c.text_shadow(right - gw, bar_y + 32, &greet, C_TEXT_SOFT);
 }
 
-/// Icône du bureau : tuile en dégradé + pictogramme + libellé.
-fn draw_icon(c: &mut Canvas, icon: &Icon) {
+/// Entrée du bureau : icône (ombre douce), libellé sur deux lignes au plus.
+fn draw_icon(c: &mut Canvas, icon: &DeskIcon, name: &str, look: &Look, hovered: bool, pressed: bool) {
     let (x, y) = (icon.x, icon.y);
-    let (w, h) = (ICON_W as isize, ICON_H as isize);
-
-    if icon.hovered {
-        c.rrect(x, y, w, h, 12, WHITE, 30);
-        c.rrect_outline(x, y, w, h, 12, WHITE, 55);
+    if hovered || pressed {
+        c.rrect(x, y, ICON_W, ICON_H, 12, WHITE, if pressed { 44 } else { 28 });
+        c.rrect_outline(x, y, ICON_W, ICON_H, 12, WHITE, 55);
     }
-
-    let base: Rgb = icon.color.into();
-    let tx = x + (w - ICON_TILE) / 2;
-    let ty = y + 8;
-    c.shadow(tx, ty, ICON_TILE, ICON_TILE, 13, 150);
-    c.rrect_grad(tx, ty, ICON_TILE, ICON_TILE, 13, base.lighten(70), base.darken(70), 255);
-    c.rrect_outline(tx, ty, ICON_TILE, ICON_TILE, 13, WHITE, 45);
-    c.glyph(icon.glyph, tx, ty, ICON_TILE, base);
-
-    let max_chars = (w / paint::CHAR_W) as usize;
-    let label: String = icon.name.chars().take(max_chars).collect();
-    let lw = paint::text_width(&label, 1, 0);
-    c.text_shadow(x + (w - lw) / 2, ty + ICON_TILE + 10, &label, C_TEXT);
-}
-
-/// Logo « M » du bouton MaiOS (avec ombre).
-fn draw_mai_logo(c: &mut Canvas, x: isize, y: isize) {
-    for &(d, col, a) in &[(1isize, BLACK, 70u32), (0, WHITE, 255)] {
-        let (ox, oy) = (x + d, y + d);
-        c.fill(ox + 9, oy + 10, 3, 16, col, a);
-        c.fill(ox + 24, oy + 10, 3, 16, col, a);
-        for i in 0..7 {
-            c.fill(ox + 11 + i, oy + 11 + i, 2, 2, col, a);
-            c.fill(ox + 23 - i, oy + 11 + i, 2, 2, col, a);
+    let s = ICON_SIZE as isize;
+    let (ix, iy) = (x + (ICON_W - s) / 2, y + 8);
+    match look {
+        Look::Image(img) => {
+            c.shadow(ix + 4, iy + 4, s - 8, s - 8, 12, 110);
+            c.image(ix, iy, img, 255);
+        }
+        Look::Thumb(t) => {
+            // Photo posée : ombre, liseré blanc autour de la partie visible.
+            let (w, h) = (t.w as isize, t.h as isize);
+            let (tx, ty) = (ix + (s - w) / 2, iy + (s - h) / 2);
+            c.shadow(tx + 2, ty + 3, w, h, 3, 120);
+            c.fill(tx - 2, ty - 2, w + 4, h + 4, WHITE, 235);
+            c.image(ix, iy, &t.img, 255);
+        }
+        Look::Icon(i) => {
+            c.shadow(ix + 8, iy + 8, s - 16, s - 12, 8, 90);
+            let (buf, w, h) = c.raw();
+            let mut u = mai_ui::canvas::Canvas::new(buf, w, h);
+            mai_ui::icons::draw(&mut u, *i, ix, iy, s);
         }
     }
-}
-
-/// Barre des tâches translucide : bouton MaiOS, apps ouvertes, horloge.
-fn draw_taskbar(c: &mut Canvas, apps: &[RunningApp], clock: Option<Clock>) {
-    let (w, h) = (c.width(), c.height());
-    let th = TASKBAR_H as isize;
-    let ty = h - th;
-    let accent: Rgb = theme::C_ACCENT.into();
-    let purple: Rgb = theme::C_PURPLE.into();
-
-    // Ombre douce au-dessus de la barre, puis verre fumé.
-    for i in 0..16isize {
-        c.fill(0, ty - 16 + i, w, 1, BLACK, (i as u32 + 1) * 4);
-    }
-    c.fill(0, ty, w, th, C_TASKBAR, 205);
-    c.fill(0, ty, w, 1, WHITE, 32);
-    c.fill(0, ty + 1, w, 1, WHITE, 8);
-
-    // Bouton MaiOS
-    let (bx, by, bs) = (12isize, ty + 6, 36isize);
-    c.shadow(bx, by, bs, bs, 10, 90);
-    c.rrect_grad(bx, by, bs, bs, 10, accent.lighten(40), purple, 255);
-    c.rrect_outline(bx, by, bs, bs, 10, WHITE, 60);
-    draw_mai_logo(c, bx, by);
-
-    // Séparateur
-    c.fill(TASKBAR_BTN_X0 as isize - 7, ty + 12, 1, th - 24, WHITE, 32);
-
-    // Applications ouvertes
-    for (i, app) in apps.iter().enumerate() {
-        let r = app.btn_rect(h as usize, i);
-        let (x, y) = (r.top_left.x, r.top_left.y);
-        let (bw, bh) = (TASKBAR_BTN_W as isize, TASKBAR_BTN_H as isize);
-        let minimized = app.is_minimized();
-        let (fill_a, edge_a) = if app.btn_hov { (44, 64) }
-                               else if minimized { (10, 20) }
-                               else { (26, 42) };
-        c.rrect(x, y, bw, bh, 9, WHITE, fill_a);
-        c.rrect_outline(x, y, bw, bh, 9, WHITE, edge_a);
-
-        let col: Rgb = app.color.into();
-        c.rrect_grad(x + 11, y + (bh - 14) / 2, 14, 14, 7,
-                     col.lighten(70), col.darken(40), if minimized { 140 } else { 255 });
-
-        let max_chars = ((bw - 44) / paint::CHAR_W) as usize;
-        let label: String = app.name.chars().take(max_chars).collect();
-        c.text(x + 34, y + (bh - paint::CHAR_H) / 2, &label,
-               if minimized { C_TEXT_DIM } else { C_TEXT });
-
-        if minimized {
-            c.rrect(x + bw / 2 - 3, y + bh - 4, 6, 3, 1, C_TEXT_DIM, 255);
-        } else {
-            c.rrect(x + bw / 2 - 12, y + bh - 4, 24, 3, 1, accent, 255);
-        }
-    }
-
-    // Horloge compacte
-    let right = w - 16;
-    match clock {
-        Some(clk) => {
-            let time = format!("{:02}:{:02}", clk.hour, clk.min);
-            let date = clk.short_date();
-            c.text(right - paint::text_width(&time, 1, 0), ty + 7, &time, C_TEXT);
-            c.text(right - paint::text_width(&date, 1, 0), ty + 25, &date, C_TEXT_SOFT);
-        }
-        None => {
-            let s = "MaiOS";
-            c.text(right - paint::text_width(s, 1, 0), ty + 16, s, C_TEXT_SOFT);
-        }
+    let lines = paint::wrap2(name, ICON_W - 6);
+    for (k, line) in lines.iter().enumerate() {
+        let lw = paint::text_width(line, 1, 0);
+        c.text_shadow(x + (ICON_W - lw) / 2, iy + s + 8 + k as isize * (paint::CHAR_H + 1), line, C_TEXT);
     }
 }
 
 // ================================================================
-// LANCER UNE APP
+// FENÊTRES ET LANCEMENTS
 // ================================================================
-fn spawn_app(icon: &Icon) -> Option<RunningApp> {
-    let p = path::Path::new(&icon.app_path);
-    match mod_mgmt::create_application_namespace(None) {
-        Ok(ns) => match spawn::new_application_task_builder(&p, Some(ns)) {
-            Ok(b) => match b.name(format!("app_{}", icon.name)).spawn() {
-                Ok(j) => {
-                    let id = j.0.id;
-                    Some(RunningApp {
-                        name:        icon.name.clone(),
-                        color:       icon.color,
-                        task:        j,
-                        task_id:     id,
-                        state:       AppState::Normal,
-                        btn_hov:     false,
-                        window_seen: false,
-                        window_ref:  None,
-                    })
+
+/// Fenêtre vue par la barre des tâches.
+struct Win {
+    serial: u64,
+    window: Arc<Mutex<WindowInner>>,
+    active: bool,
+    hidden: bool,
+    title: String,
+    app_id: String,
+    task_id: Option<usize>,
+}
+
+fn snapshot() -> Vec<Win> {
+    let Some(wm) = window_manager::WINDOW_MANAGER.get() else { return Vec::new() };
+    let entries = wm.lock().windows();
+    entries
+        .into_iter()
+        .map(|e| {
+            let (serial, title, app_id, task_id) = {
+                let i = e.window.lock();
+                (i.serial, i.title.clone(), i.app_id.clone(), i.task_id)
+            };
+            Win { serial, window: e.window, active: e.active, hidden: e.hidden, title, app_id, task_id }
+        })
+        .collect()
+}
+
+/// Appli du catalogue d'une fenêtre.
+fn app_of<'a>(apps: &'a [App], w: &Win) -> Option<(usize, &'a App)> {
+    apps.iter().enumerate().find(|(_, a)| a.matches(&w.app_id))
+}
+
+/// Lancement en attente de sa première fenêtre.
+struct Pending {
+    id: u64,
+    app: usize,
+    task: task::JoinableTaskRef,
+    /// Numéro de la dernière fenêtre existante au lancement.
+    floor: u64,
+    started: Instant,
+}
+
+/// Lance la crate d'application `crate_path` avec `args`, dans un espace de noms neuf.
+fn spawn_crate(crate_path: &str, args: Vec<String>, name: String) -> Result<task::JoinableTaskRef, String> {
+    let p = path::Path::new(crate_path);
+    let ns = mod_mgmt::create_application_namespace(None).map_err(|e| format!("espace de noms : {e}"))?;
+    let b = spawn::new_application_task_builder(&p, Some(ns)).map_err(|e| format!("constructeur : {e}"))?;
+    b.argument(args).name(name).spawn().map_err(|e| format!("lancement : {e}"))
+}
+
+fn spawn_app(app: &App) -> Result<task::JoinableTaskRef, String> {
+    spawn_crate(&app.path, app.args.clone(), format!("app_{}", app.id))
+}
+
+/// Lance l'appli dont la crate commence par `prefix`.
+fn spawn_prefix(prefix: &str, args: Vec<String>, name: &str) -> Result<task::JoinableTaskRef, String> {
+    let path = catalog::crate_path(prefix).ok_or_else(|| format!("application « {} » introuvable", prefix.trim_end_matches('-')))?;
+    spawn_crate(&path, args, String::from(name))
+}
+
+// ================================================================
+// ÉTAT
+// ================================================================
+
+struct Explorer {
+    apps: Vec<App>,
+    cache: Icons,
+    desktop: Desktop,
+    taskbar: taskbar::Taskbar,
+    menu: menu::Menu,
+    pending: Vec<Pending>,
+    next_pending: u64,
+    /// Tâches lancées, gardées jusqu'à leur fin.
+    children: Vec<task::JoinableTaskRef>,
+    /// Fenêtres réduites par « afficher le bureau » (restaurées au clic suivant).
+    stashed: Vec<Weak<Mutex<WindowInner>>>,
+    /// Icônes des fenêtres déjà résolues : numéro → (app_id, icône).
+    win_icons: alloc::collections::BTreeMap<u64, (String, Arc<mai_icons::Image>)>,
+}
+
+impl Explorer {
+    fn launch(&mut self, ai: usize) {
+        if self.pending.iter().any(|p| p.app == ai) {
+            return; // déjà en cours de lancement
+        }
+        let app = &self.apps[ai];
+        if app.single {
+            // Programme Linux à instance unique : ramener sa fenêtre.
+            if let Some(w) = snapshot().into_iter().filter(|w| app.matches(&w.app_id)).last() {
+                if let Some(wm) = window_manager::WINDOW_MANAGER.get() {
+                    let _ = wm.lock().set_active(&w.window, true);
                 }
-                Err(e) => { warn!("[explorer] Spawn: {}", e); None }
-            },
-            Err(e) => { warn!("[explorer] Builder: {}", e); None }
-        },
-        Err(e) => { warn!("[explorer] Namespace: {}", e); None }
+                return;
+            }
+        }
+        let floor = snapshot().iter().map(|w| w.serial).max().unwrap_or(0);
+        match spawn_app(app) {
+            Ok(task) => {
+                info!("[explorer] lancement de {} (tâche {})", app.name, task.0.id);
+                self.children.push(task.clone());
+                self.next_pending += 1;
+                self.pending.push(Pending { id: self.next_pending, app: ai, task, floor, started: Instant::now() });
+            }
+            Err(e) => warn!("[explorer] {} : {e}", app.name),
+        }
+    }
+
+    /// Ouvre l'entrée `k` du bureau : appli, dossier (Fichiers), programme Linux (dans
+    /// l'environnement d'une session Wayland si `apprun.sh` est là), WAD (Doom), sinon
+    /// Fichiers sur le fichier (visionneuse de texte, d'images, hexadécimale).
+    fn open_entry(&mut self, k: usize) {
+        let Some(e) = self.desktop.entries.get(k) else { return };
+        let path = e.path.clone();
+        let s = |v: &str| String::from(v);
+        let r = match e.target {
+            Target::App(i) => return self.launch(i),
+            Target::File(FileKind::ElfExec | FileKind::ElfDyn) => {
+                let args = if catalog::exists(catalog::APPRUN) {
+                    alloc::vec![s("/bin/bash"), s(catalog::APPRUN), s("31536000"), path.clone()]
+                } else {
+                    alloc::vec![path.clone()]
+                };
+                spawn_prefix("run-", args, "run")
+            }
+            Target::File(FileKind::Wad) => spawn_prefix("run-", alloc::vec![s("doom"), s("-iwad"), path.clone()], "doom"),
+            Target::Folder | Target::File(_) => spawn_prefix("file_manager-", alloc::vec![path.clone()], "file_manager"),
+        };
+        match r {
+            Ok(t) => {
+                info!("[explorer] ouverture de {path}");
+                self.children.push(t);
+            }
+            Err(e) => warn!("[explorer] {path} : {e}"),
+        }
+    }
+
+    /// Rattache les nouvelles fenêtres aux lancements en cours, oublie les lancements finis.
+    fn resolve_pending(&mut self, wins: &[Win]) {
+        let apps = &self.apps;
+        self.pending.retain(|p| {
+            let app = &apps[p.app];
+            let found = wins.iter().find(|w| w.serial > p.floor && (app.matches(&w.app_id) || w.task_id == Some(p.task.0.id)));
+            if let Some(w) = found {
+                if w.app_id.is_empty() {
+                    w.window.lock().app_id = app.id.clone();
+                }
+                return false;
+            }
+            !p.task.has_exited() && p.started.elapsed() < LAUNCH_TIMEOUT
+        });
+        self.children.retain(|t| !t.has_exited());
+    }
+
+    fn taskbar_model(&mut self, wins: &[Win], clock: Option<Clock>) -> taskbar::Model {
+        let mut items = Vec::with_capacity(wins.len() + self.pending.len());
+        self.win_icons.retain(|s, _| wins.iter().any(|w| w.serial == *s));
+        for w in wins {
+            let app = app_of(&self.apps, w);
+            let icon = match self.win_icons.get(&w.serial) {
+                Some((id, img)) if *id == w.app_id => img.clone(),
+                _ => {
+                    let img = self.cache.window(app.map(|a| a.1), &w.app_id, &w.title, 24);
+                    self.win_icons.insert(w.serial, (w.app_id.clone(), img.clone()));
+                    img
+                }
+            };
+            let title = if !w.title.is_empty() {
+                w.title.clone()
+            } else if let Some((_, a)) = app {
+                a.name.clone()
+            } else if !w.app_id.is_empty() {
+                w.app_id.clone()
+            } else {
+                String::from("Fenêtre")
+            };
+            let state = if w.hidden {
+                taskbar::State::Hidden
+            } else if w.active {
+                taskbar::State::Active
+            } else {
+                taskbar::State::Visible
+            };
+            items.push(taskbar::Item { key: taskbar::Key::Window(w.serial), title, icon, state });
+        }
+        for p in &self.pending {
+            let app = &self.apps[p.app];
+            let phase = ((p.started.elapsed().as_millis() / 300) % 3) as u8;
+            items.push(taskbar::Item {
+                key: taskbar::Key::Pending(p.id),
+                title: format!("{}...", app.name),
+                icon: self.cache.app(app, 24),
+                state: taskbar::State::Launching(phase),
+            });
+        }
+        taskbar::Model { items, menu_open: self.menu.open, clock, desktop_shown: !self.stashed.is_empty() }
+    }
+
+    fn on_taskbar(&mut self, a: taskbar::Action) {
+        let Some(wm) = window_manager::WINDOW_MANAGER.get() else { return };
+        match a {
+            taskbar::Action::ToggleMenu => self.toggle_menu(),
+            taskbar::Action::Click(taskbar::Key::Window(s)) => {
+                if let Some(w) = snapshot().into_iter().find(|w| w.serial == s) {
+                    let mut wm = wm.lock();
+                    if w.active && !w.hidden {
+                        let _ = wm.hide_window(&w.window);
+                    } else {
+                        let _ = wm.set_active(&w.window, true);
+                    }
+                    self.stashed.clear();
+                }
+            }
+            taskbar::Action::Close(taskbar::Key::Window(s)) => {
+                if let Some(w) = snapshot().into_iter().find(|w| w.serial == s) {
+                    let _ = w.window.lock().send_event(Event::ExitEvent);
+                }
+            }
+            taskbar::Action::Click(taskbar::Key::Pending(_)) | taskbar::Action::Close(taskbar::Key::Pending(_)) => {}
+            taskbar::Action::ShowDesktop => self.show_desktop(),
+        }
+    }
+
+    /// Réduit toutes les fenêtres visibles ; au clic suivant, les restaure.
+    fn show_desktop(&mut self) {
+        let Some(wm) = window_manager::WINDOW_MANAGER.get() else { return };
+        let wins = snapshot();
+        let mut wm = wm.lock();
+        if self.stashed.is_empty() {
+            // La fenêtre active en dernier : elle reprend le focus à la restauration.
+            let mut order: Vec<&Win> = wins.iter().filter(|w| !w.hidden).collect();
+            order.sort_by_key(|w| w.active);
+            for w in order {
+                let _ = wm.hide_window(&w.window);
+                self.stashed.push(Arc::downgrade(&w.window));
+            }
+        } else {
+            let list: Vec<_> = self.stashed.drain(..).filter_map(|w| w.upgrade()).collect();
+            for w in &list {
+                let _ = wm.show_window(w);
+            }
+            if let Some(last) = list.last() {
+                let _ = wm.set_active(last, true);
+            }
+        }
+    }
+
+    fn toggle_menu(&mut self) {
+        if self.menu.open {
+            self.menu.hide();
+        } else {
+            self.menu.show(&self.apps);
+        }
+    }
+
+    fn on_menu(&mut self, a: menu::Action) {
+        match a {
+            menu::Action::Launch(i) => {
+                self.menu.hide();
+                self.launch(i);
+            }
+            menu::Action::Close => self.menu.hide(),
+            menu::Action::Reboot => {
+                info!("[explorer] redémarrage demandé");
+                #[cfg(target_arch = "x86_64")]
+                acpi::power::reboot();
+                #[cfg(not(target_arch = "x86_64"))]
+                self.menu.set_message(String::from("Redémarrage non pris en charge"));
+            }
+            menu::Action::Poweroff => {
+                info!("[explorer] extinction demandée");
+                #[cfg(target_arch = "x86_64")]
+                let r = acpi::power::poweroff();
+                #[cfg(not(target_arch = "x86_64"))]
+                let r: Result<(), &str> = Err("non pris en charge");
+                if let Err(e) = r {
+                    warn!("[explorer] extinction impossible : {e}");
+                    self.menu.set_message(format!("Extinction impossible : {e}"));
+                }
+            }
+        }
+    }
+
+    /// Événement de la file du bureau ; rend la zone du bureau à redessiner.
+    fn on_desktop(&mut self, ev: Event) -> Option<Option<shapes::Rectangle>> {
+        let d = &mut self.desktop;
+        match ev {
+            Event::MousePositionEvent(m) => {
+                let (x, y) = (m.coordinate.x, m.coordinate.y);
+                let hit = d.icons.iter().position(|i| i.hit(x, y));
+                let mut changed: Vec<usize> = Vec::new();
+                if hit != d.hover {
+                    changed.extend(d.hover.iter().chain(hit.iter()).copied());
+                    d.hover = hit;
+                }
+                if m.left_button_hold && !d.left {
+                    d.press = hit;
+                    changed.extend(hit);
+                } else if !m.left_button_hold && d.left {
+                    let p = d.press.take();
+                    changed.extend(p);
+                    if let (Some(k), true) = (p, p == hit) {
+                        d.left = false;
+                        let r = d.icons[k].rect();
+                        self.open_entry(k);
+                        return Some(Some(r));
+                    }
+                }
+                d.left = m.left_button_hold;
+                if changed.is_empty() {
+                    return None;
+                }
+                Some(changed.iter().map(|&k| d.icons[k].rect()).reduce(union))
+            }
+            Event::PointerLeave => {
+                d.left = false;
+                let k = d.hover.take().or(d.press.take())?;
+                Some(Some(d.icons[k].rect()))
+            }
+            Event::KeyboardEvent(k) => {
+                let e = k.key_event;
+                if matches!(e.keycode, Keycode::SuperKeyLeft | Keycode::SuperKeyRight) && e.action == KeyAction::Released {
+                    self.toggle_menu();
+                }
+                None
+            }
+            _ => None,
+        }
     }
 }
 
-// ================================================================
-// INIT DU BUREAU (crée /desktop avec les raccourcis par défaut)
-// ================================================================
-
-/// Contenu par défaut des fichiers .desk
-const DEFAULT_SHORTCUTS: &[(&str, &str, &str, &str)] = &[
-    // (nom_fichier, name, prefix, color_hex)
-    ("terminal.desk",    "Terminal",   "shell-",        "1ABC9C"),
-    ("taskmanager.desk", "TaskManager","task_manager-", "9B59B6"),
-    ("files.desk",       "Fichiers",   "file_manager-", "E0AF68"),
-];
-
-fn init_desktop() {
-    let root = root::get_root();
-
-    // Vérifie si /desktop existe déjà — drop le lock AVANT de créer
-    let desktop_exists = {
-        let locked = root.lock();
-        matches!(locked.get("desktop"), Some(FileOrDir::Dir(_)))
-    };
-    // lock complètement relâché ici avant tout appel récursif sur root
-
-    if desktop_exists {
-        info!("[explorer] /desktop existe déjà");
-        return;
-    }
-
-    let desktop: DirRef = match vfs_node::VFSDirectory::create("desktop".to_string(), root) {
-        Ok(d)  => d,
-        Err(e) => { error!("[explorer] Impossible de créer /desktop: {}", e); return; }
-    };
-
-    // Crée les fichiers .desk par défaut
-    for (filename, name, prefix, color) in DEFAULT_SHORTCUTS {
-        let content = format!("name={}\nprefix={}\ncolor={}\n", name, prefix, color);
-        let bytes = content.as_bytes();
-        match memfs::MemFile::create(filename.to_string(), &desktop) {
-            Ok(file) => {
-                use io::ByteWriter;
-                let mut locked = file.lock();
-                let _ = locked.write_at(bytes, 0);
-                info!("[explorer] Raccourci créé: /desktop/{}", filename);
-            }
-            Err(e) => warn!("[explorer] Impossible de créer {}: {}", filename, e),
-        }
+fn union(a: shapes::Rectangle, b: shapes::Rectangle) -> shapes::Rectangle {
+    shapes::Rectangle {
+        top_left: shapes::Coord::new(a.top_left.x.min(b.top_left.x), a.top_left.y.min(b.top_left.y)),
+        bottom_right: shapes::Coord::new(a.bottom_right.x.max(b.bottom_right.x), a.bottom_right.y.max(b.bottom_right.y)),
     }
 }
 
 // ================================================================
 // POINT D'ENTRÉE
 // ================================================================
+
 pub fn main(_args: Vec<String>) -> isize {
-    info!("[explorer] Starting...");
+    info!("[explorer] démarrage");
+    let Some(wm) = window_manager::WINDOW_MANAGER.get() else {
+        error!("[explorer] pas de gestionnaire de fenêtres");
+        return -1;
+    };
+    let (sw, sh) = wm.lock().get_screen_size();
+    BELL.bind_current();
 
-    let (sw, sh) = match window_manager::WINDOW_MANAGER.get() {
-        Some(r) => r.lock().get_screen_size(),
-        None => { error!("[explorer] No WM"); return -1; }
+    catalog::init_desktop();
+    let mut apps = catalog::load();
+    let mut cache = Icons::new();
+
+    let taskbar = match taskbar::Taskbar::new((sw, sh), ring) {
+        Ok(t) => t,
+        Err(e) => {
+            error!("[explorer] barre des tâches : {e}");
+            return -1;
+        }
+    };
+    let menu = match menu::Menu::new((sw, sh), taskbar::HEIGHT, ring) {
+        Ok(m) => m,
+        Err(e) => {
+            error!("[explorer] menu : {e}");
+            return -1;
+        }
     };
 
-    // -- Init bureau (crée /desktop si besoin) --
-    init_desktop();
-
-    // -- Charge les raccourcis depuis /desktop --
-    let shortcuts = load_shortcuts();
-    info!("[explorer] {} raccourci(s) trouvé(s) dans /desktop", shortcuts.len());
-
-    // -- Construit les icônes --
-    let mut icons = build_icons(&shortcuts, sh);
-    info!("[explorer] {} icône(s) affichée(s)", icons.len());
-
-    // -- Fond d'écran procédural (calculé une seule fois) --
-    let (fb_w, fb_h) = {
-        let wm = window_manager::WINDOW_MANAGER.get().unwrap().lock();
-        let fb = wm.get_bottom_framebuffer();
-        (fb.width(), fb.height())
-    };
+    let (fb_w, fb_h) = window_manager::with_desktop(|fb| (fb.width(), fb.height())).unwrap_or((sw, sh));
     let wall = paint::wallpaper(fb_w, fb_h);
-    info!("[explorer] Fond d'écran généré ({}x{}, écran {}x{})", fb_w, fb_h, sw, sh);
+    let mut desktop = Desktop {
+        wall,
+        entries: Vec::new(),
+        icons: Vec::new(),
+        fingerprint: 0,
+        screen_h: sh,
+        hover: None,
+        press: None,
+        left: false,
+        clock: read_clock(),
+    };
+    desktop.rescan(&mut apps, &mut cache, true);
 
-    let mut apps:     Vec<RunningApp> = Vec::new();
-    let mut dirty     = true;
-    let mut prev_left = false;
-    let mut clock     = read_clock();
-    let mut tick: u32 = 0;
+    let desk_events: Queue<Event> = Queue::with_capacity(256);
+    window_manager::set_desktop_ring(ring);
+    wm.lock().set_desktop_events(desk_events.clone());
 
+    let mut ex = Explorer {
+        apps,
+        cache,
+        desktop,
+        taskbar,
+        menu,
+        pending: Vec::new(),
+        next_pending: 0,
+        children: Vec::new(),
+        stashed: Vec::new(),
+        win_icons: alloc::collections::BTreeMap::new(),
+    };
+    ex.desktop.redraw(&ex.apps, &mut ex.cache, None);
+    info!("[explorer] bureau prêt : {} élément(s), écran {sw}x{sh}", ex.desktop.entries.len());
+
+    let mut next_clock = Instant::now() + Duration::from_secs(1);
     loop {
-        // Horloge : relue ~1 fois par seconde, redessin à chaque nouvelle minute.
-        tick = tick.wrapping_add(1);
-        if tick % 60 == 0 {
-            let now = read_clock();
-            if now != clock { clock = now; dirty = true; }
-        }
-
-        // Mise à jour window_seen
-        for app in apps.iter_mut() {
-            let was_seen = app.window_seen;
-            app.update_window_seen();
-            if !was_seen && app.window_seen { dirty = true; }
-        }
-
-        // Nettoyage apps fermées
-        let before = apps.len();
-        apps.retain(|a| !a.should_remove());
-        if apps.len() != before { dirty = true; }
-
-        // État souris
-        let (mx, my, left) = {
-            let wm = window_manager::WINDOW_MANAGER.get().unwrap().lock();
-            let pos = wm.mouse_position();
-            (pos.x, pos.y, wm.mouse_left())
-        };
-
-        // Hover icônes
-        for icon in icons.iter_mut() {
-            let h = icon.hit(mx, my);
-            if icon.hovered != h { icon.hovered = h; dirty = true; }
-        }
-        // Hover taskbar
-        for (i, app) in apps.iter_mut().enumerate() {
-            let r = app.btn_rect(sh, i);
-            let h = mx >= r.top_left.x && mx < r.bottom_right.x
-                 && my >= r.top_left.y && my < r.bottom_right.y;
-            if app.btn_hov != h { app.btn_hov = h; dirty = true; }
-        }
-
-        if dirty { redraw(&wall, &icons, &apps, clock); dirty = false; }
-
-        // Clic (front → relâché)
-        let clicked = prev_left && !left;
-        prev_left = left;
-
-        if clicked {
-            let mut handled = false;
-
-            // Clic taskbar
-            for i in 0..apps.len() {
-                let r = apps[i].btn_rect(sh, i);
-                if mx >= r.top_left.x && mx < r.bottom_right.x
-                    && my >= r.top_left.y && my < r.bottom_right.y
-                {
-                    if apps[i].is_minimized() {
-                        apps[i].state = AppState::Normal;
-                        if let Some(ref win) = apps[i].window_ref {
-                            if let Some(wm_ref) = window_manager::WINDOW_MANAGER.get() {
-                                let _ = wm_ref.lock().set_active(win, true);
-                            }
-                        }
-                    } else {
-                        apps[i].state = AppState::Minimized;
-                        if let Some(ref win) = apps[i].window_ref {
-                            if let Some(wm_ref) = window_manager::WINDOW_MANAGER.get() {
-                                let _ = wm_ref.lock().hide_window(win);
-                            }
-                        }
-                    }
-                    dirty   = true;
-                    handled = true;
-                    break;
-                }
+        // 1. Événements.
+        let mut desk_damage: Option<Option<shapes::Rectangle>> = None;
+        while let Some(ev) = desk_events.pop() {
+            if let Some(r) = ex.on_desktop(ev) {
+                desk_damage = Some(match (desk_damage, r) {
+                    (None, r) => r,
+                    (Some(Some(a)), Some(b)) => Some(union(a, b)),
+                    _ => None,
+                });
             }
-
-            // Clic icône bureau
-            if !handled {
-                for idx in 0..icons.len() {
-                    if icons[idx].hit(mx, my) {
-                        // Ne pas relancer une app déjà en cours
-                        let already_running = apps.iter().any(|a| a.name == icons[idx].name && !a.task.has_exited());
-                        if !already_running {
-                            if let Some(app) = spawn_app(&icons[idx]) {
-                                apps.push(app);
-                                dirty = true;
-                            }
-                        }
-                        break;
-                    }
-                }
+        }
+        while let Some(ev) = ex.taskbar.events.pop() {
+            if let Some(a) = ex.taskbar.on_event(ev) {
+                ex.on_taskbar(a);
+            }
+        }
+        while let Some(ev) = ex.menu.events.pop() {
+            if let Some(a) = ex.menu.on_event(ev, &ex.apps) {
+                ex.on_menu(a);
             }
         }
 
-        // Use sleep instead of bare schedule() — EEVDF needs tasks to
-        // explicitly block so they are dequeued from the CFS tree.
-        // A bare schedule() yield keeps the task in the tree and may
-        // cause starvation with EEVDF's vruntime-based selection.
-        let _ = sleep::sleep(sleep::Duration::from_millis(16));
+        // 2. Horloge et contenu de /desktop (chaque seconde).
+        let now = Instant::now();
+        if now >= next_clock {
+            next_clock = now + Duration::from_secs(1);
+            let c = read_clock();
+            if c != ex.desktop.clock {
+                ex.desktop.clock = c;
+                desk_damage = Some(None);
+            }
+            if ex.desktop.rescan(&mut ex.apps, &mut ex.cache, false) {
+                desk_damage = Some(None);
+            }
+        }
+        ex.menu.tick(now);
+
+        // 3. Fenêtres, lancements, dessin.
+        let wins = snapshot();
+        ex.resolve_pending(&wins);
+        if !ex.stashed.is_empty() && wins.iter().any(|w| !w.hidden) {
+            ex.stashed.clear(); // une fenêtre est revenue autrement : plus rien à restaurer
+        }
+        let model = ex.taskbar_model(&wins, ex.desktop.clock);
+        ex.taskbar.update(&model);
+        ex.menu.update(&ex.apps, &mut ex.cache);
+        if let Some(r) = desk_damage {
+            ex.desktop.redraw(&ex.apps, &mut ex.cache, r);
+        }
+        drop(wins);
+
+        // 4. Attente : sonnette, horloge, animation d'un lancement, confirmation du menu.
+        let mut deadline = next_clock;
+        if !ex.pending.is_empty() {
+            deadline = deadline.min(now + Duration::from_millis(150));
+        }
+        if let Some(d) = ex.menu.deadline() {
+            deadline = deadline.min(d);
+        }
+        BELL.wait(deadline);
     }
-
-    #[allow(unreachable_code)]
-    0
 }

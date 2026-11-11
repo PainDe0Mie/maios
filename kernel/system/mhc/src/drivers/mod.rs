@@ -5,7 +5,7 @@
 //!
 //! Available drivers:
 //! - `software`: CPU-emulated GPU for testing (always available)
-//! - `virtio_gpu`: VirtIO-GPU 1.2 driver for QEMU (requires `virtio` feature)
+//!
+//! Le GPU virtio de QEMU a son propre pilote : `kernel/drivers/gpu/virtio_gpu` (plan 08).
 
 pub mod software;
-pub mod virtio_gpu;

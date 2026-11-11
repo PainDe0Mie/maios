@@ -1,0 +1,31 @@
+[package]
+name = "mailand"
+version = "0.1.0"
+edition = "2021"
+authors = ["PainDe0Mie"]
+description = "MaiLand : serveur Wayland du noyau, branché sur MaiCompositor (plan 06)"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+log = "0.4.8"
+wl_proto = { path = "../wl_proto" }
+window = { path = "../window" }
+window_manager = { path = "../window_manager" }
+event_types = { path = "../event_types" }
+framebuffer = { path = "../framebuffer" }
+shapes = { path = "../shapes" }
+color = { path = "../color" }
+region2d = { path = "../region2d" }
+maiproc = { path = "../../system/maiproc" }
+uvm = { path = "../../mm/uvm" }
+fs_node = { path = "../../fs/fs_node" }
+window_inner = { path = "../window_inner" }
+spawn = { path = "../../sched/spawn" }
+time = { path = "../../sched/time" }
+tmpfs = { path = "../../fs/tmpfs" }
+mai_ui = { path = "../mai_ui" }
+keycodes_ascii = { path = "../../../libs/keycodes_ascii" }
+spin = "0.9.4"
+mpmc = "0.1.6"
+
+[lib]
+crate-type = ["rlib"]

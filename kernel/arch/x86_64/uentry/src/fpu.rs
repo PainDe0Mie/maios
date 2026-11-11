@@ -37,14 +37,45 @@ pub(crate) unsafe fn enable_xsave() -> u64 {
     xcr0 |= 0b11;
     core::arch::asm!("xsetbv", in("ecx") 0u32, in("eax") xcr0 as u32, in("edx") (xcr0 >> 32) as u32, options(nomem, nostack));
 
-    // Taille de la zone pour XCR0 courant (EBX après xsetbv).
-    let size = core::arch::x86_64::__cpuid_count(0xD, 0).ebx as usize;
+    let size = standard_area_size(xcr0);
     let leaf_d1 = core::arch::x86_64::__cpuid_count(0xD, 1);
     let opt = leaf_d1.eax & 1 != 0;
     XCR0.store(xcr0, Ordering::Relaxed);
-    AREA_SIZE.store(size.max(576), Ordering::Relaxed);
+    AREA_SIZE.store(size, Ordering::Relaxed);
     MODE.store(if opt { 2 } else { 1 }, Ordering::Relaxed);
     xcr0
+}
+
+/// Taille de la zone XSAVE au format standard pour `xcr0`, calculée composant par composant
+/// (fin du plus lointain : décalage + taille de la sous-feuille 0xD.i), comme
+/// `xstate_calculate_size` de Linux. CPUID.(0xD,0).EBX ne suffit pas : un hyperviseur peut le
+/// calculer avec un XCR0 périmé (QEMU sous WHPX rend 576 alors que le processeur écrit AVX,
+/// AVX-512…), et chaque sauvegarde déborderait alors sur l'objet voisin du tas.
+///
+/// # Safety
+/// Processeur avec CPUID (toujours vrai en x86_64) ; appelé après `xsetbv`.
+unsafe fn standard_area_size(xcr0: u64) -> usize {
+    let mut size = 576; // zone x87/SSE (512) + en-tête XSAVE (64)
+    for i in 2..64u32 {
+        if xcr0 & (1 << i) == 0 {
+            continue;
+        }
+        let c = core::arch::x86_64::__cpuid_count(0xD, i);
+        size = size.max(c.ebx as usize + c.eax as usize);
+    }
+    let reported = core::arch::x86_64::__cpuid_count(0xD, 0).ebx as usize;
+    if reported != size {
+        log::warn!(
+            "uentry : CPUID.(0xD,0).EBX = {} pour XCR0 {:#x}, taille calculee {} : la plus grande est retenue",
+            reported, xcr0, size,
+        );
+    }
+    size.max(reported)
+}
+
+/// Vrai si l'état est sauvé au format XSAVE (en-tête à 512, composants étendus).
+pub fn uses_xsave() -> bool {
+    MODE.load(Ordering::Relaxed) != 0
 }
 
 /// XCR0 actif (0 si XSAVE est absent).
@@ -91,6 +122,28 @@ impl FpuState {
         // SAFETY : même taille, zones distinctes.
         unsafe { core::ptr::copy_nonoverlapping(*other.area.get(), *new.area.get(), new.layout.size()) };
         Some(new)
+    }
+
+    /// Octets de la zone (format XSAVE standard, ou FXSAVE sans XSAVE).
+    ///
+    /// # Safety
+    /// Interruptions coupées (un changement de contexte écrirait la zone), ou zone d'un fil qui ne
+    /// s'exécute pas.
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn bytes_mut(&self) -> &mut [u8] {
+        core::slice::from_raw_parts_mut(*self.area.get(), self.layout.size())
+    }
+
+    /// Remet la zone dans l'état initial (x87, SSE et AVX à zéro, MXCSR par défaut).
+    ///
+    /// # Safety
+    /// Comme [`FpuState::bytes_mut`].
+    pub unsafe fn reset(&self) {
+        let b = self.bytes_mut();
+        b.fill(0);
+        (b.as_mut_ptr() as *mut u16).write(0x037F);
+        (b.as_mut_ptr().add(24) as *mut u32).write(0x1F80);
+        (b.as_mut_ptr().add(28) as *mut u32).write(0xFFFF);
     }
 
     /// Sauve les registres vectoriels du cœur dans cette zone.

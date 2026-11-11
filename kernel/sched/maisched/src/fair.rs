@@ -134,6 +134,10 @@ impl FairRq {
         avg >= self.key(v) as i128 * load as i128
     }
 
+    /// Éligibilité de l'entité `e`.
+    ///
+    /// # Safety
+    /// `e` pointe sur une entité valide (en file ou courante), lue sous le verrou de sa file.
     #[inline]
     pub unsafe fn entity_eligible(&self, e: *const Entity) -> bool {
         self.vruntime_eligible((*e).vruntime)
@@ -361,6 +365,22 @@ impl FairRq {
     }
 
     /// Recherche EEVDF dans l'arbre seul.
+    /// Diagnostic : ce que choisirait `pick_next` (sans rien modifier).
+    ///
+    /// # Safety
+    /// Verrou de la file tenu.
+    pub unsafe fn debug_first(&self) -> alloc::string::String {
+        let e = self.pick_eevdf_tree();
+        alloc::format!(
+            "arbre {} entites, file {} (differees {}), courante {}, choix {}",
+            self.tree.len(),
+            self.nr_queued,
+            self.nr_delayed,
+            !self.curr.is_null(),
+            if e.is_null() { alloc::string::String::from("aucun") } else { alloc::format!("differee {} on_rq {}", (*e).delayed, (*e).on_rq) }
+        )
+    }
+
     fn pick_eevdf_tree(&self) -> *mut Entity {
         if self.tree.is_empty() {
             return ptr::null_mut();

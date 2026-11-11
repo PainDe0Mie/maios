@@ -360,8 +360,13 @@ fn handle_bsp_lapic_entry(madt_iter: MadtIter, page_table: &mut PageTable) -> Re
 
                 // Set the BSP to receive regular PIC interrupts routed through the IoApic.
                 // Skip irq 2, since in the PIC that's the chained one (cascade line from PIC2 to PIC1) that isn't used.
+                // Seul l'IoApic qui sert les GSI 0 à 15 reçoit les IRQ ISA (sinon un second
+                // IoApic aurait ses broches 0 à 15 programmées sur les mêmes vecteurs).
                 for irq in (0x0 ..= 0x1).chain(0x3 ..= 0xF) {
-                    ioapic_ref.set_irq(irq, bsp_id, IRQ_BASE_OFFSET + irq)?;
+                    if ioapic_ref.handles_irq(irq as u32) {
+                        let pin = irq - ioapic_ref.gsi_base() as u8;
+                        ioapic_ref.set_irq(pin, bsp_id, IRQ_BASE_OFFSET + irq)?;
+                    }
                 }
 
                 // ioapic_ref.set_irq(0x1, 0xFF, IRQ_BASE_OFFSET + 0x1); 
@@ -374,29 +379,60 @@ fn handle_bsp_lapic_entry(madt_iter: MadtIter, page_table: &mut PageTable) -> Re
 
     let bsp_id = bootstrap_cpu().ok_or("handle_bsp_lapic_entry(): Couldn't find BSP LocalApic in Madt!")?;
 
-    // now that we've established the BSP, go through the interrupt source override entries
-    for madt_entry in madt_iter {
-        if let MadtEntry::IntSrcOverride(int_src) = madt_entry {
-            let mut handled = false;
-
-            // find the IoApic that should handle this interrupt source override entry
+    // Interrupt Source Overrides (ACPI 6.5, § 5.2.12.5) : l'IRQ ISA `irq_source` arrive sur la
+    // GSI `gsi`, avec sa propre polarité et son propre déclenchement. Sous QEMU (i440FX), l'IRQ 0
+    // du PIT arrive sur la GSI 2, et les IRQ 5, 9, 10 et 11 (SCI et INTx PCI routées par les
+    // PIRQ) sont déclenchées sur niveau : sans ces drapeaux, une carte PCI programmée sur front
+    // ne relève plus rien dès qu'une interruption est manquée.
+    //
+    // La broche de la GSI reçoit le vecteur de l'IRQ ISA (`IRQ_BASE_OFFSET + irq_source`), celui
+    // qu'attendent les pilotes ; la broche identité de l'IRQ déplacée est masquée d'abord (un
+    // autre override peut ensuite la reprendre).
+    let isos: alloc::vec::Vec<MadtIntSrcOverride> = madt_iter.clone()
+        .filter_map(|e| if let MadtEntry::IntSrcOverride(i) = e { Some(*i) } else { None })
+        .collect();
+    for int_src in &isos {
+        if int_src.gsi != int_src.irq_source as u32 {
             for (_id, ioapic) in ioapic::get_ioapics() {
                 let mut ioapic_ref = ioapic.lock();
-                if ioapic_ref.handles_irq(int_src.gsi) {
-                    // using BSP for now, but later we could redirect the IRQ to more (or all) cores
-                    ioapic_ref.set_irq(int_src.irq_source, bsp_id, int_src.gsi as u8 + IRQ_BASE_OFFSET)?;
-                    trace!("MadtIntSrcOverride (bus: {}, irq: {}, gsi: {}, flags {:#X}) handled by IoApic {}",
-                        int_src.bus_source, int_src.irq_source, &{ int_src.gsi }, &{ int_src.flags }, ioapic_ref.id
-                    );
-                    handled = true;
+                if ioapic_ref.handles_irq(int_src.irq_source as u32) {
+                    let pin = int_src.irq_source - ioapic_ref.gsi_base() as u8;
+                    ioapic_ref.mask_irq(pin);
                 }
             }
+        }
+    }
+    for int_src in &isos {
+        let mut handled = false;
+        let gsi = int_src.gsi;
+        let flags = int_src.flags;
+        // Drapeaux MPS INTI : polarité bits 0-1 (01 haute, 11 basse, 00 selon le bus : haute
+        // pour l'ISA), déclenchement bits 2-3 (01 front, 11 niveau, 00 selon le bus : front).
+        let active_low = flags & 0b11 == 0b11;
+        let level = (flags >> 2) & 0b11 == 0b11;
 
-            if !handled {
-                error!("MadtIntSrcOverride (bus: {}, irq: {}, gsi: {}, flags {:#X}) not handled by any IoApic!",
-                    int_src.bus_source, int_src.irq_source, &{ int_src.gsi }, &{ int_src.flags}
+        for (_id, ioapic) in ioapic::get_ioapics() {
+            let mut ioapic_ref = ioapic.lock();
+            if ioapic_ref.handles_irq(gsi) {
+                let pin = (gsi - ioapic_ref.gsi_base()) as u8;
+                ioapic_ref.set_irq(pin, bsp_id, IRQ_BASE_OFFSET + int_src.irq_source)?;
+                ioapic_ref.set_irq_mode(pin, active_low, level);
+                // Le temps est donné par le Local APIC : l'IRQ du PIT reste masquée (son vecteur
+                // n'a pas de gestionnaire).
+                if int_src.irq_source == 0 {
+                    ioapic_ref.mask_irq(pin);
+                }
+                trace!("MadtIntSrcOverride (bus: {}, irq: {}, gsi: {}, flags {:#X}) handled by IoApic {}",
+                    int_src.bus_source, int_src.irq_source, gsi, flags, ioapic_ref.id
                 );
+                handled = true;
             }
+        }
+
+        if !handled {
+            error!("MadtIntSrcOverride (bus: {}, irq: {}, gsi: {}, flags {:#X}) not handled by any IoApic!",
+                int_src.bus_source, int_src.irq_source, gsi, flags
+            );
         }
     }
     Ok(())

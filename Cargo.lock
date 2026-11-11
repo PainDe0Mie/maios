@@ -15,8 +15,10 @@ dependencies = [
  "log",
  "madt",
  "memory",
+ "port_io",
  "rsdp",
  "rsdt",
+ "sdt",
  "spin 0.9.4",
  "time",
  "waet",
@@ -116,6 +118,7 @@ dependencies = [
  "spawn",
  "stack",
  "sync_irq",
+ "tsc",
 ]
 
 [[package]]
@@ -299,6 +302,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "327762f6e5a765692301e5bb513e0d9fef63be86bbc14528052b1cd3e6f03e07"
 
 [[package]]
+name = "blk"
+version = "0.1.0"
+dependencies = [
+ "cpu",
+ "frame_allocator",
+ "io",
+ "irq_safety",
+ "kernel_config",
+ "log",
+ "memory",
+ "preemption",
+ "sleep",
+ "spawn",
+ "spin 0.9.4",
+ "storage_device",
+ "sync_irq",
+ "task",
+ "time",
+]
+
+[[package]]
+name = "blkbench"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "blk",
+ "cpu",
+ "log",
+ "spawn",
+ "task",
+ "time",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -412,8 +449,10 @@ dependencies = [
  "irq_safety",
  "kernel_config",
  "log",
+ "log_flusher",
  "logger",
  "madt",
+ "mailand",
  "maisched",
  "memory",
  "memory_swap",
@@ -432,6 +471,7 @@ dependencies = [
  "time",
  "tlb_shootdown",
  "tsc",
+ "virtio_gpu",
  "window_manager",
 ]
 
@@ -681,8 +721,11 @@ dependencies = [
  "app_io",
  "fs_node",
  "getopts",
+ "memfs",
  "path",
+ "root",
  "task",
+ "vfs_node",
 ]
 
 [[package]]
@@ -924,6 +967,7 @@ version = "0.1.0"
 dependencies = [
  "acpi",
  "ahci",
+ "blk",
  "block_cache",
  "console",
  "e1000",
@@ -954,6 +998,8 @@ dependencies = [
  "storage_manager",
  "usb_hid",
  "vfs_node",
+ "virtio_gpu",
+ "virtio_input",
  "xhci",
 ]
 
@@ -991,6 +1037,7 @@ dependencies = [
 name = "disk_mount"
 version = "0.1.0"
 dependencies = [
+ "ext4_vfs",
  "fat32",
  "fs_node",
  "heapfile",
@@ -1219,6 +1266,7 @@ dependencies = [
  "fault_log",
  "locked_idt",
  "log",
+ "logger",
  "memory",
  "memory_swap",
  "memory_x86_64",
@@ -1238,6 +1286,7 @@ dependencies = [
 name = "explorer"
 version = "0.1.0"
 dependencies = [
+ "acpi",
  "color",
  "core2",
  "event_types",
@@ -1245,10 +1294,13 @@ dependencies = [
  "framebuffer",
  "fs_node",
  "io",
+ "keycodes_ascii",
  "log",
+ "mai_icons",
  "mai_ui",
  "memfs",
  "mod_mgmt",
+ "mpmc",
  "path",
  "root",
  "rtc",
@@ -1258,9 +1310,30 @@ dependencies = [
  "spawn",
  "spin 0.9.4",
  "task",
+ "time",
  "vfs_node",
  "window_inner",
  "window_manager",
+]
+
+[[package]]
+name = "ext4"
+version = "0.1.0"
+
+[[package]]
+name = "ext4_vfs"
+version = "0.1.0"
+dependencies = [
+ "blk",
+ "ext4",
+ "fs_node",
+ "io",
+ "log",
+ "memory",
+ "partition_table",
+ "root",
+ "spin 0.9.4",
+ "vfs_node",
 ]
 
 [[package]]
@@ -1345,28 +1418,25 @@ dependencies = [
 
 [[package]]
 name = "file_manager"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "app_io",
  "color",
  "event_types",
- "framebuffer",
+ "frame_allocator",
  "fs_node",
- "heapfile",
  "keycodes_ascii",
  "log",
  "mai_ui",
+ "memfs",
  "mod_mgmt",
  "path",
  "root",
- "scheduler",
  "shapes",
  "sleep",
  "spawn",
  "task",
  "vfs_node",
  "window",
- "window_manager",
 ]
 
 [[package]]
@@ -1625,6 +1695,25 @@ checksum = "c65cd533b33e3d04c6e393225fa8919ddfcf5862ca8919c7f9a167c312ef41c2"
 dependencies = [
  "plain",
  "scroll",
+]
+
+[[package]]
+name = "gpu_test"
+version = "0.1.0"
+dependencies = [
+ "app_io",
+ "color",
+ "event_types",
+ "framebuffer",
+ "keycodes_ascii",
+ "log",
+ "shapes",
+ "sleep",
+ "time",
+ "virtio_gpu",
+ "virtio_input",
+ "window",
+ "window_manager",
 ]
 
 [[package]]
@@ -2208,6 +2297,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "log_flusher"
+version = "0.1.0"
+dependencies = [
+ "logger",
+ "sleep",
+ "spawn",
+ "spin 0.9.4",
+ "task",
+]
+
+[[package]]
 name = "logger"
 version = "0.1.0"
 dependencies = [
@@ -2260,6 +2360,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mai_icons"
+version = "0.1.0"
+
+[[package]]
 name = "mai_ui"
 version = "0.1.0"
 dependencies = [
@@ -2270,6 +2374,33 @@ dependencies = [
  "framebuffer_drawer",
  "keycodes_ascii",
  "shapes",
+ "spin 0.9.4",
+]
+
+[[package]]
+name = "mailand"
+version = "0.1.0"
+dependencies = [
+ "color",
+ "event_types",
+ "framebuffer",
+ "fs_node",
+ "keycodes_ascii",
+ "log",
+ "mai_ui",
+ "maiproc",
+ "mpmc",
+ "region2d",
+ "shapes",
+ "spawn",
+ "spin 0.9.4",
+ "time",
+ "tmpfs",
+ "uvm",
+ "window",
+ "window_inner",
+ "window_manager",
+ "wl_proto",
 ]
 
 [[package]]
@@ -2358,6 +2489,7 @@ dependencies = [
  "root",
  "rtc",
  "scheduler",
+ "shapes",
  "sleep",
  "smoltcp",
  "spawn",
@@ -2377,10 +2509,12 @@ dependencies = [
  "cpu",
  "frame_allocator",
  "fs_node",
+ "irq_safety",
  "kernel_config",
  "log",
  "memfs",
  "memory",
+ "net",
  "path",
  "root",
  "rtc",
@@ -2388,9 +2522,11 @@ dependencies = [
  "spawn",
  "spin 0.9.4",
  "sync_irq",
+ "sync_preemption",
  "task",
  "task_struct",
  "time",
+ "tmpfs",
  "tty",
  "uentry",
  "uvm",
@@ -2584,6 +2720,8 @@ dependencies = [
  "app_io",
  "fs_node",
  "getopts",
+ "path",
+ "root",
  "task",
  "vfs_node",
 ]
@@ -2664,9 +2802,9 @@ dependencies = [
  "log",
  "mouse_data",
  "mpmc",
- "port_io",
  "ps2",
  "spin 0.9.4",
+ "time",
  "x86_64",
 ]
 
@@ -2720,6 +2858,7 @@ dependencies = [
  "apic",
  "arm_boards",
  "cpu",
+ "irq_safety",
  "kernel_config",
  "log",
  "madt",
@@ -2730,6 +2869,7 @@ dependencies = [
  "psci",
  "spin 0.9.4",
  "stack",
+ "tsc",
  "volatile 0.2.7",
  "zerocopy",
 ]
@@ -2797,10 +2937,13 @@ dependencies = [
  "rand",
  "rand_chacha",
  "random",
+ "sleep",
  "smoltcp",
+ "spawn",
  "spin 0.9.4",
  "sync_block",
  "sync_irq",
+ "time",
 ]
 
 [[package]]
@@ -2936,15 +3079,19 @@ dependencies = [
 
 [[package]]
 name = "nvme"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "blk",
+ "cpu",
+ "frame_allocator",
  "interrupts",
- "io",
+ "kernel_config",
  "log",
  "memory",
  "pci",
  "spin 0.9.4",
- "storage_device",
+ "sync_irq",
+ "time",
 ]
 
 [[package]]
@@ -3461,6 +3608,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3f87b73ce11b1619a3c6332f45341e0047173771e8b8b73f87bfeefb7b56244"
 
 [[package]]
+name = "region2d"
+version = "0.1.0"
+
+[[package]]
 name = "rendezvous"
 version = "0.1.0"
 dependencies = [
@@ -3786,6 +3937,7 @@ dependencies = [
  "deferred_interrupt_tasks",
  "interrupts",
  "log",
+ "logger",
  "serial_port_basic",
  "spin 0.9.4",
  "sync_channel",
@@ -4234,23 +4386,24 @@ dependencies = [
 
 [[package]]
 name = "task_manager"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "color",
  "cpu",
  "event_types",
  "frame_allocator",
- "framebuffer",
+ "heap",
  "keycodes_ascii",
  "log",
  "mai_ui",
- "memory_swap",
- "scheduler",
+ "maiproc",
+ "maisched",
+ "mgi",
  "shapes",
  "sleep",
- "spin 0.9.4",
  "task",
  "task_struct",
+ "uvm",
  "window",
  "window_manager",
 ]
@@ -4566,6 +4719,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmpfs"
+version = "0.1.0"
+dependencies = [
+ "frame_allocator",
+ "fs_node",
+ "io",
+ "log",
+ "memory",
+ "spin 0.9.4",
+]
+
+[[package]]
 name = "tock-registers"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4578,7 +4743,9 @@ dependencies = [
  "app_io",
  "fs_node",
  "getopts",
+ "memfs",
  "path",
+ "root",
  "task",
 ]
 
@@ -4782,12 +4949,15 @@ dependencies = [
 name = "uvm"
 version = "0.1.0"
 dependencies = [
+ "apic",
  "frame_allocator",
+ "interrupts",
+ "irq_safety",
  "kernel_config",
  "log",
  "memory",
  "spin 0.9.4",
- "sync_irq",
+ "sync_preemption",
 ]
 
 [[package]]
@@ -4818,6 +4988,58 @@ name = "vga_buffer"
 version = "0.1.0"
 dependencies = [
  "volatile 0.2.7",
+]
+
+[[package]]
+name = "virtio"
+version = "0.1.0"
+dependencies = [
+ "cpu",
+ "frame_allocator",
+ "interrupts",
+ "kernel_config",
+ "log",
+ "memory",
+ "pci",
+]
+
+[[package]]
+name = "virtio_gpu"
+version = "0.1.0"
+dependencies = [
+ "framebuffer",
+ "interrupts",
+ "irq_safety",
+ "kernel_config",
+ "log",
+ "memory",
+ "mgi",
+ "pci",
+ "preemption",
+ "sleep",
+ "spawn",
+ "spin 0.9.4",
+ "sync_irq",
+ "task",
+ "time",
+ "virtio",
+]
+
+[[package]]
+name = "virtio_input"
+version = "0.1.0"
+dependencies = [
+ "event_types",
+ "interrupts",
+ "log",
+ "mouse_data",
+ "mpmc",
+ "pci",
+ "sleep",
+ "spawn",
+ "spin 0.9.4",
+ "sync_irq",
+ "virtio",
 ]
 
 [[package]]
@@ -5027,30 +5249,24 @@ dependencies = [
 name = "window_manager"
 version = "0.1.0"
 dependencies = [
- "color",
- "compositor",
- "cpu",
  "event_types",
- "font",
  "framebuffer",
- "framebuffer_compositor",
- "framebuffer_drawer",
  "keyboard",
  "keycodes_ascii",
- "lazy_static",
  "log",
  "mgi",
- "mhc",
  "mod_mgmt",
  "mouse_data",
  "mpmc",
- "path",
- "scheduler",
+ "region2d",
  "shapes",
  "sleep",
  "spawn",
  "spin 0.9.4",
+ "sync_irq",
+ "task",
  "time",
+ "wait_queue",
  "window_inner",
 ]
 
@@ -5066,6 +5282,10 @@ dependencies = [
  "spin 0.9.4",
  "task",
 ]
+
+[[package]]
+name = "wl_proto"
+version = "0.1.0"
 
 [[package]]
 name = "x86_64"

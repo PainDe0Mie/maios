@@ -26,9 +26,14 @@ pub struct E1000Registers {
     
     /// Interrupt control registers
     pub icr:                        ReadOnly<u32>,          // 0xC0   
-    _padding2:                      [u8; 12],               // 0xC4 - 0xCF
+    /// Interrupt Throttling Rate : intervalle minimal entre deux interruptions, par 256 ns.
+    pub itr:                        Volatile<u32>,          // 0xC4
+    _padding2:                      [u8; 8],                // 0xC8 - 0xCF
     pub ims:                        Volatile<u32>,          // 0xD0
-    _padding3:                      [u8; 44],               // 0xD4 - 0xFF 
+    _padding3a:                     [u8; 4],                // 0xD4 - 0xD7
+    /// Interrupt Mask Clear : écrire un bit masque la cause correspondante.
+    pub imc:                        Volatile<u32>,          // 0xD8
+    _padding3:                      [u8; 36],               // 0xDC - 0xFF 
 
     /// Receive control register
     pub rctl:                       Volatile<u32>,          // 0x100

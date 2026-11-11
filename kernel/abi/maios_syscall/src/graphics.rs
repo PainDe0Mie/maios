@@ -130,79 +130,63 @@ pub fn sys_present(
 ) -> SyscallResult {
     let my_id = task::get_my_current_task_id();
 
-    // 1. Si la tâche a une fenêtre active avec buffer
-    let mut blitted_to_window = false;
+    // 1. Application fenêtrée : recopie de son tampon dans la zone cliente de sa fenêtre, puis
+    //    validation de cette seule zone. La composition et la présentation sont faites par la
+    //    tâche du compositeur, à sa cadence : l'application ne prend ni le verrou de MGI ni
+    //    celui des autres fenêtres, et ne recompose plus tout l'écran à chaque image.
     if let Some(surf) = WINDOW_APP_BUFFER.lock().as_ref() {
         if surf.task_id == my_id {
-            if let Some(wm_ref) = window_manager::WINDOW_MANAGER.get() {
-                let mut wm = wm_ref.lock();
-                if let Some(win_arc) = wm.get_window_by_task_id(my_id) {
+            let win_arc = window_manager::WINDOW_MANAGER
+                .get()
+                .and_then(|wm| wm.lock().get_window_by_task_id(my_id));
+            if let Some(win_arc) = win_arc {
+                let damaged = {
                     let mut win = win_arc.lock();
                     let ca = win.content_area();
+                    let pos = win.get_position();
                     let (win_w, _) = win.get_size();
-                    let fb = win.framebuffer_mut();
-                    let fb_slice = fb.buffer_mut();
-
                     let cw = surf.width.min(ca.width());
                     let ch = surf.height.min(ca.height());
-                    let start_x = ca.top_left.x as usize;
-                    let start_y = ca.top_left.y as usize;
-
+                    let start_x = ca.top_left.x.max(0) as usize;
+                    let start_y = ca.top_left.y.max(0) as usize;
+                    let fb = win.framebuffer_mut().buffer_mut();
+                    // SAFETY : `AlphaPixel` est `repr(C)` sur 4 octets (BGRA = XRGB8888 little-endian).
+                    let dst = unsafe {
+                        core::slice::from_raw_parts_mut(fb.as_mut_ptr() as *mut u32, fb.len())
+                    };
                     for y in 0..ch {
-                        let src_row = y * surf.width;
-                        let dst_row = (start_y + y) * win_w + start_x;
-                        for x in 0..cw {
-                            let p = surf.buffer[src_row + x];
-                            fb_slice[dst_row + x] = framebuffer::AlphaPixel {
-                                red: (p >> 16) as u8,
-                                green: (p >> 8) as u8,
-                                blue: p as u8,
-                                alpha: 0,
-                            };
+                        let s = &surf.buffer[y * surf.width..y * surf.width + cw];
+                        let o = (start_y + y) * win_w + start_x;
+                        if o + cw > dst.len() {
+                            break;
+                        }
+                        // Octet d'alpha à 0 (opaque) : l'octet X des applications est ignoré.
+                        for (d, p) in dst[o..o + cw].iter_mut().zip(s.iter()) {
+                            *d = *p & 0x00FF_FFFF;
                         }
                     }
-                    drop(win);
-                    let _ = wm.refresh_windows(None);
-                    blitted_to_window = true;
-                }
+                    shapes::Rectangle {
+                        top_left: pos + (start_x as isize, start_y as isize),
+                        bottom_right: pos + ((start_x + cw) as isize, (start_y + ch) as isize),
+                    }
+                };
+                window_manager::damage(damaged);
+                return Ok(0);
             }
         }
     }
 
-    if blitted_to_window {
-        return Ok(0);
-    }
-
     if flags & 1 != 0 {
-        // Mode fullscreen exclusif — le WM s'en chargera au prochain tick
+        // Plein écran exclusif : le compositeur recopie le tampon de l'application
+        // directement vers l'affichage.
         if !mgi::is_exclusive_fullscreen() {
             return Err(SyscallError::InvalidArgument);
         }
-        mgi::present_exclusive();
+        window_manager::commit_exclusive();
     } else {
-        // Mode normal : marquer tout comme dirty et flush
-        if let Some(mgi_ref) = mgi::MGI.get() {
-            let mut guard = mgi_ref.lock();
-            guard.invalidate_all();
-            guard.present();
-        }
+        // Plein écran sans fenêtre : l'application a dessiné dans le tampon arrière de MGI.
+        window_manager::commit_raw_backbuffer();
     }
-
-    // Flush VirtIO-GPU si disponible
-    if mhc::has_display() {
-        if let Some(mgi_ref) = mgi::MGI.get() {
-            let guard = mgi_ref.lock();
-            let (w, h) = guard.resolution();
-            let pixels = unsafe {
-                core::slice::from_raw_parts(
-                    guard.frontbuffer_ptr() as *const u32,
-                    w * h,
-                )
-            };
-            mhc::flush_display(pixels, w as u32, h as u32);
-        }
-    }
-
     Ok(0)
 }
 
@@ -215,18 +199,8 @@ pub fn sys_present(
 pub fn sys_vsync_wait(
     _a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64,
 ) -> SyscallResult {
-    let current = mgi::vsync_counter();
-
-    // Dormir 1ms entre chaque vérification pour ne pas monopoliser le CPU.
-    // Le WM tourne à ~60fps → attente max ~16ms.
-    let dur = sleep::Duration::from_millis(1);
-    loop {
-        let now = mgi::vsync_counter();
-        if now != current {
-            return Ok(now);
-        }
-        let _ = sleep::sleep(dur);
-    }
+    // Attente bloquante sur l'horloge d'images du compositeur (plus de scrutation).
+    Ok(window_manager::vsync_wait())
 }
 
 /// SYS_SET_EXCLUSIVE_FULLSCREEN (non numéroté, inclus dans SYS_GET_EVENT 0x0804)

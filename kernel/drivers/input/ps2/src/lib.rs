@@ -445,6 +445,34 @@ impl<'c> PS2Mouse<'c> {
             .map_err(|_| "failed to set the mouse resolution")
     }
 
+    /// Octets d'un paquet de cette souris : 3, ou 4 avec la molette (identifiants 3 et 4).
+    pub fn packet_len(&self) -> usize {
+        match self.id {
+            MouseId::Zero => 3,
+            MouseId::Three | MouseId::Four => 4,
+        }
+    }
+
+    /// Un octet de la souris, s'il y en a un dans le tampon de sortie du contrôleur. Ne lit
+    /// **jamais** le port de données à vide ni un octet du clavier : un octet volé décale tous
+    /// les paquets suivants.
+    pub fn try_read_byte(&self) -> Option<u8> {
+        if self.is_output_buffer_full() {
+            Some(self.controller.read_data())
+        } else {
+            None
+        }
+    }
+
+    /// Paquet formé des [`Self::packet_len`] premiers octets de `bytes`.
+    pub fn packet_from_bytes(&self, bytes: [u8; 4]) -> MousePacket {
+        match self.id {
+            MouseId::Zero => MousePacket::Zero(MousePacketGeneric::from_bytes([bytes[0], bytes[1], bytes[2]])),
+            MouseId::Three => MousePacket::Three(MousePacket3::from_bytes(bytes)),
+            MouseId::Four => MousePacket::Four(MousePacket4::from_bytes(bytes)),
+        }
+    }
+
     /// read the correct [MousePacket] according to [MouseId]
     pub fn read_mouse_packet(&self) -> MousePacket {
         let read_data = || self.controller.read_data();
@@ -621,6 +649,13 @@ impl<'c> PS2Keyboard<'c> {
     /// Reads a raw scancode value from the PS/2 controller's data port.
     pub fn read_scancode(&self) -> u8 {
         self.controller.read_data()
+    }
+
+    /// Le tampon de sortie du contrôleur contient un octet du **clavier** (pas de la souris :
+    /// le lire décalerait les paquets de la souris).
+    pub fn has_scancode(&self) -> bool {
+        let sr = self.controller.status_register();
+        sr.output_buffer_full() && !sr.mouse_output_buffer_full()
     }
 }
 
@@ -966,8 +1001,9 @@ impl MousePacketGeneric {
     ///
     /// Note: This handles overflow as well, although it might not happen on newer systems <https://forum.osdev.org/viewtopic.php?f=1&t=31176>
     pub fn x_movement(&self) -> i16 {
+        // Débordement : saturé à -256 ou +255 selon le signe (pas -1 pour un grand recul).
         let x_1st_to_8th_bit = if self.x_overflow() {
-            u8::MAX
+            if self.x_9th_bit() { 0 } else { u8::MAX }
         } else {
             self.x_1st_to_8th_bit()
         };
@@ -978,8 +1014,9 @@ impl MousePacketGeneric {
     ///
     /// Note: This handles overflow as well, although it might not happen on newer systems <https://forum.osdev.org/viewtopic.php?f=1&t=31176>
     pub fn y_movement(&self) -> i16 {
+        // Débordement : saturé à -256 ou +255 selon le signe (pas -1 pour un grand recul).
         let y_1st_to_8th_bit = if self.y_overflow() {
-            u8::MAX
+            if self.y_9th_bit() { 0 } else { u8::MAX }
         } else {
             self.y_1st_to_8th_bit()
         };
@@ -1035,10 +1072,10 @@ pub struct MousePacket4 {
     zero2: B1,
 }
 impl MousePacket4 {
-    //TODO: see osdev wiki, might be wrong
-    /// often called `z_movement`, renamed to disambiguate
+    /// Crans de molette bruts de la souris (`z`, souvent appelé ainsi) : entier **signé sur
+    /// 4 bits** (-8 à +7) ; négatif quand la molette tourne vers le haut (vers l'avant).
     pub fn scroll_movement(&self) -> i8 {
-        self.z_movement() as i8
+        ((self.z_movement() << 4) as i8) >> 4
     }
 }
 

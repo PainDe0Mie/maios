@@ -8,16 +8,18 @@
 //! | `0 .. 8192` | 256 talons d'IDT de 32 octets |
 //! | `8192` | entrée `syscall` (IA32_LSTAR) |
 //! | `8448` | passage initial en mode utilisateur (`rdi` = cadre) |
+//! | `8512` | entrée `syscall` du mode compatible (IA32_CSTAR, processeurs AMD) |
 //! | ensuite | chemin commun, retour, entrée paranoïaque |
 
 use super::{
     uentry_paranoid, uentry_prepare_return, uentry_trap, BLOCKS, BLOCK_SHIFT, HANDLERS, MAX_CPUS,
-    SMAP_ON, KERNEL_CS, KERNEL_SS, SYSCALL_VECTOR, USER_CS, USER_SS,
+    SMAP_ON, KERNEL_CS, KERNEL_SS, SYSCALL_VECTOR, SYSCALL32_VECTOR, USER_CS, USER32_CS, USER_SS,
 };
 
 const STUB_SIZE: usize = 32;
 const SYSCALL_OFFSET: usize = 8192;
 const ENTER_OFFSET: usize = 8448;
+const CSTAR_OFFSET: usize = 8512;
 
 pub(crate) fn stub_address(vector: usize) -> usize {
     let base = uentry_area as usize;
@@ -27,6 +29,10 @@ pub(crate) fn stub_address(vector: usize) -> usize {
 
 pub(crate) fn syscall_entry_address() -> usize {
     uentry_area as usize + SYSCALL_OFFSET
+}
+
+pub(crate) fn cstar_entry_address() -> usize {
+    uentry_area as usize + CSTAR_OFFSET
 }
 
 /// Saute dans le chemin de retour vers l'utilisateur avec `rsp = frame`.
@@ -138,6 +144,23 @@ unsafe extern "C" fn uentry_area() {
         "mov rsp, rdi",
         "jmp 9f",
 
+        // ---- syscall du mode compatible (déplacement 8512) --------------------------------
+        // Comme l'entrée 64 bits (FMASK coupe IF et TF) ; le cadre porte le CS 32 bits et le
+        // vecteur `SYSCALL32_VECTOR` (table i386, retour par `sysretl`).
+        ".org {cstar_off}, 0xcc",
+        "swapgs",
+        "mov qword ptr gs:[0], rsp",
+        "mov rsp, qword ptr gs:[8]",
+        "push {user_ss}",
+        "push qword ptr gs:[0]",
+        "swapgs",
+        "push r11",
+        "push {user32_cs}",
+        "push rcx",
+        "push 0",
+        "push {sys32vec}",
+        "jmp 8f",
+
         // ---- chemin commun depuis l'utilisateur -------------------------------------------
         "8:",
         "push rax",
@@ -198,11 +221,20 @@ unsafe extern "C" fn uentry_area() {
         "pop rbx",
         "pop rax",
         "cmp qword ptr [rsp], {sysvec}",
-        "jne 3f",
+        "jne 6f",
         "mov rcx, qword ptr [rsp + 16]",
         "mov r11, qword ptr [rsp + 32]",
         "mov rsp, qword ptr [rsp + 40]",
         "sysretq",
+        // `sysretl` : retour en mode compatible (CS = STAR[63:48] | 3, SS = + 8), permis aussi
+        // sur Intel ; `uentry_prepare_return` n'y laisse que des cadres sûrs.
+        "6:",
+        "cmp qword ptr [rsp], {sys32vec}",
+        "jne 3f",
+        "mov ecx, dword ptr [rsp + 16]",
+        "mov r11, qword ptr [rsp + 32]",
+        "mov esp, dword ptr [rsp + 40]",
+        ".byte 0x0f, 0x07",
         "3:",
         "add rsp, 16",
         "iretq",
@@ -277,9 +309,12 @@ unsafe extern "C" fn uentry_area() {
         paranoid = sym uentry_paranoid,
         sys_off = const SYSCALL_OFFSET,
         enter_off = const ENTER_OFFSET,
+        cstar_off = const CSTAR_OFFSET,
         user_ss = const USER_SS,
         user_cs = const USER_CS,
+        user32_cs = const USER32_CS,
         sysvec = const SYSCALL_VECTOR,
+        sys32vec = const SYSCALL32_VECTOR,
         cpu_mask = const MAX_CPUS - 1,
         block_shift = const BLOCK_SHIFT,
         options(noreturn),

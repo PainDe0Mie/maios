@@ -45,6 +45,10 @@ pub struct AddressSpace {
     p4_pfn: usize,
     /// Génération TLB : incrémentée à chaque retrait ou réduction de droits d'un mappage utilisateur.
     tlb_gen: AtomicU64,
+    /// Cœurs qui exécutent en ce moment un fil de cet espace (cible des invalidations par IPI).
+    /// Un cœur passé à une tâche noyau garde l'espace chargé (TLB paresseuse) mais sort du
+    /// masque : il videra son PCID au prochain fil de l'espace si la génération a avancé.
+    active: [AtomicU64; MAX_CPUS / 64],
 }
 
 impl AddressSpace {
@@ -68,6 +72,7 @@ impl AddressSpace {
             id: NEXT_SPACE_ID.fetch_add(1, Ordering::Relaxed),
             p4_pfn,
             tlb_gen: AtomicU64::new(1),
+            active: [NO_CPU; MAX_CPUS / 64],
         }))
     }
 
@@ -88,6 +93,36 @@ impl AddressSpace {
     /// videront leur PCID au prochain chargement.
     pub fn bump_tlb_gen(&self) -> u64 {
         self.tlb_gen.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Appelle `f(cœur)` pour chaque cœur (autre que `except`) qui exécute un fil de cet espace.
+    pub fn for_each_active_cpu(&self, except: usize, mut f: impl FnMut(usize)) {
+        for (w, word) in self.active.iter().enumerate() {
+            let mut bits = word.load(Ordering::SeqCst);
+            while bits != 0 {
+                let b = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let cpu = w * 64 + b;
+                if cpu != except {
+                    f(cpu);
+                }
+            }
+        }
+    }
+
+    fn set_active(&self, cpu: usize, on: bool) {
+        let (w, bit) = (cpu / 64, 1u64 << (cpu % 64));
+        if on {
+            self.active[w].fetch_or(bit, Ordering::SeqCst);
+        } else {
+            self.active[w].fetch_and(!bit, Ordering::SeqCst);
+        }
+    }
+
+    /// Invalide, sur le cœur courant et si cet espace y est chargé, les pages `pages` (ou tout
+    /// le PCID si `full`).
+    pub fn flush_local(&self, pages: &[usize], full: bool) {
+        flush_loaded(self.id, pages, full);
     }
 
     /// Vrai si cet espace est celui chargé sur le cœur courant.
@@ -167,6 +202,9 @@ struct CpuAsids {
     loaded: Option<Arc<AddressSpace>>,
 }
 
+#[allow(clippy::declare_interior_mutable_const)]
+const NO_CPU: AtomicU64 = AtomicU64::new(0);
+
 const EMPTY_CPU: CpuAsids = CpuAsids {
     slots: [AsidSlot { space_id: 0, tlb_gen: 0 }; NR_DYN_ASIDS],
     next_victim: 0,
@@ -180,7 +218,7 @@ static mut CPU_ASIDS: [CpuAsids; MAX_CPUS] = [EMPTY_CPU; MAX_CPUS];
 
 /// Identifiant du cœur courant (TSC_AUX = identifiant APIC, posé à l'initialisation du cœur).
 #[inline(always)]
-fn cpu_slot() -> usize {
+pub fn cpu_slot() -> usize {
     let mut aux = 0u32;
     // SAFETY : lecture de TSC/TSC_AUX, sans effet de bord.
     unsafe { core::arch::x86_64::__rdtscp(&mut aux) };
@@ -224,6 +262,15 @@ pub fn switch_to(space: &Arc<AddressSpace>) {
     let cpu = cpu_slot();
     // SAFETY : état propre à ce cœur ; l'appelant a coupé les interruptions.
     let state = unsafe { &mut CPU_ASIDS[cpu] };
+    if state.loaded_id != space.id {
+        if let Some(old) = &state.loaded {
+            old.set_active(cpu, false);
+        }
+    }
+    // Entrée dans le masque **avant** de lire la génération : un cœur qui modifie l'espace
+    // incrémente la génération puis lit le masque (ordre total SeqCst). Soit il voit ce cœur et
+    // lui envoie une IPI, soit ce cœur voit la nouvelle génération et vide son PCID.
+    space.set_active(cpu, true);
     let gen = space.tlb_gen();
     let p4 = (space.p4_pfn * PAGE_SIZE) as u64;
 
@@ -260,6 +307,45 @@ pub fn switch_to(space: &Arc<AddressSpace>) {
         state.loaded = Some(space.clone());
     }
     write_cr3(value);
+}
+
+/// Le cœur passe à une tâche noyau : l'espace chargé le reste (TLB paresseuse), mais ce cœur
+/// n'exécute plus de fil de cet espace et sort de son masque d'invalidation (interruptions
+/// coupées).
+pub fn enter_kernel_task() {
+    let cpu = cpu_slot();
+    // SAFETY : état propre à ce cœur ; l'appelant a coupé les interruptions.
+    let state = unsafe { &mut CPU_ASIDS[cpu] };
+    if let Some(s) = &state.loaded {
+        s.set_active(cpu, false);
+    }
+}
+
+/// Invalidation demandée par un autre cœur (IPI) ou locale : sans effet si l'espace `space_id`
+/// n'est pas chargé ici.
+pub fn flush_loaded(space_id: u64, pages: &[usize], full: bool) {
+    let cpu = cpu_slot();
+    // SAFETY : état propre à ce cœur ; lecture d'un identifiant (u64 aligné).
+    let state = unsafe { &mut CPU_ASIDS[cpu] };
+    if state.loaded_id != space_id || space_id == 0 {
+        return;
+    }
+    if full {
+        // Génération lue avant le vidage : tout ce qui a été modifié jusque-là est couvert.
+        let gen = state.loaded.as_ref().map_or(0, |s| s.tlb_gen());
+        let cr3: u64;
+        // SAFETY : relecture de CR3 (P4 et PCID courants).
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)) };
+        // Écrire CR3 sans le bit 63 vide les entrées non globales du PCID courant.
+        write_cr3(cr3 & !CR3_NOFLUSH);
+        if let Some(s) = state.slots.iter_mut().find(|s| s.space_id == space_id) {
+            s.tlb_gen = s.tlb_gen.max(gen);
+        }
+    } else {
+        for &va in pages {
+            flush_user_page_local(va);
+        }
+    }
 }
 
 /// Invalide `vaddr` (moitié basse) dans l'espace courant du cœur courant.

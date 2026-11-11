@@ -88,6 +88,16 @@ pub struct CpuCounters {
     pub wake_lat_sum_ns: AtomicU64,
     pub wake_lat_count: AtomicU64,
     pub wake_lat_max_ns: AtomicU64,
+    /// Temps passé dans la tâche inactive (ns), hors période d'inactivité en cours.
+    pub idle_ns: AtomicU64,
+    /// Début de la période d'inactivité en cours (0 : le cœur travaille).
+    pub idle_since: AtomicU64,
+    /// Temps pendant lequel au moins une tâche prête attendait le cœur (ns, mesuré au tick) :
+    /// l'équivalent de la ligne `some` de `/proc/pressure/cpu` (PSI) de Linux.
+    pub contended_ns: AtomicU64,
+    /// Intégrale du nombre de tâches prêtes (courante comprise) dans le temps, en tâches × ns :
+    /// sa dérivée est la charge instantanée du cœur, non biaisée par l'instant de la lecture.
+    pub runnable_ns: AtomicU64,
 }
 
 impl CpuCounters {
@@ -104,6 +114,10 @@ impl CpuCounters {
             wake_lat_sum_ns: AtomicU64::new(0),
             wake_lat_count: AtomicU64::new(0),
             wake_lat_max_ns: AtomicU64::new(0),
+            idle_ns: AtomicU64::new(0),
+            idle_since: AtomicU64::new(0),
+            contended_ns: AtomicU64::new(0),
+            runnable_ns: AtomicU64::new(0),
         }
     }
 }
@@ -124,6 +138,14 @@ pub struct SchedStats {
     pub idle_entries: u64,
     pub wake_lat_avg_ns: u64,
     pub wake_lat_max_ns: u64,
+    /// Temps inactif cumulé, période en cours comprise (ns).
+    pub idle_ns: u64,
+    /// Temps d'attente d'au moins une tâche prête (ns, PSI `some`).
+    pub contended_ns: u64,
+    /// Intégrale du nombre de tâches prêtes (tâches × ns).
+    pub runnable_ns: u64,
+    /// Horloge de l'ordonnanceur au moment de l'instantané (ns).
+    pub now_ns: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +323,12 @@ pub fn set_resched_ipi(f: fn(usize)) {
     RESCHED_IPI.store(f as usize, Release);
 }
 
+/// Interrompt le cœur `cpu` (IPI de replanification) : un fil utilisateur qui y tourne entre dans
+/// le noyau et passe par son chemin de retour (signaux, fin de groupe de fils).
+pub fn kick_cpu(cpu: usize) {
+    kick(cpu);
+}
+
 /// Demande au cœur `cpu` de replanifier dès que possible (IPI, qui réveille aussi un `hlt`).
 fn kick(cpu: usize) {
     let p = RESCHED_IPI.load(Acquire);
@@ -359,8 +387,17 @@ fn pinned_cpu(t: &Task) -> Option<usize> {
 }
 
 fn allowed_on(t: &Task, cpu: usize) -> bool {
-    pinned_cpu(t).map_or(true, |p| p == cpu)
+    pinned_cpu(t).map_or(true, |p| p == cpu) && t.sched.cpus_allowed.allows(cpu)
 }
+
+/// Cœurs dont la tâche courante doit être migrée quand elle rend le CPU (elle n'y a plus droit,
+/// `set_affinity`). Posé par `put_prev_task`, consommé par `finish_task_switch` sur ce cœur une
+/// fois que la tâche n'y tourne plus.
+static MIGRATE_PREV: [core::sync::atomic::AtomicBool; MAX_CPUS] = {
+    #[allow(clippy::declare_interior_mutable_const)]
+    const F: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    [F; MAX_CPUS]
+};
 
 /// Met une entité dans la file de sa classe.
 unsafe fn enqueue_entity(g: &mut RqInner, e: *mut Entity, fl: u32, now: u64) {
@@ -438,8 +475,26 @@ fn schedule_inner(yielded: bool) -> bool {
     let mut g = rq.lock();
     rq.need_resched.store(false, Relaxed);
     let now = clock_ns();
+    // Invariants : la file connaît `prev` comme courante (`curr` nul seulement à l'amorçage), et
+    // après `put_prev_task` aucune entité n'est plus courante d'une classe (sinon `pick_next` la
+    // perdrait : en file pour toujours, jamais choisie).
+    let wrong_curr = if !g.curr.is_null() && g.curr != Arc::as_ptr(&prev.0) {
+        // SAFETY : la courante est tenue par sa référence `owner` (ou est la tâche inactive).
+        Some(unsafe { (*g.curr).id })
+    } else {
+        None
+    };
     // SAFETY : verrou de la file tenu pour toutes les manipulations d'entités ci-dessous.
     unsafe { put_prev_task(&mut g, &prev, now, yielded, cpu) };
+    let left = [g.fair.curr(), g.rt.curr()].map(|e| (!e.is_null()).then(|| unsafe { (*e).id }));
+    if wrong_curr.is_some() || left.iter().any(Option::is_some) {
+        drop(g);
+        panic!(
+            "BUG: MaiSched: coeur {} : courante de la file {:?} au lieu de '{}' (id {}), entites \
+             encore courantes (eevdf, temps reel) {:?} ; {}",
+            cpu, wrong_curr, prev.name, prev.id, left, crate::trace_string(&prev),
+        );
+    }
     let mut next = unsafe { pick_next_task(&mut g, now) };
     if next.is_none() {
         drop(g);
@@ -461,8 +516,17 @@ fn schedule_inner(yielded: bool) -> bool {
     g.curr = Arc::as_ptr(&next.0);
     rq.publish(&g);
     if next.is_an_idle_task {
+        if !prev.is_an_idle_task {
+            rq.counters.idle_since.store(now.max(1), Relaxed);
+        }
         IDLE_CPUS.set(cpu);
     } else {
+        if prev.is_an_idle_task {
+            let since = rq.counters.idle_since.swap(0, Relaxed);
+            if since != 0 {
+                rq.counters.idle_ns.fetch_add(now.saturating_sub(since), Relaxed);
+            }
+        }
         IDLE_CPUS.clear(cpu);
         let ts = next.sched.wake_ts.swap(0, Relaxed);
         if ts != 0 {
@@ -492,7 +556,12 @@ unsafe fn put_prev_task(g: &mut RqInner, prev: &TaskRef, now: u64, yielded: bool
         return;
     }
     let e = ent(prev);
-    let runnable = prev.runstate.load() == RunState::Runnable;
+    // Une tâche **préemptée** reste en file même si elle vient de se marquer bloquée (comme
+    // `__schedule(SM_PREEMPT)` de Linux) : entre son `block()` et son inscription à une source de
+    // réveil, une préemption la sortirait de la file sans que personne puisse jamais la réveiller.
+    // Elle reprend, s'inscrit, puis son propre `schedule()` la retire.
+    let state = prev.runstate.load();
+    let runnable = state == RunState::Runnable || (!yielded && state == RunState::Blocked);
     if g.curr != Arc::as_ptr(&prev.0) {
         // La tâche tournait sans être connue de cette file (tâche d'amorçage pas encore adoptée).
         if runnable && !(*e).on_rq {
@@ -507,6 +576,23 @@ unsafe fn put_prev_task(g: &mut RqInner, prev: &TaskRef, now: u64, yielded: bool
         return;
     }
     let pending = prev.sched.pending_class.take();
+    // Plus le droit de tourner ici (`set_affinity`) : la tâche, prête, quitte la file (son retard
+    // EEVDF est gardé) ; `finish_task_switch` la remet en file sur un cœur permis une fois qu'elle
+    // ne tourne plus ici. Seulement si elle est vraiment prête : une tâche préemptée entre son
+    // `block()` et son inscription doit rester en file (voir plus haut). Il faut une tâche
+    // inactive pour prendre le cœur à sa place (toujours vrai hors du tout début de l'amorçage).
+    if state == RunState::Runnable && pending.is_none() && g.idle.is_some() && !allowed_on(prev, cpu) {
+        match (*e).class {
+            Class::Fair { .. } => {
+                g.fair.dequeue_curr(e, now, false);
+            }
+            Class::Rt { .. } => g.rt.dequeue_curr(e),
+            Class::Idle => return,
+        }
+        drop(take_ref(e));
+        MIGRATE_PREV[cpu].store(true, Relaxed);
+        return;
+    }
     match (*e).class {
         Class::Fair { .. } => {
             if runnable && pending.is_none() {
@@ -579,7 +665,8 @@ fn select_cpu(t: &Task, prev: usize, this: usize, initial: bool) -> usize {
     if let Some(p) = pinned_cpu(t) {
         return if p < n { p } else { this };
     }
-    let online = |c: usize| c < n && RQS[c].online.load(Relaxed);
+    let restricted = t.sched.cpus_allowed.is_restricted();
+    let online = |c: usize| c < n && RQS[c].online.load(Relaxed) && (!restricted || t.sched.cpus_allowed.allows(c));
     // 1. Le cœur précédent s'il est libre : caches encore chauds.
     if !initial && online(prev) && IDLE_CPUS.test_and_clear(prev) {
         return prev;
@@ -600,11 +687,18 @@ fn select_cpu(t: &Task, prev: usize, this: usize, initial: bool) -> usize {
         }
     }
     // 3. Aucun libre : le moins chargé, à égalité le précédent (cache), puis le courant.
-    let mut best = if online(origin) { origin } else { this };
+    let mut best = if online(origin) {
+        origin
+    } else if online(this) || !restricted {
+        this
+    } else {
+        // Ni le précédent ni le courant ne sont permis : le premier cœur permis en ligne.
+        (0..n).find(|&c| online(c)).unwrap_or(this)
+    };
     let mut best_nr = RQS[best].nr_running.load(Relaxed);
-    for c in 0..n {
+    for (c, rq) in RQS.iter().enumerate().take(n) {
         if online(c) {
-            let nr = RQS[c].nr_running.load(Relaxed);
+            let nr = rq.nr_running.load(Relaxed);
             if nr < best_nr {
                 best = c;
                 best_nr = nr;
@@ -619,13 +713,27 @@ fn select_cpu(t: &Task, prev: usize, this: usize, initial: bool) -> usize {
 /// À appeler après que l'état est passé à `Runnable` (`unblock()` le fait par CAS, une seule fois
 /// par réveil). `force_cpu` impose le cœur (`add_task_to`).
 fn wake_up(task: &TaskRef, force_cpu: Option<usize>) {
+    enqueue_ready(task, force_cpu, false)
+}
+
+/// Fin de migration (`finish_task_switch`, sur le cœur que `prev` vient de quitter) : si
+/// `put_prev_task` l'a sortie de sa file parce qu'elle n'y avait plus droit, elle est remise en
+/// file sur un cœur permis, retard conservé.
+pub(crate) fn finish_migration(prev: &TaskRef) {
+    let cpu = this_cpu();
+    if cpu < MAX_CPUS && MIGRATE_PREV[cpu].swap(false, Relaxed) {
+        enqueue_ready(prev, None, true);
+    }
+}
+
+fn enqueue_ready(task: &TaskRef, force_cpu: Option<usize>, migrated: bool) {
     // Seule une tâche prête entre en file (une tâche bloquée y entrera à son `unblock()`).
     if task.runstate.load() != RunState::Runnable {
         return;
     }
     let e = ent(task);
-    let this = this_cpu();
     let _irq = hold_interrupts();
+    let this = this_cpu();
 
     // 1. Encore en file (différée, ou pas encore sortie par schedule()) : rien à déplacer.
     loop {
@@ -680,17 +788,28 @@ fn wake_up(task: &TaskRef, force_cpu: Option<usize>) {
         task.sched.cpu.store(target, Release);
         let now = clock_ns();
         hold_ref(task, e);
-        enqueue_entity(&mut g, e, if initial { flags::INITIAL } else { flags::WAKEUP }, now);
-        if !initial {
+        let fl = if migrated {
+            flags::MIGRATED
+        } else if initial {
+            flags::INITIAL
+        } else {
+            flags::WAKEUP
+        };
+        enqueue_entity(&mut g, e, fl, now);
+        if !initial && !migrated {
             task.sched.wake_ts.store(now, Relaxed);
         }
         rq.publish(&g);
         check_preempt(&mut g, e, now)
     };
     drop(g);
-    rq.counters.wakeups.fetch_add(1, Relaxed);
-    if target != this {
-        rq.counters.remote_wakeups.fetch_add(1, Relaxed);
+    if migrated {
+        rq.counters.migrations.fetch_add(1, Relaxed);
+    } else {
+        rq.counters.wakeups.fetch_add(1, Relaxed);
+        if target != this {
+            rq.counters.remote_wakeups.fetch_add(1, Relaxed);
+        }
     }
     if preempt {
         rq.need_resched.store(true, Release);
@@ -824,6 +943,15 @@ pub fn scheduler_tick() -> bool {
     g.ticks += 1;
     let ticks = g.ticks;
     rq.counters.ticks.fetch_add(1, Relaxed);
+    // Pression (PSI `some`) : une tâche prête attendait pendant ce tick. Le premier tick d'un cœur
+    // (`elapsed` depuis l'origine de l'horloge) est ignoré.
+    let nr = rq.nr_running.load(Relaxed) as u64;
+    if elapsed < 100_000_000 {
+        if nr > 1 {
+            rq.counters.contended_ns.fetch_add(elapsed, Relaxed);
+        }
+        rq.counters.runnable_ns.fetch_add(elapsed * nr, Relaxed);
+    }
     let curr = g.curr;
     let resched = if curr.is_null() {
         false
@@ -862,6 +990,13 @@ pub fn preemption_point() {
     if RQS[this_cpu()].need_resched.load(Acquire) && irq_safety::interrupts_enabled() {
         schedule_preempt();
     }
+}
+
+/// D'autres tâches que la courante attendent-elles ce cœur ? (Un sondage actif ne vole alors
+/// que du temps inactif s'il n'y en a pas.)
+pub fn cpu_has_other_work() -> bool {
+    let rq = &RQS[this_cpu()];
+    rq.nr_running.load(Relaxed) > 1 || rq.need_resched.load(Relaxed)
 }
 
 /// Faut-il replanifier sur ce cœur ?
@@ -956,8 +1091,8 @@ fn periodic_balance(cpu: usize) {
     let mine = RQS[cpu].nr_running.load(Relaxed);
     let mut busiest = cpu;
     let mut most = mine;
-    for c in 0..n {
-        let nr = RQS[c].nr_running.load(Relaxed);
+    for (c, rq) in RQS.iter().enumerate().take(n) {
+        let nr = rq.nr_running.load(Relaxed);
         if nr > most {
             most = nr;
             busiest = c;
@@ -971,6 +1106,111 @@ fn periodic_balance(cpu: usize) {
 // ---------------------------------------------------------------------------
 // Priorités et classes
 // ---------------------------------------------------------------------------
+
+/// Masque de cœurs (un bit par cœur, comme `cpu_set_t`).
+pub type CpuSet = [u64; task_struct::CPU_MASK_BITS / 64];
+
+/// Pose les cœurs permis d'une tâche (`sched_setaffinity`). Refuse (`false`) un masque sans
+/// aucun cœur en ligne. La tâche quitte aussitôt un cœur qui n'est plus permis :
+/// - en attente dans une file : migrée tout de suite (sous les deux verrous, comme un vol) ;
+/// - en cours d'exécution ailleurs : ce cœur est relancé, son `put_prev_task` la migre ;
+/// - tâche courante : migrée à son prochain passage dans l'ordonnanceur (`need_resched` posé ;
+///   l'appelant fait `schedule()` s'il veut que ce soit immédiat).
+pub fn set_affinity(task: &TaskRef, mask: &CpuSet) -> bool {
+    let n = nr_cpus();
+    let any = (0..n.min(task_struct::CPU_MASK_BITS))
+        .any(|c| mask[c / 64] & (1 << (c % 64)) != 0 && RQS[c].online.load(Relaxed));
+    if !any {
+        return false;
+    }
+    task.sched.cpus_allowed.set(mask, n);
+    if is_current(task) {
+        if !allowed_on(task, this_cpu()) {
+            RQS[this_cpu()].need_resched.store(true, Release);
+        }
+        return true;
+    }
+    if let Some(c) = Option::<CpuId>::from(task.running_on_cpu.load()) {
+        let c = c.value() as usize;
+        if c < n && !allowed_on(task, c) {
+            RQS[c].need_resched.store(true, Release);
+            kick(c);
+        }
+        return true;
+    }
+    // En attente dans une file (ou endormie : elle choisira un cœur permis à son réveil).
+    let src = task.sched.cpu.load(Acquire).min(MAX_CPUS - 1);
+    if allowed_on(task, src) {
+        return true;
+    }
+    let dst = select_cpu(task, src, this_cpu(), false);
+    if dst == src || !allowed_on(task, dst) {
+        return true;
+    }
+    let dg = DoubleGuard::lock(src, dst);
+    let (gs, gd) = (dg.first(), dg.second());
+    let e = ent(task);
+    // SAFETY : les deux verrous sont tenus ; on revérifie que l'entité est toujours en attente
+    // (ni courante, ni différée, ni en cours d'exécution) dans la file `src`.
+    let preempt = unsafe {
+        let still = task.sched.cpu.load(Acquire) == src
+            && (*e).on_rq
+            && !(*e).delayed
+            && gs.curr != Arc::as_ptr(&task.0)
+            && Option::<CpuId>::from(task.running_on_cpu.load()).is_none();
+        if !still {
+            return true;
+        }
+        let now = clock_ns();
+        match (*e).class {
+            Class::Fair { .. } => gs.fair.detach(e, now),
+            Class::Rt { .. } => gs.rt.dequeue_queued(e),
+            Class::Idle => return true,
+        }
+        task.sched.cpu.store(dst, Release);
+        enqueue_entity(gd, e, flags::MIGRATED, now);
+        RQS[src].publish(gs);
+        RQS[dst].publish(gd);
+        check_preempt(gd, e, now)
+    };
+    drop(dg);
+    RQS[dst].counters.migrations.fetch_add(1, Relaxed);
+    if preempt {
+        RQS[dst].need_resched.store(true, Release);
+        kick(dst);
+    }
+    true
+}
+
+/// Cœurs permis d'une tâche (limités aux cœurs du système ; un seul si elle est épinglée).
+pub fn affinity(task: &TaskRef) -> CpuSet {
+    let n = nr_cpus().min(task_struct::CPU_MASK_BITS);
+    if let Some(p) = pinned_cpu(task) {
+        let mut only = [0u64; task_struct::CPU_MASK_BITS / 64];
+        if p < task_struct::CPU_MASK_BITS {
+            only[p / 64] = 1 << (p % 64);
+        }
+        return only;
+    }
+    let mut m = task.sched.cpus_allowed.get();
+    for (i, w) in m.iter_mut().enumerate() {
+        let lo = i * 64;
+        let keep = if n <= lo {
+            0
+        } else if n - lo >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << (n - lo)) - 1
+        };
+        *w &= keep;
+    }
+    m
+}
+
+/// Nombre de cœurs en ligne gérés par l'ordonnanceur.
+pub fn online_cpus() -> usize {
+    nr_cpus()
+}
 
 /// Exécute `f` sous le verrou de la file qui possède la tâche.
 fn with_task_rq<R>(task: &TaskRef, f: impl FnOnce(&mut RqInner, *mut Entity, u64) -> R) -> R {
@@ -1022,7 +1262,16 @@ pub fn set_class(task: &TaskRef, class: Class) {
             task.sched.pending_class.store(Some(class));
             return Some(task.sched.cpu.load(Relaxed));
         }
+        let asleep = (*e).delayed;
         dequeue_queued(g, e, now);
+        if asleep {
+            // Endormie (différée) : elle entrera dans la file de sa nouvelle classe à son réveil,
+            // pas maintenant (elle tournerait bloquée). Une tâche préemptée entre son `block()` et
+            // son inscription, elle, n'est pas différée et reste en file.
+            drop(take_ref(e));
+            apply_class(e, class);
+            return None;
+        }
         apply_class(e, class);
         enqueue_entity(g, e, 0, now);
         None
@@ -1040,7 +1289,115 @@ pub fn busyness(cpu_id: CpuId) -> Option<usize> {
 }
 
 /// Statistiques de chaque cœur en ligne.
+/// Diagnostic : état de chaque cœur (tâche courante, prêtes, replanification demandée, inactif).
+pub fn debug_cpus() -> alloc::string::String {
+    let mut out = alloc::string::String::new();
+    for c in 0..nr_cpus() {
+        let rq = &RQS[c];
+        let g = rq.lock();
+        let curr = if g.curr.is_null() {
+            alloc::string::String::from("-")
+        } else {
+            // SAFETY : la tâche courante vit tant qu'elle est courante (référence `owner`), verrou tenu.
+            let t = unsafe { &*g.curr };
+            alloc::format!("{}#{}", t.name, t.id)
+        };
+        out += &alloc::format!(
+            "[cpu {} : courante {}, pretes {} (eevdf {}, rt {}), resched {}, inactif {}] ",
+            c,
+            curr,
+            rq.nr_running.load(Relaxed),
+            g.fair.nr_runnable(),
+            g.rt.nr_runnable(),
+            rq.need_resched.load(Relaxed),
+            IDLE_CPUS.test(c)
+        );
+    }
+    out
+}
+
+/// Diagnostic **sans verrou** (gestionnaire de NMI : le code interrompu peut tenir une file) :
+/// file, présence en file, mise en attente différée, cœurs permis. Lectures non synchronisées,
+/// approximatives par nature.
+pub fn nmi_debug_task(t: &TaskRef) -> alloc::string::String {
+    let e = ent(t);
+    let c = t.sched.cpu.load(Acquire).min(MAX_CPUS - 1);
+    // SAFETY : l'entité vit avec la tâche ; lectures volatiles sans verrou, pour diagnostic.
+    let (on_rq, delayed, in_tree) =
+        unsafe { (ptr::read_volatile(&(*e).on_rq), ptr::read_volatile(&(*e).delayed), (*e).in_tree()) };
+    // SAFETY : lecture sans verrou, pour diagnostic.
+    let is_curr = unsafe { (*RQS[c].inner.get()).fair.curr() == e };
+    let allowed: alloc::vec::Vec<usize> = (0..nr_cpus()).filter(|&k| allowed_on(t, k)).collect();
+    alloc::format!(
+        "file {}, en file {}, differee {}, arbre {}, courante de sa file {}, sur le coeur {:?}, coeurs permis {:?} ; {}",
+        c, on_rq, delayed, in_tree, is_curr, Option::<CpuId>::from(t.running_on_cpu.load()), allowed,
+        crate::trace_string(t)
+    )
+}
+
+/// Diagnostic **sans verrou** de chaque cœur : prêtes publiées, replanification demandée,
+/// inactif, verrou de file tenu.
+pub fn nmi_debug_cpus() -> alloc::string::String {
+    let mut out = alloc::string::String::new();
+    for c in 0..nr_cpus() {
+        let rq = &RQS[c];
+        // SAFETY : lecture sans verrou, pour diagnostic (les autres cœurs sont arrêtés par le NMI
+        // ou inactifs ; une valeur incohérente reste sans conséquence).
+        let (fair_curr, curr) = unsafe {
+            let g = &*rq.inner.get();
+            let fc = g.fair.curr();
+            (if fc.is_null() { None } else { Some((*fc).id) }, g.curr.as_ref().map(|t| t.id))
+        };
+        out += &alloc::format!(
+            "[cpu {} : pretes {}, resched {}, inactif {}, verrou {}, courante {:?}, courante eevdf {:?}] ",
+            c,
+            rq.nr_running.load(Relaxed),
+            rq.need_resched.load(Relaxed),
+            IDLE_CPUS.test(c),
+            rq.locked.load(Relaxed),
+            curr,
+            fair_curr
+        );
+    }
+    out
+}
+
+/// Diagnostic : ce que `pick_next_task` choisirait sur ce cœur, sans rien changer.
+pub fn debug_pick() -> alloc::string::String {
+    let cpu = this_cpu();
+    let rq = &RQS[cpu];
+    let g = rq.lock();
+    let n = g.fair.nr_runnable();
+    // SAFETY : verrou tenu, lecture seule.
+    let first = unsafe { g.fair.debug_first() };
+    alloc::format!("cpu {} : eevdf {} pretes, premiere {}", cpu, n, first)
+}
+
+/// Diagnostic : état d'une tâche vu par l'ordonnanceur.
+pub fn debug_task(t: &TaskRef) -> alloc::string::String {
+    let e = ent(t);
+    let c = t.sched.cpu.load(Acquire).min(MAX_CPUS - 1);
+    let g = RQS[c].lock();
+    // SAFETY : verrou de la file propriétaire tenu.
+    let (on_rq, delayed) = unsafe { ((*e).on_rq, (*e).delayed) };
+    let is_curr = g.curr == Arc::as_ptr(&t.0);
+    drop(g);
+    alloc::format!(
+        "{}#{} : etat {:?}, file {}, en file {}, differee {}, courante {}, sur cpu {:?}, epinglee {:?}",
+        t.name,
+        t.id,
+        t.runstate.load(),
+        c,
+        on_rq,
+        delayed,
+        is_curr,
+        Option::<CpuId>::from(t.running_on_cpu.load()).map(|x| x.value()),
+        pinned_cpu(t)
+    )
+}
+
 pub fn stats() -> Vec<SchedStats> {
+    let now = clock_ns();
     (0..nr_cpus())
         .filter(|&c| RQS[c].online.load(Relaxed))
         .map(|c| {
@@ -1060,6 +1417,14 @@ pub fn stats() -> Vec<SchedStats> {
                 idle_entries: k.idle_entries.load(Relaxed),
                 wake_lat_avg_ns: k.wake_lat_sum_ns.load(Relaxed) / cnt,
                 wake_lat_max_ns: k.wake_lat_max_ns.load(Relaxed),
+                idle_ns: {
+                    let since = k.idle_since.load(Relaxed);
+                    let base = k.idle_ns.load(Relaxed);
+                    if since != 0 { base + now.saturating_sub(since) } else { base }
+                },
+                contended_ns: k.contended_ns.load(Relaxed),
+                runnable_ns: k.runnable_ns.load(Relaxed),
+                now_ns: now,
             }
         })
         .collect()

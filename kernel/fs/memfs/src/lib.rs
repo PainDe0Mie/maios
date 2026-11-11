@@ -102,7 +102,10 @@ impl ByteWriter for MemFile {
             };
             
             let kernel_mmi_ref = get_kernel_mmi_ref().ok_or("KERNEL_MMI was not yet initialized!")?;
-            let pages = allocate_pages_by_bytes(end).ok_or("could not allocate pages")?;
+            // Croissance géométrique (×2) : une suite d'ajouts coûte O(n) copies au total au lieu
+            // de O(n²) (comme la capacité d'un `Vec`).
+            let capacity = end.max(self.mp.size_in_bytes().saturating_mul(2)).max(4096);
+            let pages = allocate_pages_by_bytes(capacity).ok_or("could not allocate pages")?;
             let mut new_mapped_pages = kernel_mmi_ref.lock().page_table.map_allocated_pages(pages, prev_flags)?;
             
             // first, we need to copy over the bytes from the previous mapped pages
@@ -175,4 +178,11 @@ impl FsNode for MemFile {
     fn set_parent_dir(&mut self, new_parent: WeakDirRef) {
         self.parent = new_parent;
     }
+
+    fn set_name(&mut self, name: String) -> Result<(), &'static str> {
+        self.name = name;
+        Ok(())
+    }
+
+    fn is_movable(&self) -> bool { true }
 }

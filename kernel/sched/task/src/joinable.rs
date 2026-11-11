@@ -147,7 +147,9 @@ impl ExitableTaskRef {
         // d'ordonnancement tant que la tâche y est. Au-delà, quelqu'un la garde (JoinableTaskRef).
         let in_rq = self.0.sched.snapshot().on_rq as usize;
         if Arc::strong_count(&self.0.0) <= 3 + in_rq {
-            crate::TASK_LIST.lock().remove(&id);
+            // La référence retirée est relâchée hors du verrou (interruptions coupées).
+            let removed = crate::TASK_LIST.lock().remove(&id);
+            drop(removed);
         }
     }
 }

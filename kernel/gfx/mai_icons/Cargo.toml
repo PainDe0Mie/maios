@@ -1,0 +1,10 @@
+[package]
+name = "mai_icons"
+version = "0.1.0"
+edition = "2021"
+description = "Icônes d'applications : décodeurs PNG (inflate, zlib, Adam7) et XPM, fichiers .desktop, mise à l'échelle. Sans dépendance, testé sur l'hôte."
+
+[dependencies]
+
+[lib]
+crate-type = ["rlib"]

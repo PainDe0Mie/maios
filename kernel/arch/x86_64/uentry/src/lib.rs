@@ -29,8 +29,13 @@ extern crate alloc;
 
 mod entry;
 mod fpu;
+mod seg;
 
-pub use fpu::{FpuState, xsave_area_size, xcr0, switch_fpu, begin_user_fpu};
+pub use fpu::{FpuState, xsave_area_size, xcr0, uses_xsave, switch_fpu, begin_user_fpu};
+pub use seg::{
+    SegState, Selectors, TLS_ENTRY_MIN, TLS_ENTRIES, switch_segments, load_segments, set_tls,
+    descriptor_base, current_selectors,
+};
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -39,6 +44,9 @@ pub const KERNEL_CS: u64 = 0x08;
 pub const KERNEL_SS: u64 = 0x10;
 /// Code 64 bits utilisateur (index 5, RPL 3).
 pub const USER_CS: u64 = 0x2b;
+/// Code 32 bits utilisateur (index 3, RPL 3) : mode compatible (binaires i386). C'est le CS que
+/// charge `sysretl` (STAR[63:48]).
+pub const USER32_CS: u64 = 0x1b;
 /// Données utilisateur (index 4, RPL 3) : c'est le segment que charge `sysret` (STAR + 8).
 pub const USER_SS: u64 = 0x23;
 
@@ -47,6 +55,24 @@ pub const SYSCALL_VECTOR: u64 = 0x100;
 /// À placer dans `UserRegs::vector` pour forcer un retour par `iretq` (registres arbitraires,
 /// après `execve` ou la livraison d'un signal).
 pub const FORCE_IRET_VECTOR: u64 = 0x101;
+/// Appel système i386 par `int 0x80` (porte DPL 3) : table 32 bits, quel que soit le mode du
+/// code appelant (comme Linux). Retour par `iretq`.
+pub const INT80_VECTOR: u64 = 0x80;
+/// Appel système i386 par `syscall` en mode compatible (IA32_CSTAR, AMD) : retour rapide par
+/// `sysretl`. Convention du vDSO de Linux : 2e argument dans `ebp`, 6e sur la pile.
+pub const SYSCALL32_VECTOR: u64 = 0x102;
+
+/// Vrai si le cadre est celui d'un appel système (toutes entrées confondues).
+#[inline]
+pub fn is_syscall_vector(v: u64) -> bool {
+    v == SYSCALL_VECTOR || v == INT80_VECTOR || v == SYSCALL32_VECTOR
+}
+
+/// Vrai si le cadre est celui d'un appel système de la table i386.
+#[inline]
+pub fn is_syscall32_vector(v: u64) -> bool {
+    v == INT80_VECTOR || v == SYSCALL32_VECTOR
+}
 
 /// Plus haute adresse de retour acceptée par le chemin `sysret` (dernière page exclue).
 const SYSRET_RIP_LIMIT: u64 = 0x0000_7FFF_FFFF_F000;
@@ -96,14 +122,25 @@ impl UserRegs {
         }
     }
 
+    /// Registres initiaux d'un fil 32 bits (mode compatible).
+    pub fn new_user32(eip: u32, esp: u32) -> UserRegs {
+        UserRegs { cs: USER32_CS, ..UserRegs::new_user(eip as u64, esp as u64) }
+    }
+
     /// Vrai si le cadre vient du mode utilisateur.
     pub fn from_user(&self) -> bool {
         self.cs & 3 == 3
+    }
+
+    /// Vrai si le fil exécute du code 32 bits (CS du mode compatible).
+    pub fn is_compat(&self) -> bool {
+        self.cs == USER32_CS
     }
 }
 
 const RFLAGS_RESERVED: u64 = 1 << 1;
 const RFLAGS_IF: u64 = 1 << 9;
+const RFLAGS_TF: u64 = 1 << 8;
 /// Bits que l'utilisateur peut garder : CF PF AF ZF SF TF DF OF AC ID (pas d'IOPL, NT, RF, VM, VIF/VIP).
 const RFLAGS_USER_MASK: u64 = 0x0000_0000_0024_0DD5;
 
@@ -123,13 +160,16 @@ struct CpuEntryBlock {
     tss_rsp0: u64,
     /// 40 : identifiant du cœur (+1 ; 0 = bloc non initialisé).
     cpu_plus_one: u64,
-    _pad: [u64; 2],
+    /// 48 : base de la GDT du cœur (entrées TLS des fils 32 bits).
+    gdt_base: u64,
+    /// 56 : entrées TLS de la GDT non nulles (à effacer pour un fil sans TLS).
+    tls_loaded: u64,
 }
 
 const MAX_CPUS: usize = 512;
 const BLOCK_SHIFT: u32 = 6;
 const EMPTY_BLOCK: CpuEntryBlock = CpuEntryBlock {
-    scratch_rsp: 0, kstack_top: 0, cls_base: 0, kernel_fs: 0, tss_rsp0: 0, cpu_plus_one: 0, _pad: [0; 2],
+    scratch_rsp: 0, kstack_top: 0, cls_base: 0, kernel_fs: 0, tss_rsp0: 0, cpu_plus_one: 0, gdt_base: 0, tls_loaded: 0,
 };
 static mut BLOCKS: [CpuEntryBlock; MAX_CPUS] = [EMPTY_BLOCK; MAX_CPUS];
 
@@ -185,6 +225,8 @@ const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
 const MSR_EFER: u32 = 0xC000_0080;
 const MSR_STAR: u32 = 0xC000_0081;
 const MSR_LSTAR: u32 = 0xC000_0082;
+const MSR_CSTAR: u32 = 0xC000_0083;
+const MSR_SYSENTER_CS: u32 = 0x174;
 const MSR_FMASK: u32 = 0xC000_0084;
 
 #[inline(always)]
@@ -211,13 +253,13 @@ unsafe fn write_cr4(v: u64) {
     core::arch::asm!("mov cr4, {}", in(reg) v, options(nostack, preserves_flags));
 }
 
-fn block_mut(cpu: usize) -> &'static mut CpuEntryBlock {
+pub(crate) fn block_mut(cpu: usize) -> &'static mut CpuEntryBlock {
     // SAFETY : chaque cœur ne touche qu'à son bloc (ou un initialiseur unique avant son démarrage).
     unsafe { &mut BLOCKS[cpu % MAX_CPUS] }
 }
 
 /// Bloc du cœur courant, d'après `IA32_KERNEL_GS_BASE` (None si pas encore initialisé).
-fn current_block() -> Option<&'static mut CpuEntryBlock> {
+pub(crate) fn current_block() -> Option<&'static mut CpuEntryBlock> {
     let ptr = unsafe { rdmsr(MSR_KERNEL_GS_BASE) } as usize;
     let base = unsafe { core::ptr::addr_of!(BLOCKS) } as usize;
     let end = base + core::mem::size_of::<[CpuEntryBlock; MAX_CPUS]>();
@@ -251,6 +293,15 @@ pub fn init_this_cpu(cpu: usize, tss_rsp0: *mut u64) -> CpuFeatures {
         // syscall/sysret : CS noyau 0x08 (SS 0x10), base utilisateur 0x18 (SS 0x23, CS 0x2b).
         wrmsr(MSR_STAR, (0x18u64 << 48) | (KERNEL_CS << 32));
         wrmsr(MSR_LSTAR, entry::syscall_entry_address() as u64);
+        // `syscall` en mode compatible (AMD ; Intel lève #UD) : table i386.
+        wrmsr(MSR_CSTAR, entry::cstar_entry_address() as u64);
+        // `sysenter` pas encore pris en charge : CS nul → #GP → SIGSEGV dans le fil (le vDSO
+        // 32 bits passe par `int 0x80` ou `syscall`).
+        if leaf1.edx & (1 << 11) != 0 {
+            wrmsr(MSR_SYSENTER_CS, 0);
+        }
+        b.gdt_base = seg::current_gdt_base();
+        b.tls_loaded = 1; // inconnu : la première commutation efface les entrées TLS
         // Comme Linux : CF PF AF ZF SF TF IF DF OF IOPL NT RF AC ID masqués à l'entrée.
         wrmsr(MSR_FMASK, 0x0025_7FD5);
         wrmsr(MSR_EFER, rdmsr(MSR_EFER) | 1);
@@ -336,7 +387,8 @@ pub fn install(handlers: &[u64; 256]) {
         for (v, &h) in handlers.iter().enumerate() {
             HANDLERS[v] = h;
             let stub = entry::stub_address(v) as u64;
-            let dpl: u64 = if v == 3 || v == 4 { 3 } else { 0 };
+            // `int3`, `into` et `int 0x80` (appels système i386) sont permis à l'anneau 3.
+            let dpl: u64 = if v == 3 || v == 4 || v == INT80_VECTOR as usize { 3 } else { 0 };
             let attr: u64 = 0x8E | (dpl << 5);
             let low = (stub & 0xFFFF)
                 | (KERNEL_CS << 16)
@@ -442,7 +494,7 @@ fn hook<T: Copy>(slot: &AtomicUsize) -> Option<T> {
 /// Entrée commune depuis le mode utilisateur (interruptions coupées).
 extern "C" fn uentry_trap(regs: &mut UserRegs) {
     let v = regs.vector;
-    if v == SYSCALL_VECTOR {
+    if is_syscall_vector(v) {
         // SAFETY : pile noyau propre à la tâche, GS/FS du noyau en place.
         unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
         match hook::<SyscallHook>(&SYSCALL_HOOK) {
@@ -475,10 +527,20 @@ extern "C" fn uentry_prepare_return(regs: &mut UserRegs) {
         h(regs);
         unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
     }
-    regs.cs = USER_CS;
     regs.ss = USER_SS;
     regs.rflags = (regs.rflags & RFLAGS_USER_MASK) | RFLAGS_IF | RFLAGS_RESERVED;
-    if regs.vector == SYSCALL_VECTOR && regs.rip >= SYSRET_RIP_LIMIT {
+    if regs.cs == USER32_CS {
+        // Mode compatible : `eip`/`esp` sur 32 bits. `sysretl` seulement pour un cadre venu
+        // de `syscall` 32 bits et sans pas-à-pas (TF déclencherait #DB sur la 1re instruction).
+        regs.rip &= 0xFFFF_FFFF;
+        regs.rsp &= 0xFFFF_FFFF;
+        if regs.vector == SYSCALL_VECTOR || (regs.vector == SYSCALL32_VECTOR && regs.rflags & RFLAGS_TF != 0) {
+            regs.vector = FORCE_IRET_VECTOR;
+        }
+        return;
+    }
+    regs.cs = USER_CS;
+    if regs.vector == SYSCALL32_VECTOR || (regs.vector == SYSCALL_VECTOR && regs.rip >= SYSRET_RIP_LIMIT) {
         regs.vector = FORCE_IRET_VECTOR;
     }
 }

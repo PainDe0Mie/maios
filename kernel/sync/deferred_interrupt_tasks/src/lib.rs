@@ -158,20 +158,20 @@ fn deferred_task_entry_point<DIA, Arg, Success, Failure>(
 
     loop {
         let _res = deferred_interrupt_action(&deferred_action_argument);
-        
-        // Note: here, upon failure, we could return from this loop task entirely instead of just logging the error.
-        // Or, we could accept a boolean/cfg that determines whether we should bail or continue looping.
-        match _res {
-            Ok(_success) => { 
-                // debug!("Deferred interrupt action returned success: {:?}", debugit!(_success));
-            }
-            Err(failure) => error!("Deferred interrupt action returned failure: {:?}", debugit!(failure)),
+        if let Err(failure) = _res {
+            error!("Deferred interrupt action returned failure: {:?}", debugit!(failure));
         }
 
-        if curr_task.block().is_err() {
-            error!("deferred_task_entry_point: couldn't block {:?}", curr_task);
+        // Une action peut s'être déjà bloquée elle-même, juste avant de revérifier qu'il ne
+        // reste rien à traiter : c'est la façon d'être réveillé sans perte (voir le pilote
+        // e1000). `Blocked` n'est donc pas une erreur ici.
+        match curr_task.block() {
+            Ok(()) | Err(task::RunState::Blocked) => {}
+            Err(_) => error!("deferred_task_entry_point: couldn't block {:?}", curr_task),
         }
-
-        let _ = sleep::sleep(sleep::Duration::from_millis(1));
+        // `schedule()` retire la tâche si elle est toujours bloquée ; un `unblock()` arrivé
+        // depuis le `block()` la garde en file, et l'action repasse aussitôt. (L'ancienne pause
+        // d'une milliseconde ajoutait autant de latence à chaque interruption.)
+        task::schedule();
     }
 }
